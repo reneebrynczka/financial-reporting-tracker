@@ -49,8 +49,8 @@ const msalConfig = {
 
 const msalInstance = new msal.PublicClientApplication(msalConfig);
 
-// MSAL v3 requires initialize() before any other call
-let _msalReady = msalInstance.initialize();
+// MSAL v2 — no initialize() needed, instance is ready immediately
+const _msalReady = Promise.resolve();
 
 const GRAPH_SCOPES = [
   "User.Read",
@@ -62,7 +62,6 @@ let spSiteId   = null;   // resolved after login
 
 // ── GRAPH API HELPERS ─────────────────────────────────────────
 async function getToken() {
-  await _msalReady;
   const accounts = msalInstance.getAllAccounts();
   if (!accounts.length) throw new Error("Not authenticated");
   try {
@@ -937,7 +936,6 @@ function showError(msg) {
 // ── LOGIN (Microsoft SSO) ────────────────────────────────────
 async function loginWithMicrosoft() {
   try {
-    await _msalReady;
     await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
     await afterMicrosoftLogin();
   } catch(e) {
@@ -2384,10 +2382,7 @@ function renderCurrentView() {
 }
 
 // ── INIT ──────────────────────────────────────────────────────
-(async function init() {
-  // Wait for MSAL v3 to be ready before any calls
-  await _msalReady;
-
+(function init() {
   // Handle MSAL redirect (if using redirect flow instead of popup)
   msalInstance.handleRedirectPromise().catch(console.error);
 
