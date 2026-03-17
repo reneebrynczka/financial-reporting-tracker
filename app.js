@@ -16,10 +16,10 @@
 // ── CONFIG — FILL THESE IN ────────────────────────────────────
 const CONFIG = {
   // From Azure App Registration (see setup guide Step 2)
-  clientId:   "REPLACE_WITH_YOUR_APP_CLIENT_ID",
+  clientId:   "bb00291f-d451-4e74-b8cf-10c334efb0ed",
 
   // Your company's tenant ID (see setup guide Step 2)
-  tenantId:   "REPLACE_WITH_YOUR_TENANT_ID",
+  tenantId:   "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",
 
   // The full URL of your SharePoint site
   siteUrl:    "https://moodys.sharepoint.com/sites/finance_home_finrptg",
@@ -43,6 +43,9 @@ const msalConfig = {
 
 const msalInstance = new msal.PublicClientApplication(msalConfig);
 
+// MSAL v3 requires initialize() before any other call
+let _msalReady = msalInstance.initialize();
+
 const GRAPH_SCOPES = [
   "User.Read",
   "Sites.ReadWrite.All",
@@ -53,6 +56,7 @@ let spSiteId   = null;   // resolved after login
 
 // ── GRAPH API HELPERS ─────────────────────────────────────────
 async function getToken() {
+  await _msalReady;
   const accounts = msalInstance.getAllAccounts();
   if (!accounts.length) throw new Error("Not authenticated");
   try {
@@ -925,6 +929,7 @@ function showError(msg) {
 // ── LOGIN (Microsoft SSO) ────────────────────────────────────
 async function loginWithMicrosoft() {
   try {
+    await _msalReady;
     await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
     await afterMicrosoftLogin();
   } catch(e) {
@@ -2361,7 +2366,10 @@ function renderCurrentView() {
 }
 
 // ── INIT ──────────────────────────────────────────────────────
-(function init() {
+(async function init() {
+  // Wait for MSAL v3 to be ready before any calls
+  await _msalReady;
+
   // Handle MSAL redirect (if using redirect flow instead of popup)
   msalInstance.handleRedirectPromise().catch(console.error);
 
