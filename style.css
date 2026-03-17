@@ -1077,3 +1077,18 @@ body {
   background: var(--deadline-overdue);
   color: var(--white);
 }
+
+/* ── NOT APPLICABLE STATUS ───────────────────────────────────── */
+.status-na {
+  background: #F1F5F9;
+  color: #64748B;
+  border: 1.5px dashed #CBD5E1;
+  font-style: italic;
+}
+
+/* N/A stat card */
+.stat-card.na {
+  border-left: 3px solid #94A3B8;
+}
+.stat-card.na .stat-label { color: #64748B; }
+.stat-card.na .stat-value { color: #475569; }
