@@ -475,7 +475,6 @@
 
 <!-- Microsoft Authentication Library (MSAL) -->
 <script>
-// Load MSAL from multiple sources — tries each in order until one succeeds
 (function loadMSAL() {
   var sources = [
     "https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js",
@@ -492,13 +491,17 @@
     }
     var s = document.createElement('script');
     s.src = sources[idx++];
-    s.crossOrigin = 'anonymous';
-    s.onerror = function() { document.head.removeChild(s); tryNext(); };
+    s.onload  = function() {
+      // MSAL loaded successfully — now load app.js
+      var app = document.createElement('script');
+      app.src = 'app.js';
+      document.head.appendChild(app);
+    };
+    s.onerror = function() { tryNext(); };
     document.head.appendChild(s);
   }
   tryNext();
 })();
 </script>
-<script src="app.js" defer></script>
 </body>
 </html>
