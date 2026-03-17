@@ -895,7 +895,7 @@ function typeBadgeClass(type) {
 }
 function statusBadgeClass(s) {
   return {'Not Started':'status-not-started','In Progress':'status-in-progress',
-          'Under Review':'status-review','Complete':'status-complete'}[s]||'status-not-started';
+          'Ready for Review':'status-review','Complete':'status-complete'}[s]||'status-not-started';
 }
 function dotClass(ds) {
   return {overdue:'dot-overdue',soon:'dot-soon',ok:'dot-ok',done:'dot-done'}[ds]||'dot-ok';
@@ -1523,7 +1523,7 @@ function renderSignOffTrail(refId, showAll) {
   const rows = visible.map(e => {
     const icon = {
       'Complete':     '✅',
-      'Under Review': '🔍',
+      'Ready for Review': '🔍',
       'In Progress':  '▶️',
       'Not Started':  '⏸',
     }[e.toStatus] || '•';
@@ -1547,7 +1547,7 @@ function toggleSignOffHistory(refId, el) {
 }
 
 // ── STATUS CYCLE ──────────────────────────────────────────────
-const STATUS_ORDER = ['Not Started','In Progress','Under Review','Complete'];
+const STATUS_ORDER = ['Not Started','In Progress','Ready for Review','Complete'];
 async function cycleStatus(spId) {
   const task = _tasks.find(t => t._spId === spId); if(!task) return;
   if (isQuarterLocked(task.quarter, task.year)) {
@@ -2619,7 +2619,7 @@ function renderReport() {
 
   const total    = tasks.length;
   const complete = tasks.filter(t=>t.status==='Complete').length;
-  const review   = tasks.filter(t=>t.status==='Under Review').length;
+  const review   = tasks.filter(t=>t.status==='Ready for Review').length;
   const inprog   = tasks.filter(t=>t.status==='In Progress').length;
   const notstart = tasks.filter(t=>t.status==='Not Started').length;
   const overdue  = tasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length;
@@ -2658,7 +2658,7 @@ function renderReport() {
     <div class="report-stat-row">
       <div class="report-stat"><div class="report-stat-val">${total}</div><div class="report-stat-lbl">Total Deliverables</div></div>
       <div class="report-stat complete"><div class="report-stat-val">${complete}</div><div class="report-stat-lbl">Complete</div></div>
-      <div class="report-stat review"><div class="report-stat-val">${review}</div><div class="report-stat-lbl">Under Review</div></div>
+      <div class="report-stat review"><div class="report-stat-val">${review}</div><div class="report-stat-lbl">Ready for Review</div></div>
       <div class="report-stat progress"><div class="report-stat-val">${inprog}</div><div class="report-stat-lbl">In Progress</div></div>
       <div class="report-stat overdue"><div class="report-stat-val">${overdue}</div><div class="report-stat-lbl">Overdue</div></div>
       <div class="report-stat"><div class="report-stat-val">${pct}%</div><div class="report-stat-lbl">Completion Rate</div></div>
