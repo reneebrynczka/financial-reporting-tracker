@@ -27,6 +27,7 @@
         Sign in with Microsoft
       </button>
       <p class="login-sub" style="margin-top:14px;font-size:12px">Uses your company Microsoft 365 account</p>
+      <p id="login-error-msg" class="hidden" style="color:#ef4444;font-size:12px;margin-top:10px;text-align:center"></p>
     </div>
 
     <!-- Step 2: PIN confirmation (shown after Microsoft login) -->
@@ -473,13 +474,32 @@
 </div>
 
 <!-- Microsoft Authentication Library (MSAL) -->
-<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
 <script>
-  // Fallback: if jsdelivr is blocked, try unpkg
-  if (typeof msal === 'undefined') {
-    document.write('<script src="https://unpkg.com/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"><\/script>');
+// Load MSAL from multiple sources — tries each in order until one succeeds
+(function loadMSAL() {
+  var sources = [
+    "https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js",
+    "https://unpkg.com/@azure/msal-browser@3.27.0/lib/msal-browser.min.js",
+    "https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"
+  ];
+  var idx = 0;
+  function tryNext() {
+    if (idx >= sources.length) {
+      document.getElementById('login-error-msg').textContent =
+        'Could not load the Microsoft login library. Please try a different browser or network.';
+      document.getElementById('login-error-msg').classList.remove('hidden');
+      return;
+    }
+    var s = document.createElement('script');
+    s.src = sources[idx++];
+    s.crossOrigin = 'anonymous';
+    s.onload  = function() {};   // success — app.js loads next
+    s.onerror = function() { document.head.removeChild(s); tryNext(); };
+    document.head.appendChild(s);
   }
+  tryNext();
+})();
 </script>
-<script src="app.js"></script>
+<script src="app.js" defer></script>
 </body>
 </html>
