@@ -38,7 +38,13 @@ const msalConfig = {
     authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
     redirectUri: window.location.origin + window.location.pathname,
   },
-  cache: { cacheLocation: "sessionStorage" },
+  cache: {
+    cacheLocation: "localStorage",       // localStorage avoids Edge tracking prevention
+    storeAuthStateInCookie: true,        // fallback for browsers blocking localStorage
+  },
+  system: {
+    allowNativeBroker: false,            // avoids redirect loop on some corporate configs
+  }
 };
 
 const msalInstance = new msal.PublicClientApplication(msalConfig);
@@ -2629,16 +2635,15 @@ function renderReport() {
   const el      = document.getElementById('report-content');
   if (!el) return;
 
-  const total    = tasks.length;
   const activeTasks2 = tasks.filter(t=>t.status!=='Not Applicable');
-  const naCount2   = tasks.filter(t=>t.status==='Not Applicable').length;
-  const complete   = activeTasks2.filter(t=>t.status==='Complete').length;
-  const review   = tasks.filter(t=>t.status==='Ready for Review').length;
-  const inprog   = tasks.filter(t=>t.status==='In Progress').length;
-  const notstart = tasks.filter(t=>t.status==='Not Started').length;
-  const overdue  = tasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length;
-  const total    = activeTasks2.length;
-  const pct      = total ? Math.round(complete/total*100) : 0;
+  const naCount2     = tasks.filter(t=>t.status==='Not Applicable').length;
+  const total        = activeTasks2.length;
+  const complete     = activeTasks2.filter(t=>t.status==='Complete').length;
+  const review       = activeTasks2.filter(t=>t.status==='Ready for Review').length;
+  const inprog       = activeTasks2.filter(t=>t.status==='In Progress').length;
+  const notstart     = activeTasks2.filter(t=>t.status==='Not Started').length;
+  const overdue      = activeTasks2.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length;
+  const pct          = total ? Math.round(complete/total*100) : 0;
 
   const byType   = {};
   tasks.forEach(t => { byType[t.type] = (byType[t.type]||0)+1; });
