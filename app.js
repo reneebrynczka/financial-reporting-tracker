@@ -380,6 +380,7 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
 }
 function deadlineStatus(dueDate, status) {
+  if (status === 'Not Applicable') return 'done'; // N/A never shown as overdue
   if (status === 'Complete') return 'done';
   const today = new Date(); today.setHours(0,0,0,0);
   const due   = new Date(dueDate + 'T00:00:00');
@@ -895,7 +896,8 @@ function typeBadgeClass(type) {
 }
 function statusBadgeClass(s) {
   return {'Not Started':'status-not-started','In Progress':'status-in-progress',
-          'Ready for Review':'status-review','Complete':'status-complete'}[s]||'status-not-started';
+          'Ready for Review':'status-review','Complete':'status-complete',
+          'Not Applicable':'status-na'}[s]||'status-not-started';
 }
 function dotClass(ds) {
   return {overdue:'dot-overdue',soon:'dot-soon',ok:'dot-ok',done:'dot-done'}[ds]||'dot-ok';
@@ -1066,9 +1068,12 @@ function renderDashboard() {
   if(greet) greet.textContent = `${hr<12?'Good morning':hr<17?'Good afternoon':'Good evening'}, ${currentUser.name.split(' ')[0]}`;
   const lbl = document.getElementById('dashboard-quarter-label');
   if(lbl) lbl.textContent = `${q} ${yr} · Financial Reporting`;
-  const total=tasks.length, complete=tasks.filter(t=>t.status==='Complete').length,
-        overdue=tasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length,
-        inprog=tasks.filter(t=>t.status==='In Progress').length;
+  const activeTasks = tasks.filter(t=>t.status!=='Not Applicable');
+  const total    = activeTasks.length;
+  const naCount  = tasks.filter(t=>t.status==='Not Applicable').length;
+  const complete = activeTasks.filter(t=>t.status==='Complete').length,
+        overdue  = activeTasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length,
+        inprog   = activeTasks.filter(t=>t.status==='In Progress').length;
   const sg = document.getElementById('stat-grid');
   if(sg) sg.innerHTML = `
     <div class="stat-card"><div class="stat-label">Total Deliverables</div>
@@ -1080,7 +1085,9 @@ function renderDashboard() {
       <div class="stat-value">${inprog}</div><div class="stat-sub">tasks active</div></div>
     <div class="stat-card overdue"><div class="stat-label">Overdue</div>
       <div class="stat-value">${overdue}</div>
-      <div class="stat-sub">${overdue>0?'needs attention':'all on track'}</div></div>`;
+      <div class="stat-sub">${overdue>0?'needs attention':'all on track'}</div></div>
+    ${naCount>0?`<div class="stat-card na"><div class="stat-label">Not Applicable</div>
+      <div class="stat-value">${naCount}</div><div class="stat-sub">excluded from stats</div></div>`:''}`;
   // Show lock banner if this quarter is locked
   const lockBanner = document.getElementById('lock-banner');
   if (lockBanner) {
@@ -1147,7 +1154,7 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
       ? `<span class="app-badge ${task.applicability.startsWith('10-K')?'app-badge-10k':'app-badge-10q'}">${task.applicability.startsWith('10-K')?'10-K':'10-Q'}</span>`
       : '';
     const taskTrail = renderSignOffTrail(task._spId, false);
-    return `<tr>
+    return `<tr style="${isNA?'opacity:0.5;':''}">
       <td style="width:32px;padding:8px 6px"><input type="checkbox" class="bulk-check" data-spid="${task._spId}" onchange="updateBulkBar()" style="cursor:pointer;width:15px;height:15px" /></td>
       <td>
         <div class="task-name">${escHtml(task.name)}${appBadge}</div>
@@ -1522,10 +1529,11 @@ function renderSignOffTrail(refId, showAll) {
   const overflow = entries.length - visible.length;
   const rows = visible.map(e => {
     const icon = {
-      'Complete':     '✅',
+      'Complete':        '✅',
       'Ready for Review': '🔍',
-      'In Progress':  '▶️',
-      'Not Started':  '⏸',
+      'In Progress':     '▶️',
+      'Not Started':     '⏸',
+      'Not Applicable':  '⊘',
     }[e.toStatus] || '•';
     return `<div class="signoff-entry">
       <span class="signoff-icon">${icon}</span>
@@ -1547,14 +1555,16 @@ function toggleSignOffHistory(refId, el) {
 }
 
 // ── STATUS CYCLE ──────────────────────────────────────────────
-const STATUS_ORDER = ['Not Started','In Progress','Ready for Review','Complete'];
+const STATUS_ORDER = ['Not Started','In Progress','Ready for Review','Complete','Not Applicable'];
+// Cycle only moves through the first four — N/A is set manually
+const STATUS_CYCLE  = ['Not Started','In Progress','Ready for Review','Complete'];
 async function cycleStatus(spId) {
   const task = _tasks.find(t => t._spId === spId); if(!task) return;
   if (isQuarterLocked(task.quarter, task.year)) {
     alert(`Q${task.quarter} ${task.year} is locked and cannot be edited.`); return;
   }
   const prev = task.status;
-  const next = STATUS_ORDER[(STATUS_ORDER.indexOf(prev)+1) % STATUS_ORDER.length];
+  const next = STATUS_CYCLE[(STATUS_CYCLE.indexOf(prev)+1) % STATUS_CYCLE.length];
   task.status = next;
   await writeSignOff(spId, 'task', task.name, prev, next);
   renderCurrentView();
@@ -1598,9 +1608,10 @@ function renderStepsPanel() {
     return;
   }
 
-  const total = steps.length;
-  const done  = steps.filter(s => s.status === 'Complete').length;
-  const pct   = Math.round(done/total*100);
+  const activeSteps = steps.filter(s => s.status !== 'Not Applicable');
+  const total = activeSteps.length;
+  const done  = activeSteps.filter(s => s.status === 'Complete').length;
+  const pct   = total ? Math.round(done/total*100) : 0;
 
   list.innerHTML = `
     <div class="steps-progress-header">
@@ -1674,7 +1685,7 @@ function getBlockingPredecessor(step) {
 async function cycleStepStatus(stepSpId) {
   const step = _steps.find(s => s._spId === stepSpId); if(!step) return;
   const prev = step.status;
-  const next = STATUS_ORDER[(STATUS_ORDER.indexOf(prev)+1) % STATUS_ORDER.length];
+  const next = STATUS_CYCLE[(STATUS_CYCLE.indexOf(prev)+1) % STATUS_CYCLE.length];
 
   // Only check gate when advancing forward (not cycling back to Not Started)
   const movingForward = STATUS_ORDER.indexOf(next) > STATUS_ORDER.indexOf(prev);
@@ -1990,9 +2001,10 @@ function renderTeam() {
   grid.innerHTML=getUsers().map(user=>{
     const uid=user.id||user._spId;
     const myTasks=getTasks().filter(t=>t.ownerId===uid);
-    const complete=myTasks.filter(t=>t.status==='Complete').length;
-    const overdue=myTasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length;
-    const pct=myTasks.length?Math.round(complete/myTasks.length*100):0;
+    const activeMyTasks=myTasks.filter(t=>t.status!=='Not Applicable');
+    const complete=activeMyTasks.filter(t=>t.status==='Complete').length;
+    const overdue=activeMyTasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length;
+    const pct=activeMyTasks.length?Math.round(complete/activeMyTasks.length*100):0;
     const taskList=myTasks.slice(0,4).map(t=>{
       const ds=deadlineStatus(t.dueDate,t.status);
       return `<div class="team-task-item">
@@ -2405,12 +2417,12 @@ function renderMyTasks() {
   if (titleEl) titleEl.textContent = `My Tasks — ${currentUser.name.split(' ')[0]}`;
 
   let myTasks = getTasks().filter(t => t.ownerId === uid);
-  if (filter === 'open')     myTasks = myTasks.filter(t => t.status !== 'Complete');
+  if (filter === 'open')     myTasks = myTasks.filter(t => t.status !== 'Complete' && t.status !== 'Not Applicable');
   if (filter === 'Complete') myTasks = myTasks.filter(t => t.status === 'Complete');
 
   // Also include steps assigned to me across all tasks
   let mySteps = _steps.filter(s => s.ownerId === uid);
-  if (filter === 'open')     mySteps = mySteps.filter(s => s.status !== 'Complete');
+  if (filter === 'open')     mySteps = mySteps.filter(s => s.status !== 'Complete' && s.status !== 'Not Applicable');
   if (filter === 'Complete') mySteps = mySteps.filter(s => s.status === 'Complete');
 
   const container = document.getElementById('mytasks-content');
@@ -2530,7 +2542,7 @@ function renderKanban() {
   const board = document.getElementById('kanban-board');
   if (!board) return;
 
-  const cols = STATUS_ORDER.map(status => {
+  const cols = STATUS_CYCLE.map(status => {
     const colTasks = tasks.filter(t => t.status === status);
     const cards    = colTasks.map(task => {
       const owner    = getUserById(task.ownerId);
@@ -2618,11 +2630,14 @@ function renderReport() {
   if (!el) return;
 
   const total    = tasks.length;
-  const complete = tasks.filter(t=>t.status==='Complete').length;
+  const activeTasks2 = tasks.filter(t=>t.status!=='Not Applicable');
+  const naCount2   = tasks.filter(t=>t.status==='Not Applicable').length;
+  const complete   = activeTasks2.filter(t=>t.status==='Complete').length;
   const review   = tasks.filter(t=>t.status==='Ready for Review').length;
   const inprog   = tasks.filter(t=>t.status==='In Progress').length;
   const notstart = tasks.filter(t=>t.status==='Not Started').length;
   const overdue  = tasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length;
+  const total    = activeTasks2.length;
   const pct      = total ? Math.round(complete/total*100) : 0;
 
   const byType   = {};
@@ -2656,7 +2671,7 @@ function renderReport() {
     </div>
 
     <div class="report-stat-row">
-      <div class="report-stat"><div class="report-stat-val">${total}</div><div class="report-stat-lbl">Total Deliverables</div></div>
+      <div class="report-stat"><div class="report-stat-val">${total}</div><div class="report-stat-lbl">Active Deliverables</div></div>
       <div class="report-stat complete"><div class="report-stat-val">${complete}</div><div class="report-stat-lbl">Complete</div></div>
       <div class="report-stat review"><div class="report-stat-val">${review}</div><div class="report-stat-lbl">Ready for Review</div></div>
       <div class="report-stat progress"><div class="report-stat-val">${inprog}</div><div class="report-stat-lbl">In Progress</div></div>
