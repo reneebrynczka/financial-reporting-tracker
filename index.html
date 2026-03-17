@@ -472,7 +472,13 @@
 </div>
 
 <!-- Microsoft Authentication Library (MSAL) -->
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
+<script>
+  // Fallback: if jsdelivr is blocked, try unpkg
+  if (typeof msal === 'undefined') {
+    document.write('<script src="https://unpkg.com/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"><\/script>');
+  }
+</script>
 <script src="app.js"></script>
 </body>
 </html>
