@@ -1,37 +1,21 @@
 /* ============================================================
    FINANCIAL REPORTING TRACKER — app.js
-   Hosted on:  GitHub Pages (public URL, easy to update)
-   Database:   SharePoint Lists inside your Microsoft 365 tenant
-   Auth:       Microsoft 365 company login + PIN
-   
-   Nothing sensitive is stored in GitHub. All task data, users,
-   and comments live entirely within your company's SharePoint.
-   The GitHub site simply reads/writes to SharePoint via the
-   Microsoft Graph API using your company login.
-
-   SETUP: Fill in the CONFIG block below.
-   See SHAREPOINT-SETUP-GUIDE.md for step-by-step instructions.
+   Hosted on:  GitHub Pages
+   Database:   SharePoint Lists (Microsoft 365)
+   Auth:       Microsoft SSO (Sites.ReadWrite.All) + PIN
    ============================================================ */
 
-// ── CONFIG — FILL THESE IN ────────────────────────────────────
+// ── CONFIG ────────────────────────────────────────────────────
 const CONFIG = {
-  // From Azure App Registration (see setup guide Step 2)
-  clientId:   "bb00291f-d451-4e74-b8cf-10c334efb0ed",
-
-  // Your company's tenant ID (see setup guide Step 2)
-  tenantId:   "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",
-
-  // The full URL of your SharePoint site
-  siteUrl:    "https://moodys.sharepoint.com/sites/finance_home_finrptg",
-
-  spHost:     "moodys.sharepoint.com",
-
-  sitePath:   "/sites/finance_home_finrptg",
+  clientId:  "bb00291f-d451-4e74-b8cf-10c334efb0ed",   // from Azure AD
+  tenantId:  "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",        // from Azure AD
+  siteUrl:   "https://moodys.sharepoint.com/sites/finance_home_finrptg",
+  spHost:    "moodys.sharepoint.com",
+  sitePath:  "/sites/finance_home_finrptg",
 };
 // ─────────────────────────────────────────────────────────────
 
 // ── MSAL (Microsoft Authentication Library) ───────────────────
-// Loaded via CDN in index.html
 const msalConfig = {
   auth: {
     clientId:  CONFIG.clientId,
@@ -39,26 +23,21 @@ const msalConfig = {
     redirectUri: window.location.origin + window.location.pathname,
   },
   cache: {
-    cacheLocation: "localStorage",       // localStorage avoids Edge tracking prevention
-    storeAuthStateInCookie: true,        // fallback for browsers blocking localStorage
+    cacheLocation: "localStorage",
+    storeAuthStateInCookie: true,
   },
-  system: {
-    allowNativeBroker: false,            // avoids redirect loop on some corporate configs
-  }
+  system: { allowNativeBroker: false }
 };
 
 const msalInstance = new msal.PublicClientApplication(msalConfig);
-
-// MSAL v2 — no initialize() needed, instance is ready immediately
-const _msalReady = Promise.resolve();
+const _msalReady   = Promise.resolve();
 
 const GRAPH_SCOPES = [
   "User.Read",
   "Sites.ReadWrite.All",
 ];
 
-let graphToken = null;
-let spSiteId   = null;   // resolved after login
+let spSiteId = null;
 
 // ── GRAPH API HELPERS ─────────────────────────────────────────
 async function getToken() {
@@ -179,8 +158,8 @@ function getStepTemplatesForTemplate(templateId) {
 // the same shape the rest of the app expects.
 function normaliseTask(f) {
   return {
-    _spId:       f.id || f.ID,          // SharePoint item ID for updates
-    id:          f.TaskId  || f.id || f.ID,
+    _spId:       f.id || f.ID || '',   // SharePoint item ID for updates
+    id:          f.TaskId  || f.id || f.ID || '',
     name:        f.Title   || f.TaskName || '',
     type:        f.TaskType || '',
     quarter:     f.Quarter  || '',
@@ -195,8 +174,8 @@ function normaliseTask(f) {
 }
 function normaliseUser(f) {
   return {
-    _spId:   f.id || f.ID,
-    id:      f.UserId   || f.id || f.ID,
+    _spId:   f.id || f.ID || '',
+    id:      f.UserId   || f.id || f.ID || '',
     name:    f.Title    || f.FullName || '',
     role:    f.JobRole  || '',
     pin:     f.PIN      || '0000',
@@ -205,7 +184,7 @@ function normaliseUser(f) {
 }
 function normaliseTemplate(f) {
   return {
-    _spId:              f.id || f.ID,
+    _spId:              f.id || f.ID || '',
     id:                 f.TemplateId || f.id || f.ID,
     name:               f.Title || '',
     type:               f.TaskType || '',
@@ -215,7 +194,7 @@ function normaliseTemplate(f) {
 }
 function normaliseComment(f) {
   return {
-    _spId:    f.id || f.ID,
+    _spId:    f.id || f.ID || '',
     id:       f.CommentId || f.id || f.ID,
     taskId:   f.TaskId    || '',
     authorId: f.AuthorId  || '',
@@ -226,7 +205,7 @@ function normaliseComment(f) {
 }
 function normaliseSignOff(f) {
   return {
-    _spId:      f.id || f.ID,
+    _spId:      f.id || f.ID || '',
     id:         f.SignOffId   || f.id || f.ID,
     refId:      f.RefId       || '',   // _spId of the task or step
     refType:    f.RefType     || '',   // "task" | "step"
@@ -241,7 +220,7 @@ function normaliseSignOff(f) {
 }
 function normaliseLock(f) {
   return {
-    _spId:   f.id || f.ID,
+    _spId:   f.id || f.ID || '',
     id:      f.LockId  || f.id || f.ID,
     quarter: f.Quarter || '',
     year:    parseInt(f.Year) || 0,
@@ -251,7 +230,7 @@ function normaliseLock(f) {
 }
 function normaliseAttachment(f) {
   return {
-    _spId:      f.id || f.ID,
+    _spId:      f.id || f.ID || '',
     id:         f.AttachmentId || f.id || f.ID,
     stepId:     f.StepId       || '',
     taskId:     f.TaskId       || '',
@@ -263,7 +242,7 @@ function normaliseAttachment(f) {
 }
 function normaliseStep(f) {
   return {
-    _spId:   f.id || f.ID,
+    _spId:   f.id || f.ID || '',
     id:      f.StepId    || f.id || f.ID,
     taskId:  f.TaskId    || '',
     name:    f.Title     || '',
@@ -279,7 +258,7 @@ function normaliseStep(f) {
 }
 function normaliseStepTemplate(f) {
   return {
-    _spId:      f.id || f.ID,
+    _spId:      f.id || f.ID || '',
     id:         f.StepTemplateId || f.id || f.ID,
     templateId: f.TemplateId     || '',
     name:       f.Title          || '',
@@ -948,26 +927,17 @@ async function afterMicrosoftLogin() {
   if (!accounts.length) return;
   const msAccount = accounts[0];
 
-  // Load SharePoint data
   await loadAllData();
 
-  // Match Microsoft account email to a FT_Users record
   const email = msAccount.username?.toLowerCase() || '';
   let user = _users.find(u => (u.email||'').toLowerCase() === email);
 
-  // If no match, show PIN login against the loaded users list
-  if (!user) {
-    // Fall back: show user selector + PIN (for first-time / unmatched accounts)
-    populateUserSelect();
-    document.getElementById('ms-login-row').classList.add('hidden');
-    document.getElementById('pin-login-row').classList.remove('hidden');
-    return;
+  populateUserSelect();
+
+  if (user) {
+    document.getElementById('login-user-select').value = user._spId || user.id;
   }
 
-  // Ask for PIN to confirm identity
-  sessionStorage.setItem('ft_pending_user', user.id);
-  populateUserSelect();
-  document.getElementById('login-user-select').value = user._spId || user.id;
   document.getElementById('ms-login-row').classList.add('hidden');
   document.getElementById('pin-login-row').classList.remove('hidden');
 }
@@ -1001,6 +971,7 @@ function logout() {
   sessionStorage.removeItem('ft_pending_user');
   stopCommentPolling();
   if (_pollTimer) clearInterval(_pollTimer);
+  msalInstance.logoutPopup().catch(()=>{});
   document.getElementById('app-screen').classList.remove('active');
   document.getElementById('login-screen').classList.add('active');
   document.getElementById('ms-login-row').classList.remove('hidden');
@@ -2383,16 +2354,12 @@ function renderCurrentView() {
 
 // ── INIT ──────────────────────────────────────────────────────
 (function init() {
-  // Handle MSAL redirect (if using redirect flow instead of popup)
   msalInstance.handleRedirectPromise().catch(console.error);
 
-  // Check for existing Microsoft session
   const accounts = msalInstance.getAllAccounts();
   if (accounts.length > 0) {
-    // Already signed in with Microsoft — load data and go to PIN screen
     loadAllData().then(() => {
       populateUserSelect();
-      // Try to restore session
       const savedId = sessionStorage.getItem('ft_session');
       if (savedId) {
         const user = _users.find(u => (u._spId||u.id) === savedId);
