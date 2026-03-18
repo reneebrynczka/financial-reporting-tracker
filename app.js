@@ -12,8 +12,8 @@
 // ── CONFIG ────────────────────────────────────────────────────
 const CONFIG = {
   // Azure AD — User.Read only, no admin consent needed
-  clientId:  "REPLACE_WITH_YOUR_APP_CLIENT_ID",
-  tenantId:  "REPLACE_WITH_YOUR_TENANT_ID",
+  clientId:  "bb00291f-d451-4e74-b8cf-10c334efb0ed",
+  tenantId:  "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",
 
   // Power Automate flow URLs — paste each after creating in flow.microsoft.com
   flows: {
