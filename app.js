@@ -1,21 +1,31 @@
 /* ============================================================
    FINANCIAL REPORTING TRACKER — app.js
    Hosted on:  GitHub Pages
-   Database:   SharePoint Lists (Microsoft 365)
-   Auth:       Microsoft SSO (Sites.ReadWrite.All) + PIN
+   Database:   SharePoint Lists via Power Automate Flows
+   Auth:       Microsoft SSO (User.Read only — no admin consent) + PIN
+
+   Data operations route through Power Automate HTTP flows
+   running inside the Moodys M365 tenant. No Sites.ReadWrite.All
+   permission needed. User.Read handles identity only.
    ============================================================ */
 
 // ── CONFIG ────────────────────────────────────────────────────
 const CONFIG = {
-  clientId:  "bb00291f-d451-4e74-b8cf-10c334efb0ed",   // from Azure AD
-  tenantId:  "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",        // from Azure AD
-  siteUrl:   "https://moodys.sharepoint.com/sites/finance_home_finrptg",
-  spHost:    "moodys.sharepoint.com",
-  sitePath:  "/sites/finance_home_finrptg",
+  // Azure AD — User.Read only, no admin consent needed
+  clientId:  "REPLACE_WITH_YOUR_APP_CLIENT_ID",
+  tenantId:  "REPLACE_WITH_YOUR_TENANT_ID",
+
+  // Power Automate flow URLs — paste each after creating in flow.microsoft.com
+  flows: {
+    getItems:   "https://default1061a8b8b1ee4249bb849a2cd2792f.ae.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/7e9e722c97e94f4dbe06ddffc20af421/triggers/manual/paths/invoke?api-version=1",
+    createItem: "https://default1061a8b8b1ee4249bb849a2cd2792f.ae.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/c4ccc22635ba4da191a19042a278ab74/triggers/manual/paths/invoke?api-version=1",
+    updateItem: "https://default1061a8b8b1ee4249bb849a2cd2792f.ae.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/4e29b81a714a4bd684bd660c04bf8fc8/triggers/manual/paths/invoke?api-version=1",
+    deleteItem: "https://default1061a8b8b1ee4249bb849a2cd2792f.ae.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/1559f122bf474ecab813533ab3d27545/triggers/manual/paths/invoke?api-version=1",
+  }
 };
 // ─────────────────────────────────────────────────────────────
 
-// ── MSAL (Microsoft Authentication Library) ───────────────────
+// ── MSAL — User.Read only ─────────────────────────────────────
 const msalConfig = {
   auth: {
     clientId:  CONFIG.clientId,
@@ -32,15 +42,10 @@ const msalConfig = {
 const msalInstance = new msal.PublicClientApplication(msalConfig);
 const _msalReady   = Promise.resolve();
 
-const GRAPH_SCOPES = [
-  "User.Read",
-  "Sites.ReadWrite.All",
-];
+const GRAPH_SCOPES = ["User.Read"];
 
-let spSiteId = null;
-
-// ── GRAPH API HELPERS ─────────────────────────────────────────
-async function getToken() {
+// ── USER IDENTITY ─────────────────────────────────────────────
+async function getUserToken() {
   const accounts = msalInstance.getAllAccounts();
   if (!accounts.length) throw new Error("Not authenticated");
   try {
@@ -54,64 +59,44 @@ async function getToken() {
   }
 }
 
-async function graphRequest(method, path, body) {
-  const token = await getToken();
-  const opts = {
-    method,
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type":  "application/json",
-      "Accept":        "application/json",
-    },
-  };
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, opts);
+// ── POWER AUTOMATE FLOW HELPERS ───────────────────────────────
+async function callFlow(url, body) {
+  if (!url || url.startsWith("REPLACE_")) {
+    throw new Error("Power Automate flow URL not configured — paste your flow URLs into the CONFIG block at the top of app.js.");
+  }
+  const res = await fetch(url, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(body),
+  });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Graph API error ${res.status}: ${err}`);
+    throw new Error(`Flow error ${res.status}: ${err.slice(0, 200)}`);
   }
-  if (res.status === 204) return null;
-  return res.json();
+  if (res.status === 202) return null;
+  const text = await res.text();
+  if (!text) return null;
+  return JSON.parse(text);
 }
 
-// ── RESOLVE SHAREPOINT SITE ID ────────────────────────────────
-async function resolveSiteId() {
-  if (spSiteId) return spSiteId;
-  const data = await graphRequest("GET",
-    `/sites/${CONFIG.spHost}:${CONFIG.sitePath}`);
-  spSiteId = data.id;
-  return spSiteId;
-}
-
-// ── LIST HELPERS ──────────────────────────────────────────────
+// ── LIST HELPERS (via Power Automate) ─────────────────────────
 async function getListItems(listName) {
-  const siteId = await resolveSiteId();
-  const data   = await graphRequest("GET",
-    `/sites/${siteId}/lists/${listName}/items?expand=fields&$top=500`);
-  return (data.value || []).map(i => i.fields);
+  const data = await callFlow(CONFIG.flows.getItems, { listName });
+  return data?.items || [];
 }
 
 async function createListItem(listName, fields) {
-  const siteId = await resolveSiteId();
-  const data   = await graphRequest("POST",
-    `/sites/${siteId}/lists/${listName}/items`,
-    { fields });
-  return data.fields;
+  const data = await callFlow(CONFIG.flows.createItem, { listName, fields });
+  return data || {};
 }
 
 async function updateListItem(listName, itemId, fields) {
-  const siteId = await resolveSiteId();
-  await graphRequest("PATCH",
-    `/sites/${siteId}/lists/${listName}/items/${itemId}/fields`,
-    fields);
+  await callFlow(CONFIG.flows.updateItem, { listName, itemId: String(itemId), fields });
 }
 
 async function deleteListItem(listName, itemId) {
-  const siteId = await resolveSiteId();
-  await graphRequest("DELETE",
-    `/sites/${siteId}/lists/${listName}/items/${itemId}`);
+  await callFlow(CONFIG.flows.deleteItem, { listName, itemId: String(itemId) });
 }
-
 // ── LIST NAMES ───────────────────────────────────────────────
 const LISTS = {
   tasks:         "FT_Tasks",
