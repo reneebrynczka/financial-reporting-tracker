@@ -2,7 +2,8 @@
    FINANCIAL REPORTING TRACKER — app.js
    Hosted on:  GitHub Pages
    Database:   SharePoint Lists via Power Automate Flows
-   Auth:       Microsoft SSO (User.Read only — no admin consent) + PIN
+   Auth:       Microsoft SSO (User.Read only — no admin consent)
+   Admin:      IsAdmin = Yes in FT_Users
 
    Data operations route through Power Automate HTTP flows
    running inside the Moodys M365 tenant. No Sites.ReadWrite.All
@@ -33,8 +34,8 @@ const msalConfig = {
     redirectUri: window.location.origin + window.location.pathname,
   },
   cache: {
-    cacheLocation: "localStorage",
-    storeAuthStateInCookie: true,
+    cacheLocation: "sessionStorage",
+    storeAuthStateInCookie: true,  // avoids Edge tracking prevention
   },
   system: { allowNativeBroker: false }
 };
@@ -912,55 +913,40 @@ async function afterMicrosoftLogin() {
   if (!accounts.length) return;
   const msAccount = accounts[0];
 
-  await loadAllData();
+  showLoadingOverlay(true);
+  try {
+    await loadAllData();
 
-  const email = msAccount.username?.toLowerCase() || '';
-  let user = _users.find(u => (u.email||'').toLowerCase() === email);
+    const email = msAccount.username?.toLowerCase() || '';
+    const user  = _users.find(u => (u.email||'').toLowerCase() === email);
 
-  populateUserSelect();
+    if (!user) {
+      showError(`Your Microsoft account (${msAccount.username}) was not found in FT_Users. Ask your admin to add your email address to the FT_Users list.`);
+      showLoadingOverlay(false);
+      return;
+    }
 
-  if (user) {
-    document.getElementById('login-user-select').value = user._spId || user.id;
+    // Log straight in — no PIN needed
+    currentUser = user;
+    sessionStorage.setItem('ft_session', user._spId || user.id);
+    launchApp();
+  } catch(e) {
+    showError('Could not load data: ' + e.message);
+  } finally {
+    showLoadingOverlay(false);
   }
-
-  document.getElementById('ms-login-row').classList.add('hidden');
-  document.getElementById('pin-login-row').classList.remove('hidden');
 }
 
-function populateUserSelect() {
-  const sel = document.getElementById('login-user-select');
-  sel.innerHTML = '<option value="">— Choose team member —</option>';
-  _users.sort((a,b) => a.name.localeCompare(b.name)).forEach(u => {
-    const opt = document.createElement('option');
-    opt.value = u._spId || u.id;
-    opt.textContent = u.name;
-    sel.appendChild(opt);
-  });
-}
-
-function login() {
-  const selVal = document.getElementById('login-user-select').value;
-  const pin    = document.getElementById('login-pin').value;
-  const errEl  = document.getElementById('login-error');
-  const user   = _users.find(u => (u._spId||u.id) === selVal && u.pin === pin);
-  if (!user) { errEl.classList.remove('hidden'); return; }
-  errEl.classList.add('hidden');
-  currentUser = user;
-  sessionStorage.setItem('ft_session', user._spId || user.id);
-  launchApp();
-}
+// PIN login removed — Microsoft login handles identity directly
 
 function logout() {
   currentUser = null;
   sessionStorage.removeItem('ft_session');
-  sessionStorage.removeItem('ft_pending_user');
   stopCommentPolling();
   if (_pollTimer) clearInterval(_pollTimer);
   msalInstance.logoutPopup().catch(()=>{});
   document.getElementById('app-screen').classList.remove('active');
   document.getElementById('login-screen').classList.add('active');
-  document.getElementById('ms-login-row').classList.remove('hidden');
-  document.getElementById('pin-login-row').classList.add('hidden');
 }
 
 function launchApp() {
@@ -2236,8 +2222,7 @@ function showUserModal(user) {
       <input type="text" id="uf-role" value="${escHtml(user?.role||'')}" /></div>
     <div class="form-group"><label>Work Email (for auto-login matching)</label>
       <input type="email" id="uf-email" value="${escHtml(user?.email||'')}" placeholder="name@company.com" /></div>
-    <div class="form-group"><label>PIN (4 digits)</label>
-      <input type="password" id="uf-pin" maxlength="4" value="${user?.pin||''}" placeholder="····" /></div>
+
     <div class="form-group"><label>Access Level</label>
       <select id="uf-admin">
         <option value="false" ${!user?.isAdmin?'selected':''}>Member</option>
@@ -2253,12 +2238,12 @@ async function saveUser(existingSpId) {
   const name=document.getElementById('uf-name').value.trim();
   const role=document.getElementById('uf-role').value.trim();
   const email=document.getElementById('uf-email').value.trim();
-  const pin=document.getElementById('uf-pin').value.trim();
+  const pin='0000'; // PIN removed — Microsoft login handles identity
   const isAdmin=document.getElementById('uf-admin').value==='true';
-  if(!name||pin.length!==4){alert('Please fill in all fields. PIN must be 4 digits.');return;}
+  if(!name){alert('Please fill in the name field.');return;}
   closeAllModals(); showLoadingOverlay(true);
   try {
-    const fields={ Title:name, FullName:name, JobRole:role, Email:email, PIN:pin, IsAdmin:isAdmin?'Yes':'No' };
+    const fields={ Title:name, FullName:name, JobRole:role, Email:email, PIN:'0000', IsAdmin:isAdmin?'Yes':'No' };
     if(existingSpId) { await updateListItem(LISTS.users, existingSpId, fields); }
     else             { fields.UserId=uid(); await createListItem(LISTS.users, fields); }
     await refreshData();
@@ -2343,21 +2328,18 @@ function renderCurrentView() {
 
   const accounts = msalInstance.getAllAccounts();
   if (accounts.length > 0) {
-    loadAllData().then(() => {
-      populateUserSelect();
-      const savedId = sessionStorage.getItem('ft_session');
-      if (savedId) {
+    // Already signed in with Microsoft — restore session or re-identify
+    const savedId = sessionStorage.getItem('ft_session');
+    if (savedId) {
+      loadAllData().then(() => {
         const user = _users.find(u => (u._spId||u.id) === savedId);
-        if (user) { currentUser = user; launchApp(); return; }
-      }
-      document.getElementById('ms-login-row').classList.add('hidden');
-      document.getElementById('pin-login-row').classList.remove('hidden');
-    });
+        if (user) { currentUser = user; launchApp(); }
+        else { afterMicrosoftLogin(); } // session expired
+      });
+    } else {
+      afterMicrosoftLogin(); // signed in but no session — identify and launch
+    }
   }
-
-  document.getElementById('login-pin').addEventListener('keydown', e => {
-    if(e.key === 'Enter') login();
-  });
 })();
 
 // ═══════════════════════════════════════════════════════════════
