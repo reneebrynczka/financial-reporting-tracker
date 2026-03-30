@@ -14,7 +14,7 @@
 // ── CONFIG ────────────────────────────────────────────────────
 const CONFIG = {
   // Azure AD — requires User.Read + Sites.ReadWrite.All
-  clientId:  "e8700cac-b4e2-427a-9c06-9d1ee8aa6f04",
+  clientId:  "bb00291f-d451-4e74-b8cf-10c334efb0ed",
   tenantId:  "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",
 
   // SharePoint site URL — e.g. https://moodys.sharepoint.com/sites/FinancialReporting
@@ -663,8 +663,8 @@ function renderCloseCalendarsPanel() {
   if (!el) return;
   const cur  = new Date().getFullYear();
   const rows = [];
-  // Show 4 years back and 1 forward to match populateYearSelects range
-  for (let yr = cur - 3; yr <= cur + 1; yr++) {
+  // Show last year, current year, next year — enough history without clutter
+  for (let yr = cur - 1; yr <= cur + 1; yr++) {
     for (const q of ['Q1','Q2','Q3','Q4']) {
       const cal = loadCloseCalendar(q, yr);
       rows.push({ q, yr, cal });
