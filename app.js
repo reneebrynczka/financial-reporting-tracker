@@ -14,7 +14,7 @@
 // ── CONFIG ────────────────────────────────────────────────────
 const CONFIG = {
   // Azure AD — requires User.Read + Sites.ReadWrite.All
-  clientId:  "bb00291f-d451-4e74-b8cf-10c334efb0ed",
+  clientId:  "e8700cac-b4e2-427a-9c06-9d1ee8aa6f04",
   tenantId:  "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",
 
   // SharePoint site URL — e.g. https://moodys.sharepoint.com/sites/FinancialReporting
