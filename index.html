@@ -5,19 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Financial Reporting Tracker</title>
   <link rel="stylesheet" href="style.css" />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Lora:wght@600;700&display=swap" rel="stylesheet"/>
+  <!-- Favicon — FRT monogram -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230A1264'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='central' text-anchor='middle' font-family='DM Sans,Arial,sans-serif' font-size='11' font-weight='700' fill='white' letter-spacing='0.5'%3EFRT%3C/text%3E%3C/svg%3E" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Lora:wght@600;700&display=swap" rel="stylesheet"/>
 </head>
 <body>
 
 <!-- LOGIN SCREEN -->
 <div id="login-screen" class="screen active">
-  <div class="login-bg"></div>
   <div class="login-card">
     <div class="login-logo">
-      <span class="logo-icon">◈</span>
+      <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;border-radius:5px">
+          <rect width="32" height="32" rx="5" fill="#0A1264"/>
+          <text x="50%" y="52%" dominant-baseline="central" text-anchor="middle" font-family="DM Sans,Arial,sans-serif" font-size="10.5" font-weight="700" fill="white" letter-spacing="0.5">FRT</text>
+        </svg>
       <span class="logo-text">Financial Reporting Tracker</span>
     </div>
     <h1 class="login-title">Welcome back</h1>
+    <p id="login-quarter-context" class="login-quarter-context"></p>
     <p class="login-sub">Financial Reporting Project Management</p>
 
     <!-- Microsoft Sign-In — goes straight to dashboard on success -->
@@ -36,16 +41,26 @@
 <!-- MAIN APP -->
 <div id="app-screen" class="screen">
 
+  <!-- Mobile sidebar toggle (shown at ≤900px) -->
+  <button id="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle menu">☰</button>
+  <div id="sidebar-backdrop" onclick="closeSidebar()"></div>
+
   <!-- SIDEBAR -->
   <nav class="sidebar">
     <div class="sidebar-logo">
-      <span class="logo-icon">◈</span>
+      <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;border-radius:5px">
+          <rect width="32" height="32" rx="5" fill="#0A1264"/>
+          <text x="50%" y="52%" dominant-baseline="central" text-anchor="middle" font-family="DM Sans,Arial,sans-serif" font-size="10.5" font-weight="700" fill="white" letter-spacing="0.5">FRT</text>
+        </svg>
       <span class="logo-text">Financial Reporting Tracker</span>
     </div>
     <div class="sidebar-user" id="sidebar-user-info"></div>
     <ul class="sidebar-nav">
       <li class="nav-item active" data-view="dashboard" onclick="switchView('dashboard', this)">
         <span class="nav-icon">⬡</span> Dashboard
+      </li>
+      <li class="nav-item" data-view="mytasks" onclick="switchView('mytasks', this)">
+        <span class="nav-icon">★</span> My Tasks
       </li>
       <li class="nav-item" data-view="tasks" onclick="switchView('tasks', this)">
         <span class="nav-icon">☑</span> All Tasks
@@ -56,21 +71,27 @@
       <li class="nav-item" data-view="team" onclick="switchView('team', this)">
         <span class="nav-icon">◎</span> Team
       </li>
-      <li class="nav-item" data-view="mytasks" onclick="switchView('mytasks', this)">
-        <span class="nav-icon">★</span> My Tasks
-      </li>
       <li class="nav-item" data-view="kanban" onclick="switchView('kanban', this)">
         <span class="nav-icon">▦</span> Kanban
       </li>
       <li class="nav-item" data-view="report" onclick="switchView('report', this)">
         <span class="nav-icon">◉</span> Report
       </li>
+      <li class="nav-item" data-view="exec" onclick="switchView('exec', this)">
+        <span class="nav-icon">📊</span> Exec View
+      </li>
       <li class="nav-item admin-only hidden" data-view="admin" onclick="switchView('admin', this)">
         <span class="nav-icon">⚙</span> Admin
       </li>
     </ul>
     <div class="sidebar-footer">
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <button id="search-btn" class="sidebar-action-btn" onclick="openGlobalSearch()" title="Search (press /)">🔍 Search</button>
+        <button id="refresh-btn" class="sidebar-action-btn" onclick="manualRefresh()" title="Refresh all data">↺ Refresh</button>
+      </div>
+      <div id="refresh-stamp" style="font-size:10px;color:rgba(255,255,255,.3);text-align:center;margin-bottom:4px"></div>
       <button class="btn-logout" onclick="logout()">← Sign Out</button>
+      <div id="app-version" style="font-size:10px;color:rgba(255,255,255,.3);text-align:center;margin-top:6px">v2.0</div>
     </div>
   </nav>
 
@@ -92,6 +113,7 @@
             <option value="Q4">Q4 (Oct–Dec)</option>
           </select>
           <select id="year-filter" class="filter-select" onchange="renderDashboard()"></select>
+          <button class="btn-secondary small" id="compact-toggle" onclick="toggleCompactMode()" title="Toggle compact rows">⊟ Compact</button>
         </div>
       </div>
 
@@ -100,7 +122,7 @@
         <button class="qfilter active" data-filter="all" onclick="setQuickFilter('all', this)">All</button>
         <button class="qfilter" data-filter="overdue" onclick="setQuickFilter('overdue', this)">🔴 Overdue</button>
         <button class="qfilter" data-filter="this-week" onclick="setQuickFilter('this-week', this)">📅 Due This Week</button>
-        <button class="qfilter" data-filter="mine" onclick="setQuickFilter('mine', this)">👤 My Tasks</button>
+        <button class="qfilter-link" onclick="switchView('mytasks', document.querySelector('[data-view=\"mytasks\"]'))">★ My Tasks →</button>
         <select id="type-filter" class="filter-select qfilter-select" onchange="setTypeFilter(this.value)">
           <option value="all">All Report Types</option>
           <option value="Close">Close</option>
@@ -114,32 +136,54 @@
         </select>
       </div>
 
+      <!-- SAVED FILTERS — collapsible -->
+      <details id="saved-filters-details" style="margin-bottom:10px">
+        <summary style="font-size:11px;color:var(--text-faint);font-weight:600;cursor:pointer;user-select:none;list-style:none;display:flex;align-items:center;gap:5px;width:fit-content">
+          <span id="saved-filters-summary-label">☆ Saved filters</span>
+        </summary>
+        <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+          <div id="saved-filters-bar" style="display:contents"></div>
+          <button class="btn-secondary small" onclick="saveCurrentFilter()" style="font-size:11px;padding:4px 10px">+ Save current</button>
+        </div>
+      </details>
+
       <!-- LOCK BANNER -->
       <div id="lock-banner" class="lock-banner hidden"></div>
+
+      <!-- FEATURE 1 — PRIORITY CARD -->
+      <div id="priority-card" class="priority-card hidden">
+        <div class="priority-card-header">
+          <span class="priority-card-title">⚡ Needs Your Attention</span>
+          <button class="priority-toggle" onclick="togglePriorityCard()" id="priority-toggle-btn">▾ Hide</button>
+        </div>
+        <div id="priority-card-body"></div>
+      </div>
 
       <!-- STAT CARDS -->
       <div class="stat-grid" id="stat-grid"></div>
 
-      <!-- TASK TABLE -->
+      <!-- FEATURE 2 — KEY DATES STRIP -->
+      <div id="deadline-strip" class="deadline-strip"></div>
       <div class="card mt-24">
         <div class="card-header">
           <h3 class="card-title">Deliverables</h3>
           <button class="btn-primary small" onclick="openAddTask()">+ Add Task</button>
+          <button class="icon-btn" onclick="enterChecklistMode()" title="Checklist mode — step through incomplete tasks one by one" style="font-size:14px;width:30px;height:30px">☑</button>
         </div>
         <div id="bulk-bar" class="bulk-bar hidden">
             <span id="bulk-count-label">0 tasks selected</span>
             <button class="btn-primary small" onclick="openBulkEdit()">✏️ Bulk Edit</button>
             <button class="btn-secondary" style="font-size:12px;padding:5px 12px" onclick="document.querySelectorAll('.bulk-check').forEach(c=>c.checked=false);updateBulkBar()">Clear</button>
           </div>
-        <table class="task-table" id="dashboard-task-table">
+        <table class="task-table">
           <thead>
             <tr>
               <th style="width:32px"><input type="checkbox" onchange="toggleBulkSelectAll(this,'dashboard-task-body')" style="cursor:pointer" /></th>
-              <th>Deliverable</th>
+              <th onclick="sortTaskTable('name')" style="cursor:pointer;user-select:none" title="Sort by name">Deliverable <span id="sort-ind-name" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
               <th>Type</th>
-              <th>Owner</th>
-              <th>Due Date</th>
-              <th>Status</th>
+              <th onclick="sortTaskTable('owner')" style="cursor:pointer;user-select:none" title="Sort by owner">Owner <span id="sort-ind-owner" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
+              <th onclick="sortTaskTable('due')" style="cursor:pointer;user-select:none" title="Sort by due date">Due Date <span id="sort-ind-due" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
+              <th onclick="sortTaskTable('status')" style="cursor:pointer;user-select:none" title="Sort by status">Status <span id="sort-ind-status" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -163,12 +207,22 @@
             <input type="text" id="task-search" placeholder="Search deliverables…" oninput="renderAllTasks()" />
           </div>
           <div class="filter-row">
+            <select id="all-quarter-filter" class="filter-select" onchange="renderAllTasks()">
+              <option value="all">All Quarters</option>
+              <option value="Q1">Q1</option>
+              <option value="Q2">Q2</option>
+              <option value="Q3">Q3</option>
+              <option value="Q4">Q4</option>
+            </select>
+            <select id="all-year-filter" class="filter-select" onchange="renderAllTasks()"></select>
             <select id="all-status-filter" class="filter-select" onchange="renderAllTasks()">
               <option value="all">All Statuses</option>
               <option value="Not Started">Not Started</option>
               <option value="In Progress">In Progress</option>
-              <option value="Ready for Review">Ready for Review</option>
+              <option value="Ready for Review 1">Ready for Review 1</option>
+              <option value="Ready for Review 2">Ready for Review 2</option>
               <option value="Complete">Complete</option>
+              <option value="Not Applicable">Not Applicable</option>
             </select>
             <select id="all-type-filter" class="filter-select" onchange="renderAllTasks()">
               <option value="all">All Types</option>
@@ -190,12 +244,12 @@
           <thead>
             <tr>
               <th style="width:32px"><input type="checkbox" onchange="toggleBulkSelectAll(this,'all-task-body')" style="cursor:pointer" /></th>
-              <th>Deliverable</th>
+              <th onclick="sortTaskTable('name')" style="cursor:pointer;user-select:none" title="Sort by name">Deliverable <span id="all-sort-ind-name" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
               <th>Type</th>
               <th>Quarter</th>
-              <th>Owner</th>
-              <th>Due Date</th>
-              <th>Status</th>
+              <th onclick="sortTaskTable('owner')" style="cursor:pointer;user-select:none" title="Sort by owner">Owner <span id="all-sort-ind-owner" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
+              <th onclick="sortTaskTable('due')" style="cursor:pointer;user-select:none" title="Sort by due date">Due Date <span id="all-sort-ind-due" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
+              <th onclick="sortTaskTable('status')" style="cursor:pointer;user-select:none" title="Sort by status">Status <span id="all-sort-ind-status" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -213,6 +267,7 @@
         </div>
         <div class="header-actions">
           <button class="btn-secondary" onclick="changeCalMonth(-1)">← Prev</button>
+          <button class="btn-secondary" onclick="jumpCalToToday()">Today</button>
           <button class="btn-secondary" onclick="changeCalMonth(1)">Next →</button>
         </div>
       </div>
@@ -226,7 +281,15 @@
       <div class="page-header">
         <div>
           <h2 class="page-title">Team</h2>
-          <p class="page-sub">Workload overview per team member</p>
+          <p class="page-sub">Workload overview per team member — prep and review assignments</p>
+        </div>
+        <div class="header-actions">
+          <select id="team-quarter" class="filter-select" onchange="toggleTeamYearVisibility();renderTeam()">
+            <option value="">All Quarters</option>
+            <option value="Q1">Q1</option><option value="Q2">Q2</option>
+            <option value="Q3">Q3</option><option value="Q4">Q4</option>
+          </select>
+          <select id="team-year" class="filter-select" onchange="renderTeam()"></select>
         </div>
       </div>
       <div id="team-grid" class="team-grid"></div>
@@ -240,6 +303,7 @@
           <p class="page-sub">Manage team members & quarterly templates</p>
         </div>
       </div>
+      <div id="admin-reassign-banner"></div>
       <div class="admin-grid">
         <!-- Team Members -->
         <div class="card">
@@ -266,41 +330,53 @@
             <button class="btn-primary small" onclick="applyTemplate()">Apply</button>
           </div>
         </div>
-        <!-- Rollforward -->
+        <!-- New Quarter Wizard — Feature 10 -->
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">🔄 Quarter Rollforward</h3>
+            <h3 class="card-title">🔄 Start New Quarter</h3>
           </div>
           <div style="padding:18px 22px">
-            <p style="font-size:13px;color:var(--gray-600);margin-bottom:16px">
-              Copies all applicable tasks &amp; steps to a new quarter with statuses reset to Not Started.
-              The source quarter is automatically locked when rollforward completes.
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
+              Guided setup for a new quarter — sets close calendar, key dates, previews tasks, and runs rollforward in one go.
             </p>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
-              <div class="form-group">
-                <label>From Quarter</label>
-                <select id="rf-from-quarter" class="filter-select" style="width:100%">
-                  <option value="Q1">Q1</option><option value="Q2">Q2</option>
-                  <option value="Q3">Q3</option><option value="Q4">Q4</option>
-                </select>
+            <button class="btn-primary" onclick="openQuarterWizard()">Start New Quarter →</button>
+            <p style="font-size:11px;color:var(--text-faint);margin-top:10px">The wizard walks through every step — you can review and deselect tasks before anything is copied.</p>
+          </div>
+          <!-- Manual rollforward backup -->
+          <div style="border-top:0.5px solid var(--border);padding:14px 22px">
+            <details>
+              <summary style="font-size:12px;font-weight:600;color:var(--gray-600);cursor:pointer;user-select:none">
+                ↳ Manual rollforward (advanced)
+              </summary>
+              <p style="font-size:12px;color:var(--gray-400);margin:10px 0">
+                Copies all applicable tasks and steps directly without the wizard. The source quarter is locked automatically on completion.
+              </p>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+                <div class="form-group">
+                  <label style="font-size:12px">From Quarter</label>
+                  <select id="rf-from-quarter" class="filter-select" style="width:100%">
+                    <option value="Q1">Q1</option><option value="Q2">Q2</option>
+                    <option value="Q3">Q3</option><option value="Q4">Q4</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label style="font-size:12px">From Year</label>
+                  <select id="rf-from-year" class="filter-select" style="width:100%"></select>
+                </div>
+                <div class="form-group">
+                  <label style="font-size:12px">To Quarter</label>
+                  <select id="rf-to-quarter" class="filter-select" style="width:100%">
+                    <option value="Q1">Q1</option><option value="Q2">Q2</option>
+                    <option value="Q3">Q3</option><option value="Q4">Q4</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label style="font-size:12px">To Year</label>
+                  <select id="rf-to-year" class="filter-select" style="width:100%"></select>
+                </div>
               </div>
-              <div class="form-group">
-                <label>From Year</label>
-                <select id="rf-from-year" class="filter-select" style="width:100%"></select>
-              </div>
-              <div class="form-group">
-                <label>To Quarter</label>
-                <select id="rf-to-quarter" class="filter-select" style="width:100%">
-                  <option value="Q1">Q1</option><option value="Q2">Q2</option>
-                  <option value="Q3">Q3</option><option value="Q4">Q4</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label>To Year</label>
-                <select id="rf-to-year" class="filter-select" style="width:100%"></select>
-              </div>
-            </div>
-            <button class="btn-primary" onclick="rollForward()">Roll Forward →</button>
+              <button class="btn-secondary small" onclick="rollForward()">Roll Forward →</button>
+            </details>
           </div>
         </div>
         <!-- Locked Quarters -->
@@ -310,12 +386,24 @@
           </div>
           <div id="admin-locks-list"></div>
         </div>
+
+        <!-- Quarter Key Dates — Feature 2 -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🗓 Quarter Key Dates</h3>
+            <button class="btn-primary small" onclick="openAddQuarterDate()">+ Add Quarter</button>
+          </div>
+          <p style="font-size:13px;color:var(--text-muted);padding:14px 22px 4px">
+            Set key external deadlines for each quarter. These appear as a countdown strip on the dashboard.
+          </p>
+          <div id="admin-quarter-dates-list"></div>
+        </div>
         <!-- Close Calendars -->
         <div class="card">
           <div class="card-header">
             <h3 class="card-title">📆 Close Calendars</h3>
           </div>
-          <p style="font-size:13px;color:var(--gray-600);padding:14px 22px 0">
+          <p style="font-size:13px;color:var(--text-muted);padding:14px 22px 0">
             Set Workday 1 for each quarter. All task and step due dates expressed
             as workday numbers will resolve to real calendar dates from this anchor.
           </p>
@@ -327,7 +415,7 @@
             <h3 class="card-title">📅 Working Day Holidays</h3>
           </div>
           <div style="padding:14px 22px 6px">
-            <p style="font-size:13px;color:var(--gray-600);margin-bottom:12px">
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
               US Federal &amp; NYSE holidays are built in automatically.
               Add any company-specific closures below — they will be respected
               when due dates are calculated during rollforward and template apply.
@@ -339,30 +427,98 @@
           </div>
           <div id="admin-holidays-list"></div>
           <div style="padding:10px 22px 14px">
-            <details style="font-size:12px;color:var(--gray-400)">
-              <summary style="cursor:pointer;font-weight:600;color:var(--gray-600)">Built-in holidays for this year</summary>
+            <details style="font-size:12px;color:var(--text-faint)">
+              <summary style="cursor:pointer;font-weight:600;color:var(--text-muted)">Built-in holidays for this year</summary>
               <div id="holiday-preview" style="margin-top:10px;line-height:2"></div>
             </details>
           </div>
         </div>
+        <!-- Feature 7 — Connection Health Check -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">🔌 Connection Health</h3>
+            <button class="btn-secondary small" onclick="runHealthCheck()">↺ Test Now</button>
+          </div>
+          <p style="font-size:13px;color:var(--gray-600);padding:12px 22px 4px">Tests your Azure AD credentials, Graph API access, SharePoint site connection, and each list.</p>
+          <div id="health-check-results" style="padding:0 22px 16px">
+            <p style="font-size:13px;color:var(--text-faint)">Click "Test Now" to run a connection check.</p>
+          </div>
+        </div>
+
+        <!-- Feature 9 — Data Import -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">📥 Import Data from Excel</h3>
+          </div>
+          <div style="padding:14px 22px">
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
+              Upload the Financial Reporting Tracker Import Template (.xlsx) to load tasks, steps, and users into SharePoint. A preview is shown before anything is written.
+            </p>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <input type="file" id="import-file-input" accept=".xlsx" onchange="handleImportFile(this)" style="font-size:13px;color:var(--gray-600)" />
+            </div>
+            <div id="import-preview" style="margin-top:14px"></div>
+          </div>
+        </div>
+
+        <!-- Feature 12 — Audit Log Export -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">📋 Export Audit Log</h3>
+          </div>
+          <div style="padding:14px 22px">
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+              Download a full audit log — all status changes, comments, and sign-offs across all quarters — as a multi-tab Excel file.
+            </p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <button class="btn-secondary" onclick="exportFullAuditLog('all')">⬇ All Quarters</button>
+              <div style="display:flex;align-items:center;gap:8px">
+                <select id="audit-quarter-select" class="filter-select">
+                  <option value="Q1">Q1</option><option value="Q2">Q2</option>
+                  <option value="Q3">Q3</option><option value="Q4">Q4</option>
+                </select>
+                <select id="audit-year-select" class="filter-select"></select>
+                <button class="btn-primary small" onclick="exportFullAuditLog('quarter')">⬇ This Quarter</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
+    <!-- EXECUTIVE STATUS VIEW -->
+    <div id="view-exec" class="view">
+      <div class="page-header no-print">
+        <div>
+          <h2 class="page-title">Executive Status</h2>
+          <p class="page-sub">Print-ready quarter summary for senior stakeholders</p>
+        </div>
+        <div class="header-actions">
+          <select id="exec-quarter" class="filter-select" onchange="renderExecView()">
+            <option value="Q1">Q1</option><option value="Q2">Q2</option>
+            <option value="Q3">Q3</option><option value="Q4">Q4</option>
+          </select>
+          <select id="exec-year" class="filter-select" onchange="renderExecView()"></select>
+          <button class="btn-primary" onclick="window.print()">🖨 Print / PDF</button>
+        </div>
+      </div>
+      <div id="exec-content"></div>
+    </div>
 
-
-    <!-- MY TASKS VIEW -->
     <div id="view-mytasks" class="view">
       <div class="page-header">
         <div>
           <h2 class="page-title" id="mytasks-title">My Tasks</h2>
-          <p class="page-sub">Your open items across all quarters</p>
+          <p class="page-sub">Ready for you · Waiting · Complete</p>
         </div>
         <div class="header-actions">
-          <select id="mytasks-status-filter" class="filter-select" onchange="renderMyTasks()">
-            <option value="open">Open Items</option>
-            <option value="all">All Statuses</option>
-            <option value="Complete">Complete</option>
-          <option value="Not Applicable">Not Applicable</option>
+          <select id="mytasks-quarter" class="filter-select" onchange="toggleMyTasksYearVisibility();renderMyTasks()">
+            <option value="all">All Quarters</option>
+            <option value="Q1">Q1</option>
+            <option value="Q2">Q2</option>
+            <option value="Q3">Q3</option>
+            <option value="Q4">Q4</option>
           </select>
+          <select id="mytasks-year" class="filter-select" onchange="renderMyTasks()"></select>
         </div>
       </div>
       <div id="mytasks-content"></div>
@@ -398,16 +554,23 @@
           <p class="page-sub">Quarter-end management one-pager</p>
         </div>
         <div class="header-actions">
-          <select id="report-quarter" class="filter-select" onchange="renderReport()">
+          <select id="report-quarter" class="filter-select" onchange="renderReport();renderTeamSummary()">
             <option value="Q1">Q1</option><option value="Q2">Q2</option>
             <option value="Q3">Q3</option><option value="Q4">Q4</option>
           </select>
-          <select id="report-year" class="filter-select" onchange="renderReport()"></select>
-          <button class="btn-secondary" onclick="exportExcel()">⬇ Export to Excel</button>
+          <select id="report-year" class="filter-select" onchange="renderReport();renderTeamSummary()"></select>
+          <button class="btn-secondary" onclick="exportExcel()">⬇ Export Quarter</button>
+          <button class="btn-secondary" onclick="exportTeamSummary()">⬇ Export Team Summary</button>
           <button class="btn-primary" onclick="window.print()">🖨 Print / PDF</button>
         </div>
       </div>
+      <!-- Report tabs -->
+      <div style="display:flex;gap:0;border-bottom:1.5px solid var(--border);margin-bottom:20px">
+        <button id="report-tab-quarter" class="report-tab report-tab-active" onclick="switchReportTab('quarter')">Quarter Summary</button>
+        <button id="report-tab-team"    class="report-tab" onclick="switchReportTab('team')">Team Summary</button>
+      </div>
       <div id="report-content" class="report-page"></div>
+      <div id="team-summary-content" style="display:none"></div>
     </div>
 
   </main>
@@ -434,9 +597,7 @@
     <div class="modal-body" style="flex:1;overflow-y:auto">
       <div id="steps-list"></div>
     </div>
-    <div style="padding:14px 24px;border-top:1px solid var(--gray-100);display:flex;justify-content:flex-end">
-      <button class="btn-primary small" onclick="openAddStep()">+ Add Step</button>
-    </div>
+    <div id="steps-panel-footer" style="padding:14px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end"></div>
   </div>
 </div>
 
@@ -450,7 +611,7 @@
     <div class="modal-body">
       <div id="comment-list" class="comment-list"></div>
       <div class="comment-input-row">
-        <input type="text" id="comment-input" placeholder="Add a comment…" />
+        <input type="text" id="comment-input" placeholder="Add a comment…" onkeydown="if(event.key==='Enter'&&!event.shiftKey)addComment()" />
         <button class="btn-primary small" onclick="addComment()">Post</button>
       </div>
     </div>
@@ -486,5 +647,49 @@
   tryNext();
 })();
 </script>
+
+<!-- FEATURE 6 — SETUP WIZARD -->
+<div id="setup-wizard" class="modal-overlay hidden">
+  <div class="modal" style="width:680px;max-width:96vw;max-height:90vh;overflow-y:auto" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3>⚙ Setup Wizard — Financial Reporting Tracker</h3>
+    </div>
+    <div class="modal-body" id="wizard-body">
+      <p style="color:var(--gray-600);font-size:13px;margin-bottom:20px">
+        Some configuration values are missing. Complete the steps below to connect the app to your SharePoint site.
+      </p>
+      <div id="wizard-steps"></div>
+      <div style="margin-top:20px;display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn-secondary" onclick="document.getElementById('setup-wizard').classList.add('hidden')">Close — I'll do this later</button>
+        <button class="btn-primary" onclick="saveWizardConfig()">Save Configuration</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FEATURE 5 — CHECKLIST MODE OVERLAY -->
+<div id="checklist-overlay" class="modal-overlay hidden" style="background:rgba(10,18,100,0.97);align-items:flex-start;padding:20px">
+  <div style="width:100%;max-width:860px;margin:0 auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <div>
+        <h2 style="color:#fff;font-size:20px;font-weight:700;margin:0">Close Checklist</h2>
+        <p style="color:rgba(255,255,255,.5);font-size:13px;margin:4px 0 0" id="checklist-subtitle"></p>
+      </div>
+      <button class="btn-secondary" onclick="exitChecklistMode()" style="background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.2)">✕ Exit Checklist Mode</button>
+    </div>
+    <div id="checklist-body"></div>
+  </div>
+</div>
+
+<!-- FEATURE 10 — NEW QUARTER WIZARD -->
+<div id="quarter-wizard" class="modal-overlay hidden" onclick="if(event.target===this)document.getElementById('quarter-wizard').classList.add('hidden')">
+  <div class="modal" style="width:780px;max-width:96vw;max-height:92vh;overflow-y:auto" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="qwiz-title">🔄 Start New Quarter</h3>
+      <button class="modal-close" onclick="document.getElementById('quarter-wizard').classList.add('hidden')">✕</button>
+    </div>
+    <div class="modal-body" id="qwiz-body"></div>
+  </div>
+</div>
 </body>
 </html>
