@@ -317,16 +317,19 @@ function normaliseAttachment(f) {
 }
 
 function normaliseQuarterDate(f) {
+  // CalOverrides stores { wdNum: 'YYYY-MM-DD' } manual date overrides as JSON
+  let calOverrides = {};
+  try { calOverrides = JSON.parse(f.CalOverrides || '{}'); } catch { calOverrides = {}; }
   return {
     _spId:          f.id || f.ID || '',
     quarter:        f.Quarter || '',
     year:           parseInt(f.Year) || 0,
     wd1Date:        (f.WD1Date || '').slice(0,10),
+    calOverrides,
     secFilingDate:  (f.SECFilingDate  || '').slice(0,10),
     earningsDate:   (f.EarningsCallDate || '').slice(0,10),
     earningsTime:   f.EarningsCallTime  || '',
-    boardDate:      (f.BoardMeetingDate || '').slice(0,10),
-    auditorDeadline:(f.AuditorDeadline  || '').slice(0,10),
+
   };
 }
 function normaliseStep(f) {
@@ -757,19 +760,14 @@ function holidaySummaryForYear(year) {
 function calendarKey(quarter, year) { return `${quarter}-${year}`; }
 
 function loadCloseCalendar(quarter, year) {
-  // _quarterDates.wd1Date is the source of truth for the team
+  // FT_QuarterDates is the source of truth — WD1 and overrides are shared across the team.
+  // localStorage is only used as a fallback before SharePoint data has loaded.
   const qd = _quarterDates.find(d => d.quarter===quarter && d.year===parseInt(year));
   if (qd?.wd1Date) {
-    // Build the calendar from the shared WD1 date
-    const cached = (() => {
-      try { return JSON.parse(localStorage.getItem('ft_cal_' + calendarKey(quarter, year)) || 'null'); } catch { return null; }
-    })();
-    // If cached wd1 matches SharePoint wd1, use the cache (preserves overrides)
-    if (cached?.wd1Date === qd.wd1Date) return cached;
-    // Otherwise rebuild from SharePoint wd1
-    return buildCloseCalendar(qd.wd1Date);
+    // Build the calendar using SharePoint WD1 and SharePoint overrides
+    return buildCloseCalendar(qd.wd1Date, 40, qd.calOverrides || {});
   }
-  // Fallback: localStorage only (before SharePoint is connected)
+  // Fallback: localStorage only (setup wizard before SharePoint is connected)
   try { return JSON.parse(localStorage.getItem('ft_cal_' + calendarKey(quarter, year)) || 'null'); }
   catch { return null; }
 }
@@ -777,23 +775,42 @@ function loadCloseCalendar(quarter, year) {
 function saveCloseCalendar(quarter, year, calObj) {
   if (typeof calObj === 'string') calObj = buildCloseCalendar(calObj); // accept wd1 string
   if (!calObj) return;
-  localStorage.setItem('ft_cal_' + calendarKey(quarter, year), JSON.stringify(calObj));
-  // Sync wd1 to FT_QuarterDates so all team members share the same calendar
-  const wd1 = calObj.wd1Date;
+
+  const wd1       = calObj.wd1Date;
+  const overrides = calObj.overrides || {};
   if (!wd1) return;
+
+  // Serialise overrides for SharePoint storage
+  const overridesJson = Object.keys(overrides).length
+    ? JSON.stringify(overrides)
+    : '';
+
   const existing = _quarterDates.find(d => d.quarter===quarter && d.year===parseInt(year));
   if (existing) {
-    if (existing.wd1Date !== wd1) {
-      existing.wd1Date = wd1;
-      updateListItem(LISTS.quarterDates, existing._spId, { WD1Date: wd1 }).catch(e => console.warn('Could not sync WD1 to SharePoint:', e.message));
-    }
+    // Update WD1 and overrides in SharePoint — both shared with the whole team
+    existing.wd1Date     = wd1;
+    existing.calOverrides = overrides;
+    updateListItem(LISTS.quarterDates, existing._spId, {
+      WD1Date:      wd1,
+      CalOverrides: overridesJson,
+    }).catch(e => console.warn('Could not save calendar to SharePoint:', e.message));
   } else {
-    // Create a new FT_QuarterDates record with the WD1
-    const fields = { Title: `${quarter} ${year}`, Quarter: quarter, Year: String(year), WD1Date: wd1 };
+    // Create a new FT_QuarterDates record with WD1 and overrides
+    const fields = {
+      Title:        `${quarter} ${year}`,
+      Quarter:      quarter,
+      Year:         String(year),
+      WD1Date:      wd1,
+      CalOverrides: overridesJson,
+    };
     createListItem(LISTS.quarterDates, fields).then(created => {
       _quarterDates.push(normaliseQuarterDate({ ...fields, id: created?.id || uid() }));
     }).catch(e => console.warn('Could not create QuarterDates for WD1:', e.message));
   }
+
+  // Keep localStorage in sync as a local cache for faster first render
+  try { localStorage.setItem('ft_cal_' + calendarKey(quarter, year), JSON.stringify(calObj)); }
+  catch(e) { console.warn('Could not cache calendar in localStorage:', e.message); }
 }
 
 // Build a calendar: given WD1 date, generate WD1 … WD(maxDays)
@@ -1490,10 +1507,8 @@ function renderDeadlineStrip(q, yr) {
     return `<div class="dl-chip ${cls}"><span class="dl-label">${label}</span><span class="dl-days">${txt}${timeStr}</span></div>`;
   }
   const chips = [
-    chip('SEC Filing',   qd.secFilingDate,  ''),
-    chip('Earnings Call',qd.earningsDate,   qd.earningsTime),
-    chip('Board Meeting',qd.boardDate,      ''),
-    chip('Auditor',      qd.auditorDeadline,''),
+    chip('SEC Filing',   qd.secFilingDate, ''),
+    chip('Earnings Call',qd.earningsDate,  qd.earningsTime),
   ].filter(Boolean).join('');
   if (!chips) { el.style.display='none'; return; }
   el.style.display='flex';
@@ -2867,8 +2882,7 @@ function renderQuarterDatesPanel() {
         <div class="user-role-sm">
           ${qd.secFilingDate    ? `SEC: ${formatDate(qd.secFilingDate)} · ` : ''}
           ${qd.earningsDate     ? `Earnings: ${formatDate(qd.earningsDate)}${qd.earningsTime?' '+qd.earningsTime:''} · ` : ''}
-          ${qd.boardDate        ? `Board: ${formatDate(qd.boardDate)} · ` : ''}
-          ${qd.auditorDeadline  ? `Auditor: ${formatDate(qd.auditorDeadline)}` : ''}
+
         </div>
       </div>
       <div style="display:flex;gap:8px">
@@ -2900,10 +2914,7 @@ function showQuarterDateModal(qd) {
       <div class="form-group"><label>Earnings Call Time <span style="font-weight:400;color:var(--text-faint)">(optional)</span></label>
         <input type="text" id="qd-earn-time" value="${escHtml(qd?.earningsTime||'')}" placeholder="e.g. 8:30 AM ET" /></div>
     </div>
-    <div class="form-group"><label>Board Meeting Date</label>
-      <input type="date" id="qd-board" value="${qd?.boardDate||''}" /></div>
-    <div class="form-group"><label>Auditor Deadline</label>
-      <input type="date" id="qd-auditor" value="${qd?.auditorDeadline||''}" /></div>
+
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
       <button class="btn-primary" onclick="saveQuarterDate('${qd?._spId||''}')">Save</button>
@@ -2919,8 +2930,7 @@ async function saveQuarterDate(spId) {
     SECFilingDate:    document.getElementById('qd-sec').value       || null,
     EarningsCallDate: document.getElementById('qd-earn-date').value || null,
     EarningsCallTime: document.getElementById('qd-earn-time').value || '',
-    BoardMeetingDate: document.getElementById('qd-board').value     || null,
-    AuditorDeadline:  document.getElementById('qd-auditor').value   || null,
+
   };
   closeAllModals(); showLoadingOverlay(true);
   try {
@@ -4169,8 +4179,7 @@ function renderQuarterWizardStep() {
         <div class="form-group"><label>SEC Filing Date</label><input type="date" id="qwiz-sec" value="${existing?.secFilingDate||''}" /></div>
         <div class="form-group"><label>Earnings Call Date</label><input type="date" id="qwiz-earn" value="${existing?.earningsDate||''}" /></div>
         <div class="form-group"><label>Earnings Call Time</label><input type="text" id="qwiz-earntime" value="${escHtml(existing?.earningsTime||'')}" placeholder="e.g. 8:30 AM ET" /></div>
-        <div class="form-group"><label>Board Meeting Date</label><input type="date" id="qwiz-board" value="${existing?.boardDate||''}" /></div>
-        <div class="form-group"><label>Auditor Deadline</label><input type="date" id="qwiz-audit" value="${existing?.auditorDeadline||''}" /></div>
+
       </div>
       <div style="background:var(--bg-secondary);border-radius:8px;padding:14px;margin-bottom:16px;font-size:13px">
         <b>Summary:</b> Copying ${_qwizState.selectedTaskIds?.length||0} tasks from ${_qwizState.fromQ} ${_qwizState.fromY} → ${_qwizState.toQ} ${_qwizState.toY}
@@ -4243,17 +4252,13 @@ async function runQuarterWizard() {
   const secDate   = document.getElementById('qwiz-sec')?.value   || null;
   const earnDate  = document.getElementById('qwiz-earn')?.value  || null;
   const earnTime  = document.getElementById('qwiz-earntime')?.value || '';
-  const boardDate = document.getElementById('qwiz-board')?.value  || null;
-  const auditDate = document.getElementById('qwiz-audit')?.value  || null;
-
-  if (secDate||earnDate||boardDate||auditDate) {
+  if (secDate||earnDate) {
     // Save quarter dates inline (bypasses modal)
     const qdFields = {
       Title: `${toQ} ${toY}`,
       Quarter: toQ, Year: String(toY),
       SECFilingDate: secDate, EarningsCallDate: earnDate,
-      EarningsCallTime: earnTime, BoardMeetingDate: boardDate,
-      AuditorDeadline: auditDate,
+      EarningsCallTime: earnTime,
     };
     const existQd = _quarterDates.find(d=>d.quarter===toQ&&d.year===toY);
     try {
