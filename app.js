@@ -204,6 +204,9 @@ let _commentPollTimer  = null;
 
 function getUserById(id)   { if(!id) return null; return _users.find(u => u._spId===id || u.id===id || u.ID===id) || null; }
 function getUsers()        { return _users; }
+// Returns users eligible to be assigned as owners or reviewers.
+// Excludes read-only users since they cannot interact with tasks.
+function getAssignableUsers() { return _users.filter(u => !u.isReadOnly); }
 function getTasks()        { return _tasks; }
 // Returns tasks excluding fully-locked quarters — used in all views except Admin/Report/Exec
 function getActiveTasks()  { return _tasks.filter(t => !isQuarterLocked(t.quarter, t.year)); }
@@ -245,12 +248,13 @@ function normaliseTask(f) {
 }
 function normaliseUser(f) {
   return {
-    _spId:   f.id || f.ID || '',
-    id:      f.UserId   || f.id || f.ID || '',
-    name:    f.Title    || f.FullName || '',
-    role:    f.JobRole  || '',
-    email:   (f.Email   || '').toLowerCase().trim(),
-    isAdmin: f.IsAdmin === true || f.IsAdmin === 'Yes',
+    _spId:      f.id || f.ID || '',
+    id:         f.UserId   || f.id || f.ID || '',
+    name:       f.Title    || f.FullName || '',
+    role:       f.JobRole  || '',
+    email:      (f.Email   || '').toLowerCase().trim(),
+    isAdmin:    f.IsAdmin   === true || f.IsAdmin   === 'Yes',
+    isReadOnly: f.IsReadOnly === true || f.IsReadOnly === 'Yes',
   };
 }
 function normaliseTemplate(f) {
@@ -1266,6 +1270,10 @@ async function afterMicrosoftLogin() {
 
 // PIN login removed — Microsoft login handles identity directly
 
+// Returns true if the current user is read-only (exec/stakeholder access).
+// Read-only users can view all views but cannot edit tasks, steps, or comments.
+function isReadOnly() { return currentUser?.isReadOnly === true; }
+
 // Returns the canonical SharePoint item ID for the current user.
 // Always use this instead of repeating currentUser._spId || currentUser.id throughout the code.
 function currentUserId() { return currentUser?._spId || currentUser?.id || ''; }
@@ -1299,13 +1307,27 @@ function launchApp() {
     <div class="user-role">${escHtml(currentUser.role)}</div>`;
   document.querySelectorAll('.admin-only').forEach(el =>
     el.classList.toggle('hidden', !currentUser.isAdmin));
+
+  // Read-only users: hide editing nav items, land on Exec View
+  if (isReadOnly()) {
+    ['dashboard','mytasks','tasks','team','kanban'].forEach(v => {
+      const el = document.querySelector(`[data-view="${v}"]`);
+      if (el) el.classList.add('hidden');
+    });
+  }
+
   populateYearSelects();
   setCurrentQuarter();
   initCompactMode();
   startPolling();
   initAdminYearSelects();
   renderSavedFilters();
-  renderDashboard();
+  if (isReadOnly()) {
+    // Land read-only users on Exec View
+    switchView('exec', document.querySelector('[data-view="exec"]'));
+  } else {
+    renderDashboard();
+  }
   renderPriorityCard();
   setTimeout(updateRefreshStamp, 100); // show stamp after first data load
 }
@@ -1569,7 +1591,7 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
     const owner   = getUserById(task.ownerId);
     const ds      = deadlineStatus(task.dueDate, task.status);
     const locked   = isQuarterLocked(task.quarter, task.year);
-    const canEdit  = !locked && (currentUser.isAdmin || task.ownerId===currentUserId());
+    const canEdit  = !isReadOnly() && !locked && (currentUser.isAdmin || task.ownerId===currentUserId());
     const taskComments   = _comments.filter(c=>c.taskId===task.id||c.taskId===task._spId);
     const commentCount   = taskComments.length;
     const unresolvedCount = taskComments.filter(c=>!c.isResolved).length;
@@ -1620,7 +1642,7 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
           // If a task has steps, status is driven by step completion automatically —
           // clicking the task badge directly is disabled to avoid manual override confusion.
           const hasSteps = getStepsForTask(task._spId).length > 0;
-          const canInteract = !hasSteps && !isQuarterLocked(task.quarter,task.year) && (
+          const canInteract = !isReadOnly() && !hasSteps && !isQuarterLocked(task.quarter,task.year) && (
             currentUser.isAdmin ||
             task.ownerId===uid || task.reviewerId===uid || task.reviewer2Id===uid
           );
@@ -2233,9 +2255,9 @@ function renderStepsPanel() {
   const isLocked     = parentTask ? isQuarterLocked(parentTask.quarter, parentTask.year) : false;
   const footerEl     = document.getElementById('steps-panel-footer');
   if (footerEl) {
-    footerEl.innerHTML = (!isLocked || currentUser.isAdmin)
+    footerEl.innerHTML = (!isLocked || currentUser.isAdmin) && !isReadOnly()
       ? '<button class="btn-primary small" onclick="openAddStep()">+ Add Step</button>'
-      : '<span style="font-size:11px;color:var(--text-faint)">🔒 Quarter locked — steps are read-only</span>';
+      : `<span style="font-size:11px;color:var(--text-faint)">${isReadOnly() ? '👁 Read-only access' : '🔒 Quarter locked — steps are read-only'}</span>`;
   }
 
   if (!steps.length) {
@@ -2265,7 +2287,7 @@ function renderStepsPanel() {
       const reviewer  = step.reviewerId  ? getUserById(step.reviewerId)  : null;
       const reviewer2 = step.reviewer2Id ? getUserById(step.reviewer2Id) : null;
       const ds      = step.dueDate ? deadlineStatus(step.dueDate, step.status) : 'ok';
-      const isOwner = currentUser.isAdmin || step.ownerId === currentUserId();
+      const isOwner = !isReadOnly() && (currentUser.isAdmin || step.ownerId === currentUserId());
       const isDone  = step.status === 'Complete';
       const stepTrail    = renderSignOffTrail(step._spId, false);
       const stepAtts     = renderAttachmentPanel(step._spId);
@@ -2458,10 +2480,10 @@ function openEditStep(stepSpId) {
 function showStepModal(step) {
   const steps     = getStepsForTask(stepsTaskSpId);
   const _uid = u => u._spId||u.id;
-  const ownerOpts = getUsers().map(u =>
+  const ownerOpts = getAssignableUsers().map(u =>
     `<option value="${_uid(u)}" ${step?.ownerId===_uid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  const srOpts  = `<option value="">— None —</option>` + getUsers().map(u=>`<option value="${_uid(u)}" ${step?.reviewerId===_uid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  const sr2Opts = `<option value="">— None —</option>` + getUsers().map(u=>`<option value="${_uid(u)}" ${step?.reviewer2Id===_uid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
+  const srOpts  = `<option value="">— None —</option>` + getAssignableUsers().map(u=>`<option value="${_uid(u)}" ${step?.reviewerId===_uid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
+  const sr2Opts = `<option value="">— None —</option>` + getAssignableUsers().map(u=>`<option value="${_uid(u)}" ${step?.reviewer2Id===_uid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
   document.getElementById('modal-title').textContent = step ? 'Edit Step' : 'Add Step';
   document.getElementById('modal-body').innerHTML = `
     <div class="form-group"><label>Step Name</label>
@@ -2596,7 +2618,7 @@ function openStepTemplates(templateSpId, templateName) {
 
 function renderStepTemplatesModal() {
   const tpSteps = getStepTemplatesForTemplate(stepsTemplateId);
-  const ownerOpts = () => getUsers().map(u =>
+  const ownerOpts = () => getAssignableUsers().map(u =>
     `<option value="${u._spId||u.id}">${escHtml(u.name)}</option>`).join('');
 
   document.getElementById('modal-body').innerHTML = `
@@ -2777,6 +2799,7 @@ function toggleStepComments(stepSpId) {
 }
 
 async function addStepComment(stepSpId) {
+  if (isReadOnly()) { showToast('Read-only access — you cannot post comments.', 'warning'); return; }
   const input = document.getElementById(`step-comment-input-${stepSpId}`);
   if (!input) return;
   const text = input.value.trim();
@@ -3132,7 +3155,7 @@ function renderAdmin() {
         <div class="user-role-sm">${escHtml(u.role)}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
-        <span class="${u.isAdmin?'admin-badge-admin':'admin-badge-member'}">${u.isAdmin?'Admin':'Member'}</span>
+        <span class="${u.isAdmin?'admin-badge-admin':u.isReadOnly?'admin-badge-readonly':'admin-badge-member'}">${u.isAdmin?'Admin':u.isReadOnly?'Read-Only':'Member'}</span>
         <button class="icon-btn" onclick="openEditUser('${u._spId}')">✏️</button>
         ${u._spId!==currentUser._spId?`<button class="icon-btn" onclick="deleteUser('${u._spId}',this)">🗑</button>`:''}
       </div>
@@ -3208,6 +3231,7 @@ async function applyTemplate() {
 // ── TASK MODAL ────────────────────────────────────────────────
 // Opens the Add Task modal pre-filled with the currently viewed quarter.
 function openAddTask() {
+  if (isReadOnly()) { showToast('Read-only access — you cannot add tasks.', 'warning'); return; }
   editingTaskId = null;
   // Pre-select the currently viewed quarter/year when adding a new task
   const q  = document.getElementById('quarter-filter')?.value;
@@ -3218,9 +3242,9 @@ function openEditTask(spId)   { editingTaskId=spId;   showTaskModal(_tasks.find(
 function showTaskModal(task, defaultQ, defaultY) {
   document.getElementById('modal-title').textContent=task?'Edit Task':'Add New Task';
   const _tuid = u => u._spId||u.id;
-  const ownerOpts=getUsers().map(u=>`<option value="${_tuid(u)}" ${task?.ownerId===_tuid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  const reviewerOpts = `<option value="">— None —</option>` + getUsers().map(u=>`<option value="${_tuid(u)}" ${task?.reviewerId===_tuid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  const reviewer2Opts = `<option value="">— None —</option>` + getUsers().map(u=>`<option value="${_tuid(u)}" ${task?.reviewer2Id===_tuid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
+  const ownerOpts=getAssignableUsers().map(u=>`<option value="${_tuid(u)}" ${task?.ownerId===_tuid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
+  const reviewerOpts = `<option value="">— None —</option>` + getAssignableUsers().map(u=>`<option value="${_tuid(u)}" ${task?.reviewerId===_tuid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
+  const reviewer2Opts = `<option value="">— None —</option>` + getAssignableUsers().map(u=>`<option value="${_tuid(u)}" ${task?.reviewer2Id===_tuid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
   const cur=new Date().getFullYear();
   const effQ = task?.quarter || defaultQ;
   const effY = task?.year    || defaultY || cur;
@@ -3457,6 +3481,7 @@ async function resolveComment(commentSpId) {
 }
 // Posts a new comment on the currently open task. Called from the comment modal.
 async function addComment() {
+  if (isReadOnly()) { showToast('Read-only access — you cannot post comments.', 'warning'); return; }
   const input=document.getElementById('comment-input');
   const text=input.value.trim(); if(!text||!commentingTaskId) return;
   if (text.length > COMMENT_MAX_LENGTH) {
@@ -3508,6 +3533,11 @@ function showUserModal(user) {
         <option value="false" ${!user?.isAdmin?'selected':''}>Member</option>
         <option value="true"  ${user?.isAdmin ?'selected':''}>Admin</option>
       </select></div>
+    <div class="form-group"><label>Read-Only Access <span style="font-weight:400;color:var(--text-faint)">(exec/stakeholder — can view but not edit)</span></label>
+      <select id="uf-readonly">
+        <option value="false" ${!user?.isReadOnly?'selected':''}>No</option>
+        <option value="true"  ${user?.isReadOnly ?'selected':''}>Yes</option>
+      </select></div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
       <button class="btn-primary" onclick="saveUser('${user?._spId||''}')">Save</button>
@@ -3518,11 +3548,12 @@ async function saveUser(existingSpId) {
   const name=document.getElementById('uf-name').value.trim();
   const role=document.getElementById('uf-role').value.trim();
   const email=document.getElementById('uf-email').value.trim();
-  const isAdmin=document.getElementById('uf-admin').value==='true';
+  const isAdmin    = document.getElementById('uf-admin').value==='true';
+  const isReadOnly = document.getElementById('uf-readonly').value==='true';
   if(!name){showToast('Please fill in the name field.','warning');return;}
   closeAllModals(); showLoadingOverlay(true);
   try {
-    const fields={ Title:name, FullName:name, JobRole:role, Email:email, IsAdmin:isAdmin?'Yes':'No' };
+    const fields={ Title:name, FullName:name, JobRole:role, Email:email, IsAdmin:isAdmin?'Yes':'No', IsReadOnly:isReadOnly?'Yes':'No' };
     if(existingSpId) { await updateListItem(LISTS.users, existingSpId, fields); }
     else             { fields.UserId=uid(); await createListItem(LISTS.users, fields); }
     await refreshData();
@@ -3542,7 +3573,7 @@ async function deleteUser(spId, btnEl) {
 function openAddTemplate()       { showTemplateModal(null); }
 function openEditTemplate(spId)  { showTemplateModal(_templates.find(t=>t._spId===spId)); }
 function showTemplateModal(tp) {
-  const ownerOpts=getUsers().map(u=>`<option value="${u._spId||u.id}" ${tp?.defaultOwnerId===(u._spId||u.id)?'selected':''}>${escHtml(u.name)}</option>`).join('');
+  const ownerOpts=getAssignableUsers().map(u=>`<option value="${u._spId||u.id}" ${tp?.defaultOwnerId===(u._spId||u.id)?'selected':''}>${escHtml(u.name)}</option>`).join('');
   document.getElementById('modal-title').textContent=tp?'Edit Template':'Add Template Task';
   document.getElementById('modal-body').innerHTML=`
     <div class="form-group"><label>Task Name</label>
@@ -4049,7 +4080,7 @@ async function runImport(users, tasks, steps) {
     const userFields = users.map(u => ({
       Title: String(u.Title||u.FullName||''), FullName: String(u.FullName||u.Title||''),
       JobRole: String(u.JobRole||''), Email: String(u.Email||''),
-      IsAdmin: String(u.IsAdmin||'No'), UserId: String(u.UserId||uid()),
+      IsAdmin: String(u.IsAdmin||'No'), IsReadOnly: String(u.IsReadOnly||'No'), UserId: String(u.UserId||uid()),
     }));
     const taskFields = tasks.map(t => ({
       Title: String(t.Title||''), TaskId: String(t.TaskId||uid()),
@@ -5567,7 +5598,7 @@ function getSelectedTaskSpIds() {
 function openBulkEdit() {
   const spIds = getSelectedTaskSpIds();
   if (!spIds.length) return;
-  const ownerOpts = getUsers().map(u =>
+  const ownerOpts = getAssignableUsers().map(u =>
     `<option value="${u._spId||u.id}">${escHtml(u.name)}</option>`).join('');
   document.getElementById('modal-title').textContent = `Bulk Edit — ${spIds.length} tasks`;
   document.getElementById('modal-body').innerHTML = `
