@@ -2699,7 +2699,10 @@ function renderCalendar() {
     const thisDate=new Date(calYear,calMonth,d); thisDate.setHours(0,0,0,0);
     const dateStr=thisDate.toISOString().slice(0,10);
     const isToday=thisDate.getTime()===today.getTime();
-    const dayTasks=getActiveTasks().filter(t=>t.dueDate===dateStr);
+    const dayTasks=getActiveTasks().filter(t=>{
+      const effectiveDate = t.dueDate || (t.workdayNum ? workdayToDate(t.workdayNum, t.quarter, t.year) : null);
+      return effectiveDate === dateStr;
+    });
     let chips=dayTasks.slice(0,3).map(t=>
       `<span class="cal-task-chip" style="background:${calChipBg(t.type)};color:${calChipFg(t.type)}"
         onclick="openSteps('${t._spId}','${escHtml(t.name)}')" title="Click to view steps — ${escHtml(t.name)}">${escHtml(t.name)}</span>`).join('');
