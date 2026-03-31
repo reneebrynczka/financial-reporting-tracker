@@ -855,10 +855,16 @@ function dateToWorkday(dateStr, quarter, year) {
 }
 
 // Format workday + date for display: "WD3 · Apr 3, 2025"
-function formatWorkdayDate(workdayNum, dateStr) {
+// Accepts optional quarter + year so it can resolve a workday number to a real
+// date via the close calendar when no fixed dateStr is present.
+function formatWorkdayDate(workdayNum, dateStr, quarter, year) {
   if (!dateStr && !workdayNum) return '—';
   const wdLabel = workdayNum ? `<span class="wd-badge">WD${workdayNum}</span> ` : '';
-  const dateLabel = dateStr ? formatDate(dateStr) : '';
+  // If no fixed date but we have a workday number and quarter/year, resolve via calendar
+  const resolvedDate = dateStr || (workdayNum && quarter && year
+    ? workdayToDate(workdayNum, quarter, year)
+    : null);
+  const dateLabel = resolvedDate ? formatDate(resolvedDate) : '';
   return wdLabel + dateLabel;
 }
 
@@ -1604,7 +1610,7 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
       </div></td>
       <td><div class="deadline-cell">
         <span class="deadline-dot ${dotClass(ds)}"></span>
-        ${formatWorkdayDate(task.workdayNum, task.dueDate)}
+        ${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}
         ${daysLabel(task.dueDate, task.status)}
       </div></td>
       <td>
@@ -2249,7 +2255,7 @@ function renderStepsPanel() {
             ${step.dueDate || step.workdayNum
               ? `<span class="deadline-cell">
                    <span class="deadline-dot ${dotClass(ds)}"></span>
-                   ${formatWorkdayDate(step.workdayNum, step.dueDate)}
+                   ${formatWorkdayDate(step.workdayNum, step.dueDate, parentTask?.quarter, parentTask?.year)}
                  </span>`
               : ''}
             ${(() => {
@@ -4866,7 +4872,10 @@ function renderMyTasks() {
     const unresolvedComments = _comments.filter(c=>(c.taskId===task._spId||c.taskId===task.id)&&!c.isResolved).length;
     return `<div class="mytask-row">
       <div class="mytask-main">
-        <div class="mytask-name">${escHtml(task.name)}
+        <div class="mytask-name"
+          onclick="openSteps('${task._spId}','${escHtml(task.name)}')"
+          style="cursor:pointer" title="Click to open steps">
+          ${escHtml(task.name)}
           <span class="mytask-role-chip">${myRole}</span>
           ${task.skipNextRollforward?'<span class="skip-badge">⊘ skip</span>':''}
         </div>
@@ -4874,7 +4883,7 @@ function renderMyTasks() {
           <span class="badge ${typeBadgeClass(task.type)}" style="font-size:10px">${escHtml(task.type)}</span>
           <span class="deadline-cell">
             <span class="deadline-dot ${dotClass(ds)}"></span>
-            ${formatWorkdayDate(task.workdayNum, task.dueDate)}
+            ${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}
             ${ds === 'overdue' ? '<span class="overdue-label"> OVERDUE</span>' : ''}
           </span>
           <span class="text-muted" style="font-size:11px">${task.quarter} ${task.year}</span>
@@ -4906,7 +4915,7 @@ function renderMyTasks() {
         </div>
         <div class="mytask-meta">
           <span class="text-muted" style="font-size:11px">↳ ${escHtml(parentTask?.name||'')}</span>
-          ${step.dueDate||step.workdayNum?`<span class="deadline-cell"><span class="deadline-dot ${dotClass(ds)}"></span>${formatWorkdayDate(step.workdayNum,step.dueDate)}</span>`:''}
+          ${step.dueDate||step.workdayNum?`<span class="deadline-cell"><span class="deadline-dot ${dotClass(ds)}"></span>${formatWorkdayDate(step.workdayNum,step.dueDate,parentTask?.quarter,parentTask?.year)}</span>`:''}
         </div>
       </div>
       <div class="mytask-actions">
@@ -5000,7 +5009,7 @@ function renderKanban() {
             ${mode==='team'&&owner?`<span style="font-size:11px">${escHtml(owner.name.split(' ')[0])}</span>`:''}
           </div>
           <div class="deadline-cell" style="font-size:11px">
-            <span class="deadline-dot ${dotClass(ds)}"></span>${formatWorkdayDate(task.workdayNum, task.dueDate)}
+            <span class="deadline-dot ${dotClass(ds)}"></span>${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}
           </div>
         </div>
         <div class="kanban-card-actions">
@@ -5105,7 +5114,7 @@ function renderReport() {
         ${reviewer?`<div style="font-size:10px;color:var(--text-faint)">Rev: ${escHtml(reviewer.name)}</div>`:''}
         ${reviewer2?`<div style="font-size:10px;color:var(--text-faint)">VP: ${escHtml(reviewer2.name)}</div>`:''}
       </div></td>
-      <td><div class="deadline-cell" style="font-size:12px"><span class="deadline-dot ${dotClass(ds)}"></span>${formatWorkdayDate(task.workdayNum, task.dueDate)}</div></td>
+      <td><div class="deadline-cell" style="font-size:12px"><span class="deadline-dot ${dotClass(ds)}"></span>${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}</div></td>
       <td><span class="status-badge ${statusBadgeClass(task.status)}" style="font-size:11px">${escHtml(task.status)}</span></td>
       <td style="font-size:11px;color:var(--text-muted)">${steps.length?`${doneS}/${steps.length}`:'—'}</td>
       <td style="font-size:11px;color:var(--text-muted)">
@@ -5215,7 +5224,7 @@ function renderExecView() {
         <td><span class="badge ${typeBadgeClass(task.type)}" style="font-size:10px">${escHtml(task.type)}</span></td>
         <td style="font-size:12px">${owner?escHtml(owner.name):'—'}${reviewer?`<span style="font-size:10px;color:var(--text-muted)"> / ${escHtml(reviewer.name)}</span>`:''}</td>
         <td style="font-size:12px">
-          ${formatWorkdayDate(task.workdayNum, task.dueDate)}
+          ${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}
           ${ds === 'overdue' ? '<span style="color:var(--red);font-size:10px;font-weight:700;margin-left:4px">OVERDUE</span>' : ''}
         </td>
         <td><span class="status-badge ${statusBadgeClass(task.status)}" style="font-size:11px;pointer-events:none">${escHtml(task.status)}</span></td>
