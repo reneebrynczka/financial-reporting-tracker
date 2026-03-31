@@ -2726,6 +2726,18 @@ function jumpCalToToday() {
   calMonth = now.getMonth();
   renderCalendar();
 }
+// Smart click handler for calendar task chips.
+// Tasks with steps → open steps panel.
+// Tasks without steps → open quick status picker so user can advance status.
+function calendarTaskClick(taskSpId, taskName) {
+  const steps = getStepsForTask(taskSpId);
+  if (steps.length > 0) {
+    openSteps(taskSpId, taskName);
+  } else {
+    openQuickStatus(taskSpId, 'task');
+  }
+}
+
 function renderCalendar() {
   const grid=document.getElementById('calendar-grid'); if(!grid) return;
   const MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -2748,7 +2760,8 @@ function renderCalendar() {
     });
     let chips=dayTasks.slice(0,3).map(t=>
       `<span class="cal-task-chip" style="background:${calChipBg(t.type)};color:${calChipFg(t.type)}"
-        onclick="openSteps('${t._spId}','${escHtml(t.name)}')" title="Click to view steps — ${escHtml(t.name)}">${escHtml(t.name)}</span>`).join('');
+        onclick="calendarTaskClick('${t._spId}','${escHtml(t.name)}')"
+        title="${getStepsForTask(t._spId).length > 0 ? 'Click to view steps' : 'Click to update status'} — ${escHtml(t.name)}">${escHtml(t.name)}</span>`).join('');
     if(dayTasks.length>3) chips+=`<span style="font-size:10px;color:var(--text-faint)">+${dayTasks.length-3} more</span>`;
     html+=`<div class="cal-day${isToday?' today':''}"><div class="cal-day-num">${d}</div>${chips}</div>`;
   }
@@ -3688,7 +3701,7 @@ function togglePriorityCard() {
 // ═══════════════════════════════════════════════════════════════
 // ── FEATURE 2 — QUICK STATUS ACTION ────────────────────────
 // ═══════════════════════════════════════════════════════════════
-function openQuickStatus(spId, type) {
+function openQuickStatus(spId, type, anchorEl) {
   const item = type==='task' ? _tasks.find(t=>t._spId===spId) : _steps.find(s=>s._spId===spId);
   if (!item) return;
   const cycle = getStatusCycle(item);
@@ -3698,14 +3711,31 @@ function openQuickStatus(spId, type) {
   const menu = document.createElement('div');
   menu.id = 'quick-status-menu';
   menu.className = 'quick-status-menu';
-  menu.innerHTML = cycle.concat(['Not Applicable']).map(s =>
-    `<div class="quick-status-option ${s===item.status?'active':''}" onclick="quickSetStatus('${spId}','${type}','${s}');document.getElementById('quick-status-menu').remove()">
+  menu.innerHTML = `
+    <div style="font-size:11px;font-weight:600;color:var(--text-faint);padding:6px 12px 4px;border-bottom:1px solid var(--border)">
+      ${escHtml(item.name)}
+    </div>` +
+    cycle.concat(['Not Applicable']).map(s =>
+    `<div class="quick-status-option ${s===item.status?'active':''}"
+      onclick="quickSetStatus('${spId}','${type}','${s}');document.getElementById('quick-status-menu')?.remove()">
       <span class="status-badge ${statusBadgeClass(s)}" style="font-size:11px;pointer-events:none">${escHtml(s)}</span>
     </div>`
   ).join('');
 
-  // Position near the badge that was clicked
   document.body.appendChild(menu);
+
+  // Position near anchor element if provided, otherwise centre on screen
+  if (anchorEl) {
+    const rect = anchorEl.getBoundingClientRect();
+    menu.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+    menu.style.left = Math.max(8, rect.left + window.scrollX) + 'px';
+  } else {
+    menu.style.top  = '50%';
+    menu.style.left = '50%';
+    menu.style.transform = 'translate(-50%, -50%)';
+    menu.style.position  = 'fixed';
+  }
+
   const closeMenu = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', closeMenu); } };
   setTimeout(() => document.addEventListener('click', closeMenu), 0);
 }
