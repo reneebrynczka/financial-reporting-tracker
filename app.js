@@ -2914,7 +2914,7 @@ function renderTeam() {
   const q   = document.getElementById('team-quarter')?.value;
   const yr  = parseInt(document.getElementById('team-year')?.value || 0);
   const grid=document.getElementById('team-grid'); if(!grid) return;
-  grid.innerHTML=getUsers().map(user=>{
+  grid.innerHTML=getUsers().filter(u => !u.isReadOnly).map(user=>{
     const userId=user._spId||user.id;
     let allTasks = getActiveTasks().filter(t=>
       t.ownerId===userId || t.reviewerId===userId || t.reviewer2Id===userId
