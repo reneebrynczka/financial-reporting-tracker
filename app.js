@@ -1617,7 +1617,10 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
         ${locked ? '<span style="font-size:11px;color:var(--text-faint)">🔒</span> ' : ''}
         ${(() => {
           const uid = currentUserId();
-          const canInteract = !isQuarterLocked(task.quarter,task.year) && (
+          // If a task has steps, status is driven by step completion automatically —
+          // clicking the task badge directly is disabled to avoid manual override confusion.
+          const hasSteps = getStepsForTask(task._spId).length > 0;
+          const canInteract = !hasSteps && !isQuarterLocked(task.quarter,task.year) && (
             currentUser.isAdmin ||
             task.ownerId===uid || task.reviewerId===uid || task.reviewer2Id===uid
           );
@@ -2083,6 +2086,42 @@ const STATUS_ORDER = ['Not Started','In Progress','Ready for Review 1','Ready fo
 // Cycle is dynamic based on reviewer assignments — see getStatusCycle()
 // STATUS_CYCLE_FULL was redundant with STATUS_ORDER.filter(s=>s!=='Not Applicable') — removed
 
+// Derives and syncs task status from its steps when a step status changes.
+// Called automatically after every cycleStepStatus write.
+// Rules:
+//   All steps Not Started           → task = Not Started
+//   All steps Complete or N/A       → task = Complete
+//   Any step In Progress or Review  → task = In Progress
+//   Mix of Complete + Not Started   → task = In Progress
+async function syncTaskStatusFromSteps(taskSpId) {
+  const task  = _tasks.find(t => t._spId === taskSpId);
+  if (!task) return;
+
+  const steps = getStepsForTask(taskSpId).filter(s => s.status !== 'Not Applicable');
+  if (!steps.length) return; // no active steps — don't override task status
+
+  const allComplete   = steps.every(s => s.status === 'Complete');
+  const allNotStarted = steps.every(s => s.status === 'Not Started');
+  const derived = allComplete   ? 'Complete'
+                : allNotStarted ? 'Not Started'
+                :                 'In Progress';
+
+  if (task.status === derived) return; // already correct — no write needed
+
+  const prev = task.status;
+  task.status = derived;
+  renderCurrentView();
+
+  try {
+    await updateListItem(LISTS.tasks, taskSpId, { Status: derived });
+    await writeSignOff(taskSpId, 'task', task.name, prev, derived);
+  } catch(e) {
+    console.warn('Could not sync task status from steps:', e.message);
+    task.status = prev; // revert on failure
+    renderCurrentView();
+  }
+}
+
 // Returns the applicable status cycle for a task or step object
 // Skips Review 1 / Review 2 if no reviewer is assigned
 function getStatusCycle(item) {
@@ -2374,10 +2413,13 @@ async function cycleStepStatus(stepSpId) {
       renderStepsPanel();
       await updateListItem(LISTS.steps, stepSpId, { Status: prev });
       await writeSignOff(stepSpId, 'step', step.name, next, prev);
+      if (step.taskId) await syncTaskStatusFromSteps(step.taskId);
     });
     await updateListItem(LISTS.steps, stepSpId, { Status: next });
     await writeSignOff(stepSpId, 'step', step.name, prev, next);
     if (next === 'Ready for Review 1' || next === 'Ready for Review 2') await notifyReviewer(step, 'step', next);
+    // Auto-sync parent task status based on all step statuses
+    if (step.taskId) await syncTaskStatusFromSteps(step.taskId);
   } catch(e) {
     if(e.message==='cancelled'){step.status=prev;_stepsPanelDirty=false;renderStepsPanel();return;}
     console.error("Step status update failed:", e); await refreshData();
@@ -2397,6 +2439,7 @@ async function forceUnlockStep(stepSpId) {
       await writeSignOff(blocker._spId, 'step', blocker.name, blockerPrev, 'Complete');
       await updateListItem(LISTS.steps, blocker._spId, { Status: 'Complete' });
       await cycleStepStatus(stepSpId);
+      if (step.taskId) await syncTaskStatusFromSteps(step.taskId);
     },
     null, 'Force Unlock', true
   );
