@@ -3,7 +3,6 @@
    Hosted on:  GitHub Pages
    Database:   SharePoint Lists via Microsoft Graph API
    Auth:       Microsoft SSO (User.Read + Sites.ReadWrite.All)
-   Notify:    Writes to FT_Notifications list — PA flow sends emails
    Admin:      IsAdmin = Yes in FT_Users
 
    Data operations call the Microsoft Graph API directly using
@@ -185,7 +184,7 @@ const LISTS = {
   locks:         "FT_QuarterLocks",
   attachments:   "FT_Attachments",
   quarterDates:  "FT_QuarterDates",
-  notifications: "FT_Notifications",  // watched by PA flow to send emails
+
 };
 
 // ── IN-MEMORY CACHE ───────────────────────────────────────────
@@ -2154,39 +2153,10 @@ function getStatusCycle(item) {
   return cycle;
 }
 
-// ── FEATURE 4 — EMAIL NOTIFICATION (via FT_Notifications list) ───
-// Writes a record to FT_Notifications. A Power Automate flow watches
-// this list ("When an item is created") and sends the email via Outlook.
-// No Mail.Send permission required — PA handles delivery.
-async function notifyReviewer(item, itemType, newStatus) {
-  try {
-    let reviewerEmail = '';
-    if (newStatus === 'Ready for Review 1' && item.reviewerId) {
-      const reviewer = _users.find(u => (u._spId||u.id) === item.reviewerId);
-      reviewerEmail = reviewer?.email || '';
-    } else if (newStatus === 'Ready for Review 2' && item.reviewer2Id) {
-      const reviewer2 = _users.find(u => (u._spId||u.id) === item.reviewer2Id);
-      reviewerEmail = reviewer2?.email || '';
-    }
-    if (!reviewerEmail) return;
-
-    const taskName = itemType === 'task'
-      ? item.name
-      : (getTasks().find(t => t._spId === item.taskId)?.name || '');
-    const stepName = itemType === 'step' ? item.name : '';
-
-    await createListItem(LISTS.notifications, {
-      Title:         `[FRT] ${stepName ? 'Step' : 'Task'} ready for review: ${stepName || taskName}`,
-      ToEmail:       reviewerEmail,
-      TaskName:      taskName,
-      StepName:      stepName,
-      StatusChanged: newStatus,
-      ChangedBy:     currentUser?.name || '',
-      AppUrl:        window.location.href,
-      NotifyType:    'review',
-    });
-  } catch(e) { console.warn('Notification write failed (non-critical):', e.message); }
-}
+// ── FEATURE 4 — EMAIL NOTIFICATION ──────────────────────────
+// Notifications are disabled. notifyReviewer() is a no-op stub kept
+// so callers don't need to be updated — re-enable by implementing this function.
+async function notifyReviewer(item, itemType, newStatus) { /* disabled */ }
 
 // Tracks task spIds currently being written to prevent concurrent undo/redo races.
 const _statusWriteInFlight = new Set();
@@ -2865,22 +2835,7 @@ async function submitReassignRequest(spId, type, itemName) {
     await updateListItem(list, spId, { ReassignRequested: 'Yes', ReassignNote: note });
     item.reassignRequested = true; item.reassignNote = note;
 
-    // Notify all admins via FT_Notifications list (PA flow sends the email)
-    const admins = _users.filter(u => u.isAdmin && u.email);
-    const rTaskName = type==='task' ? itemName : (getTasks().find(t=>t._spId===item.taskId)?.name||'');
-    const rStepName = type==='step' ? itemName : '';
-    for (const admin of admins) {
-      createListItem(LISTS.notifications, {
-        Title:         `[FRT] Reassignment requested: ${rTaskName}${rStepName ? ' — '+rStepName : ''}`,
-        ToEmail:       admin.email,
-        TaskName:      rTaskName,
-        StepName:      rStepName,
-        StatusChanged: 'Reassignment Requested',
-        ChangedBy:     currentUser.name + (note ? ` — "${note}"` : ''),
-        AppUrl:        window.location.href,
-        NotifyType:    'reassign',
-      }).catch(e => console.warn('Reassign notify write failed:', e.message));
-    }
+    // Notifications disabled — reassign flag is set but no email is sent
     renderCurrentView();
     if (document.getElementById('steps-overlay') && !document.getElementById('steps-overlay').classList.contains('hidden')) renderStepsPanel();
     showToast('Reassignment request sent to all admins.', 'success');
@@ -3949,17 +3904,6 @@ async function runHealthCheck() {
     }
   }
 
-  // 4. FT_Notifications list accessible (PA flow watches this for email delivery)
-  if (siteOk) {
-    try {
-      await getListItems(LISTS.notifications);
-      results.push({ name: 'FT_Notifications list', status: 'ok',
-        msg: 'Accessible — Power Automate flow will pick up notification records' });
-    } catch(e) {
-      results.push({ name: 'FT_Notifications list', status: 'error',
-        msg: 'Not found — create this list in SharePoint and set up the PA notify flow' });
-    }
-  }
 
   // 5. Each SharePoint list accessible
   if (siteOk) {
