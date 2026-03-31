@@ -607,7 +607,8 @@ select:focus-visible, textarea:focus-visible {
 .admin-user-info .user-name-sm { font-weight: 600; color: var(--navy); font-size: 13px; }
 .admin-user-info .user-role-sm { font-size: 11px; color: var(--gray-400); }
 .admin-badge-admin  { background: #FEF3C7; color: #92400E; padding: 2px 8px; border-radius: 12px; font-size: 10.5px; font-weight: 600; }
-.admin-badge-member { background: var(--gray-100); color: var(--gray-600); padding: 2px 8px; border-radius: 12px; font-size: 10.5px; font-weight: 600; }
+.admin-badge-member   { background: var(--gray-100); color: var(--gray-600); padding: 2px 8px; border-radius: 12px; font-size: 10.5px; font-weight: 600; }
+.admin-badge-readonly { background: #DBEAFE; color: #1D4ED8; padding: 2px 8px; border-radius: 12px; font-size: 10.5px; font-weight: 600; }
 
 .template-row {
   display: flex; align-items: center; justify-content: space-between;
