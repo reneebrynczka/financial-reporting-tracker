@@ -1442,28 +1442,26 @@ function switchView(view, el) {
     renderCalendar();
   }
   if (view==='team') {
-    const now=new Date(); const m=now.getMonth();
-    const q=m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4';
-    const qEl=document.getElementById('team-quarter'); if(qEl) qEl.value=q;
-    const yEl=document.getElementById('team-year');    if(yEl) yEl.value=now.getFullYear();
+    const wq=workingQ();
+    const qEl=document.getElementById('team-quarter'); if(qEl) qEl.value=wq.q;
+    const yEl=document.getElementById('team-year');    if(yEl) yEl.value=wq.yr;
     toggleTeamYearVisibility();
     renderTeam();
   }
   if (view==='admin')     renderAdmin();
   if (view==='mytasks') {
-    const now=new Date(); const m=now.getMonth();
-    const q=m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4';
-    const qEl=document.getElementById('mytasks-quarter'); if(qEl&&qEl.value==='all') qEl.value=q;
-    const yEl=document.getElementById('mytasks-year');    if(yEl&&!yEl.value) yEl.value=now.getFullYear();
+    const wq=workingQ();
+    const qEl=document.getElementById('mytasks-quarter'); if(qEl&&qEl.value==='all') qEl.value=wq.q;
+    const yEl=document.getElementById('mytasks-year');    if(yEl&&!yEl.value) yEl.value=wq.yr;
     toggleMyTasksYearVisibility();
     renderMyTasks();
   }
   if (view==='kanban')    { initKanbanSelects(); renderKanban(); }
   if (view==='report')    { initReportSelects(); renderReport(); }
   if (view==='exec') {
-    const now=new Date(); const m=now.getMonth();
-    const q=m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4';
-    const qEl=document.getElementById('exec-quarter'); if(qEl&&!qEl.value) qEl.value=q;
+    const wq=workingQ();
+    const qEl=document.getElementById('exec-quarter'); if(qEl&&!qEl.value) qEl.value=wq.q;
+    const yEl=document.getElementById('exec-year');    if(yEl&&!yEl.value) yEl.value=wq.yr;
     renderExecView();
   }
 }
@@ -4494,6 +4492,16 @@ function loadQuarterPref() {
   try { return { q: sessionStorage.getItem('ft_quarter'), yr: sessionStorage.getItem('ft_year') }; } catch(e) { return {}; }
 }
 
+// Returns the active working quarter and year — used as the default
+// across all views. Uses the Admin-set working quarter if available,
+// otherwise falls back to the current calendar quarter.
+function workingQ() {
+  const wq  = loadWorkingQuarter();
+  if (wq?.q && wq?.yr) return wq;
+  const now = new Date(); const m = now.getMonth();
+  return { q: m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4', yr: now.getFullYear() };
+}
+
 // Working quarter — the quarter your team is currently closing.
 // Set in Admin. Persists in localStorage so every team member's app
 // defaults to the right quarter on login, regardless of calendar month.
@@ -5077,14 +5085,12 @@ function renderMyTasks() {
 // ── KANBAN BOARD ─────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════
 function initKanbanSelects() {
-  const cur = new Date();
-  const m   = cur.getMonth();
-  const q   = m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4';
+  const wq = workingQ();
   // Only set defaults if no value is already selected — preserve user's last choice
   const qEl = document.getElementById('kanban-quarter');
-  if (qEl && !qEl.value) qEl.value = q;
+  if (qEl && !qEl.value) qEl.value = wq.q;
   const yEl = document.getElementById('kanban-year');
-  if (yEl && !yEl.value) yEl.value = cur.getFullYear();
+  if (yEl && !yEl.value) yEl.value = wq.yr;
 }
 
 function renderKanban() {
@@ -5187,11 +5193,9 @@ async function kanbanDrop(e, newStatus) {
 function initReportSelects() {
   switchReportTab('quarter');
 
-  const cur = new Date();
-  const m   = cur.getMonth();
-  const q   = m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4';
-  const qEl = document.getElementById('report-quarter'); if(qEl) qEl.value = q;
-  const yEl = document.getElementById('report-year');    if(yEl) yEl.value = cur.getFullYear();
+  const wq = workingQ();
+  const qEl = document.getElementById('report-quarter'); if(qEl) qEl.value = wq.q;
+  const yEl = document.getElementById('report-year');    if(yEl) yEl.value = wq.yr;
 }
 
 function renderReport() {
