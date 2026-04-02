@@ -1313,33 +1313,7 @@ body.compact #compact-toggle { background: var(--navy); color: #fff; border-colo
 /* ═══════════════════════════════════════════════════════════
    QUICK NOTE POPOVER
 ═══════════════════════════════════════════════════════════ */
-.quick-note-pop {
-  position: fixed; z-index: 99994;
-  top: 50%; left: 50%; transform: translate(-50%, -50%);
-  background: var(--white); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg); width: 360px;
-  border: 1px solid var(--border);
-  overflow: hidden;
-}
-.quick-note-header {
-  padding: 12px 16px 10px;
-  font-size: 13px; font-weight: 700; color: var(--navy);
-  border-bottom: 1px solid var(--border-light);
-  background: var(--bg-secondary);
-}
-.quick-note-ta {
-  width: 100%; padding: 12px 16px;
-  border: none; outline: none; resize: vertical;
-  font-family: inherit; font-size: 13px; color: var(--text);
-  min-height: 90px; background: var(--white);
-  line-height: 1.5;
-}
-.quick-note-footer {
-  padding: 10px 14px;
-  display: flex; gap: 8px; justify-content: flex-end;
-  border-top: 1px solid var(--border-light);
-  background: var(--bg-secondary);
-}
+
 
 /* ═══════════════════════════════════════════════════════════
    MY TASKS — grouped view
