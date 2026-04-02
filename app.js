@@ -488,30 +488,42 @@ function formatDate(dateStr) {
   const d = new Date(dateStr + 'T00:00:00');
   return d.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
 }
-function deadlineStatus(dueDate, status) {
+function deadlineStatus(dueDate, status, workdayNum, quarter, year) {
   if (status === 'Not Applicable') return 'done'; // N/A never shown as overdue
   if (status === 'Complete') return 'done';
+  // Resolve effective date — use fixed dueDate if set, otherwise resolve via calendar
+  const effectiveDate = dueDate || (workdayNum && quarter && year
+    ? workdayToDate(workdayNum, quarter, year)
+    : null);
+  if (!effectiveDate) return 'ok'; // no date set — can't determine overdue
   const today = new Date(); today.setHours(0,0,0,0);
-  const due   = new Date(dueDate + 'T00:00:00');
+  const due   = new Date(effectiveDate + 'T00:00:00');
   const diff  = Math.floor((due - today) / MS_PER_DAY);
   if (diff < 0)  return 'overdue';
   if (diff <= 7) return 'soon';
   return 'ok';
 }
-function daysLabel(dueDate, status) {
-  if (!dueDate || status === 'Complete' || status === 'Not Applicable') return '';
+function daysLabel(dueDate, status, workdayNum, quarter, year) {
+  if (status === 'Complete' || status === 'Not Applicable') return '';
+  const effectiveDate = dueDate || (workdayNum && quarter && year
+    ? workdayToDate(workdayNum, quarter, year)
+    : null);
+  if (!effectiveDate) return '';
   const today = new Date(); today.setHours(0,0,0,0);
-  const diff  = Math.floor((new Date(dueDate+'T00:00:00') - today) / MS_PER_DAY);
+  const diff  = Math.floor((new Date(effectiveDate+'T00:00:00') - today) / MS_PER_DAY);
   if (diff < 0)  return `<span style="font-size:10px;font-weight:700;color:var(--deadline-overdue)">${Math.abs(diff)}d overdue</span>`;
   if (diff === 0) return `<span style="font-size:10px;font-weight:700;color:var(--deadline-soon)">Today</span>`;
   if (diff <= 7)  return `<span style="font-size:10px;color:var(--deadline-soon)">${diff}d</span>`;
   return '';
 }
 
-function isThisWeek(dueDate) {
-  if (!dueDate) return false;
+function isThisWeek(dueDate, workdayNum, quarter, year) {
+  const effectiveDate = dueDate || (workdayNum && quarter && year
+    ? workdayToDate(workdayNum, quarter, year)
+    : null);
+  if (!effectiveDate) return false;
   const today = new Date(); today.setHours(0,0,0,0);
-  const diff  = Math.floor((new Date(dueDate+'T00:00:00') - today) / MS_PER_DAY);
+  const diff  = Math.floor((new Date(effectiveDate+'T00:00:00') - today) / MS_PER_DAY);
   return diff >= 0 && diff <= 7;
 }
 function quarterEndDate(q, yr) {
@@ -1517,7 +1529,7 @@ function renderDashboard() {
   const total    = activeTasks.length;
   const naCount  = tasks.filter(t=>t.status==='Not Applicable').length;
   const complete = activeTasks.filter(t=>t.status==='Complete').length,
-        overdue  = activeTasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length,
+        overdue  = activeTasks.filter(t=>deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length,
         inprog   = activeTasks.filter(t=>t.status==='In Progress').length;
   const sg = document.getElementById('stat-grid');
   if(sg) sg.innerHTML = `
@@ -1544,8 +1556,8 @@ function renderDashboard() {
     }
   }
 
-  if (activeFilter==='overdue')   tasks=tasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue');
-  if (activeFilter==='this-week') tasks=tasks.filter(t=>isThisWeek(t.dueDate));
+  if (activeFilter==='overdue')   tasks=tasks.filter(t=>deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue');
+  if (activeFilter==='this-week') tasks=tasks.filter(t=>isThisWeek(t.dueDate,t.workdayNum,t.quarter,t.year));
   if (activeTypeFilter!=='all')   tasks=tasks.filter(t=>t.type===activeTypeFilter);
   renderDeadlineStrip(q, yr);
   renderPriorityCard();
@@ -1648,7 +1660,7 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
   }
   tbody.innerHTML = tasks.map(task => {
     const owner   = getUserById(task.ownerId);
-    const ds      = deadlineStatus(task.dueDate, task.status);
+    const ds      = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
     const locked   = isQuarterLocked(task.quarter, task.year);
     const canEdit  = !isReadOnly() && !locked && (currentUser.isAdmin || task.ownerId===currentUserId());
     const taskComments   = _comments.filter(c=>c.taskId===task.id||c.taskId===task._spId);
@@ -1692,7 +1704,7 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
       <td><div class="deadline-cell">
         <span class="deadline-dot ${dotClass(ds)}"></span>
         ${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}
-        ${daysLabel(task.dueDate, task.status)}
+        ${daysLabel(task.dueDate, task.status, task.workdayNum, task.quarter, task.year)}
       </div></td>
       <td>
         ${locked ? '<span style="font-size:11px;color:var(--text-faint)">🔒</span> ' : ''}
@@ -2316,7 +2328,7 @@ function renderStepsPanel() {
       const owner    = getUserById(step.ownerId);
       const reviewer  = step.reviewerId  ? getUserById(step.reviewerId)  : null;
       const reviewer2 = step.reviewer2Id ? getUserById(step.reviewer2Id) : null;
-      const ds      = step.dueDate ? deadlineStatus(step.dueDate, step.status) : 'ok';
+      const ds      = step.dueDate ? deadlineStatus(step.dueDate, step.status, step.workdayNum, parentTask?.quarter||task?.quarter, parentTask?.year||task?.year) : 'ok';
       const isOwner = !isReadOnly() && (currentUser.isAdmin || step.ownerId === currentUserId());
       const isDone  = step.status === 'Complete';
       const stepTrail    = renderSignOffTrail(step._spId, false);
@@ -2937,11 +2949,11 @@ function renderTeam() {
     if (q) allTasks = allTasks.filter(t => t.quarter===q && (!yr || t.year===yr));
     const activeMyTasks=allTasks.filter(t=>t.status!=='Not Applicable');
     const complete=activeMyTasks.filter(t=>t.status==='Complete').length;
-    const overdue=activeMyTasks.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length;
+    const overdue=activeMyTasks.filter(t=>deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
     const inReview=activeMyTasks.filter(t=>t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
     const pct=activeMyTasks.length?Math.round(complete/activeMyTasks.length*100):0;
     const taskList=allTasks.slice(0,4).map(t=>{
-      const ds=deadlineStatus(t.dueDate,t.status);
+      const ds=deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year);
       return `<div class="team-task-item" onclick="openSteps('${t._spId}','${escHtml(t.name)}')" style="cursor:pointer" title="View steps — ${escHtml(t.name)}">
         <span class="team-task-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(t.name)}</span>
         <span class="deadline-dot ${dotClass(ds)}" style="width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0"></span>
@@ -3664,7 +3676,7 @@ function renderPriorityCard() {
   card.classList.remove('hidden');
 
   const taskRows = urgentTasks.map(t => {
-    const ds  = deadlineStatus(t.dueDate, t.status);
+    const ds  = deadlineStatus(t.dueDate, t.status, t.workdayNum, t.quarter, t.year);
     const isOverdue = ds === 'overdue';
     return `<div class="priority-item ${isOverdue?'priority-overdue':'priority-soon'}">
       <div class="priority-item-info">
@@ -3780,7 +3792,7 @@ function enterChecklistMode() {
     body.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,.6);padding:60px 0;font-size:16px">🎉 All tasks complete for this quarter!</div>';
   } else {
     body.innerHTML = tasks.map(t => {
-      const ds    = deadlineStatus(t.dueDate, t.status);
+      const ds    = deadlineStatus(t.dueDate, t.status, t.workdayNum, t.quarter, t.year);
       const cycle = getStatusCycle(t);
       const next  = cycle[(cycle.indexOf(t.status)+1)%cycle.length];
       const locked = isQuarterLocked(t.quarter, t.year);
@@ -4956,7 +4968,7 @@ function renderMyTasks() {
   function taskRow(task) {
     const locked  = isQuarterLocked(task.quarter, task.year);
     const canEdit = !locked;
-    const ds      = deadlineStatus(task.dueDate, task.status);
+    const ds      = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
     const myRole  = task.ownerId===userId ? 'Preparer' : task.reviewerId===userId ? 'Reviewer 1' : 'Reviewer 2';
     const unresolvedComments = _comments.filter(c=>(c.taskId===task._spId||c.taskId===task.id)&&!c.isResolved).length;
     return `<div class="mytask-row">
@@ -4993,7 +5005,7 @@ function renderMyTasks() {
   function stepRow(step) {
     const parentTask = _tasks.find(t=>t._spId===step.taskId);
     const locked     = parentTask ? isQuarterLocked(parentTask.quarter, parentTask.year) : false;
-    const ds         = step.dueDate ? deadlineStatus(step.dueDate, step.status) : 'ok';
+    const ds         = step.dueDate ? deadlineStatus(step.dueDate, step.status, step.workdayNum, parentTask?.quarter||task?.quarter, parentTask?.year||task?.year) : 'ok';
     const myRole     = step.ownerId===userId ? 'Preparer' : step.reviewerId===userId ? 'Reviewer 1' : 'Reviewer 2';
     const blocker    = getBlockingPredecessor(step);
     return `<div class="mytask-row step">
@@ -5072,7 +5084,7 @@ function renderKanban() {
     const colTasks = tasks.filter(t => t.status === status);
     const cards    = colTasks.map(task => {
       const owner    = getUserById(task.ownerId);
-      const ds       = deadlineStatus(task.dueDate, task.status);
+      const ds       = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
       const canEdit  = !locked && (currentUser.isAdmin || task.ownerId===uid);
       const steps    = getStepsForTask(task._spId);
       const doneS    = steps.filter(s=>s.status==='Complete').length;
@@ -5171,7 +5183,7 @@ function renderReport() {
   const review       = activeTasks2.filter(t=>t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
   const inprog       = activeTasks2.filter(t=>t.status==='In Progress').length;
   const notstart     = activeTasks2.filter(t=>t.status==='Not Started').length;
-  const overdue      = activeTasks2.filter(t=>deadlineStatus(t.dueDate,t.status)==='overdue').length;
+  const overdue      = activeTasks2.filter(t=>deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
   const pct          = total ? Math.round(complete/total*100) : 0;
 
   const byType   = {};
@@ -5185,7 +5197,7 @@ function renderReport() {
     const doneS     = steps.filter(s=>s.status==='Complete').length;
     const signoffs  = getSignOffsFor(task._spId);
     const lastSO    = signoffs[0];
-    const ds        = deadlineStatus(task.dueDate, task.status);
+    const ds        = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
     // Find who signed off at each key stage
     const preparedBy  = signoffs.slice().reverse().find(s=>s.toStatus==='In Progress');
     const reviewed1By = signoffs.slice().reverse().find(s=>s.toStatus==='Ready for Review 1'||s.toStatus==='Ready for Review');
@@ -5272,13 +5284,13 @@ function renderExecView() {
   const inprog      = tasks.filter(t => t.status==='In Progress').length;
   const rfr         = tasks.filter(t => t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
   const notstarted  = tasks.filter(t => t.status==='Not Started').length;
-  const overdue     = tasks.filter(t => deadlineStatus(t.dueDate,t.status)==='overdue').length;
+  const overdue     = tasks.filter(t => deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
   const pct         = total ? Math.round(complete/total*100) : 0;
   const locked      = isQuarterLocked(q, yr);
 
   // Traffic light helper
   function tl(task) {
-    const ds = deadlineStatus(task.dueDate, task.status);
+    const ds = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
     if (task.status==='Complete')                          return {dot:'tl-green',  label:'Complete'};
     if (ds==='overdue')                                    return {dot:'tl-red',    label:'Overdue'};
     if (task.status==='Ready for Review 1'||task.status==='Ready for Review 2') return {dot:'tl-blue', label:'For Review'};
@@ -5299,7 +5311,7 @@ function renderExecView() {
       const signoffs = getSignOffsFor(task._spId);
       const lastSO   = signoffs[0];
       const completedBy = signoffs.slice().reverse().find(s=>s.toStatus==='Complete');
-      const ds = deadlineStatus(task.dueDate, task.status);
+      const ds = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
       const traf = tl(task);
       const unresolvedComments = _comments.filter(c=>(c.taskId===task._spId||c.taskId===task.id)&&!c.isResolved).length;
       return `<tr>
@@ -5467,7 +5479,7 @@ function renderTeamSummary() {
     const rev2 = tasks.filter(t => t.reviewer2Id===uid && t.ownerId!==uid && t.reviewerId!==uid);
     const all  = [...new Set([...prep, ...rev1, ...rev2])];
     const complete = all.filter(t => t.status==='Complete').length;
-    const overdue  = all.filter(t => deadlineStatus(t.dueDate,t.status)==='overdue').length;
+    const overdue  = all.filter(t => deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
     const rfr      = all.filter(t => t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
     const inprog   = all.filter(t => t.status==='In Progress').length;
     const pct      = all.length ? Math.round(complete/all.length*100) : 0;
@@ -5523,7 +5535,7 @@ function exportTeamSummary() {
     const rev  = tasks.filter(t => (t.reviewerId===userId||t.reviewer2Id===userId) && t.ownerId!==userId);
     const all  = [...new Set([...prep, ...rev])];
     const complete = all.filter(t => t.status==='Complete').length;
-    const overdue  = all.filter(t => deadlineStatus(t.dueDate,t.status)==='overdue').length;
+    const overdue  = all.filter(t => deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
     const rfr      = all.filter(t => t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
     const inprog   = all.filter(t => t.status==='In Progress').length;
     const pct      = all.length ? Math.round(complete/all.length*100) : 0;
