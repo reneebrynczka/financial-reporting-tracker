@@ -810,13 +810,7 @@ body.compact #compact-toggle { background: var(--navy); color: #fff; border-colo
 }
 .step-gated:hover { opacity: 1; border-color: var(--deadline-overdue) !important; }
 .gate-label { font-size: 10px; color: var(--gray-400); font-style: italic; text-align: right; max-width: 140px; line-height: 1.3; }
-.step-force-btn {
-  font-size: 10px; font-weight: 700; color: var(--deadline-overdue);
-  background: #FEF2F2; border: 1.5px solid var(--deadline-overdue);
-  border-radius: 5px; padding: 2px 7px; cursor: pointer;
-  font-family: inherit; transition: background .12s; white-space: nowrap;
-}
-.step-force-btn:hover { background: var(--deadline-overdue); color: #fff; }
+
 
 /* Drag reorder */
 .step-drag-handle   { cursor: grab; user-select: none; color: var(--gray-400); font-size: 12px; }
