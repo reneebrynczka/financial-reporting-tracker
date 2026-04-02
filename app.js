@@ -1721,7 +1721,7 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
             ? `<span class="unresolved-badge">${unresolvedCount}</span>`
             : (commentCount>0 ? ` <sup style="font-size:9px">${commentCount}</sup>` : '')}
         </button>
-        <button class="icon-btn" title="Quick note" onclick="openQuickNote('${task._spId}')">📝</button>
+
         ${canEdit?`<button class="icon-btn" title="Edit" onclick="openEditTask('${task._spId}')">✏️</button>`:''}
         ${currentUser.isAdmin?`<button class="icon-btn" title="Delete" onclick="deleteTask('${task._spId}',this)">🗑</button>`:''}
         ${task.reassignRequested && currentUser.isAdmin
@@ -3064,53 +3064,9 @@ async function deleteQuarterDate(spId, btnEl) {
 }
 
 // ── INLINE QUICK NOTE ────────────────────────────────────────
-function openQuickNote(spId) {
-  const _t = _tasks.find(t=>t._spId===spId);
-  if (_t && isQuarterLocked(_t.quarter, _t.year) && !currentUser.isAdmin) {
-    showToast('This quarter is locked — notes are read-only.', 'warning'); return;
-  }
-  const currentNote = _t ? (_t.notes||_t.description||'') : '';
-  const existing = document.getElementById('quick-note-pop');
-  if (existing) existing.remove();
-  const pop = document.createElement('div');
-  pop.id        = 'quick-note-pop';
-  pop.className = 'quick-note-pop';
-  pop.innerHTML = `
-    <div class="quick-note-header">Quick Note</div>
-    <textarea id="quick-note-ta" class="quick-note-ta" placeholder="Add a note — carries forward during rollforward…" rows="3">${escHtml(currentNote||'')}</textarea>
-    <div class="quick-note-footer">
-      <button class="btn-secondary small" onclick="document.getElementById('quick-note-pop').remove()">Cancel</button>
-      <button class="btn-primary small" onclick="saveQuickNote('${spId}')">Save</button>
-    </div>`;
-  document.body.appendChild(pop);
-  const ta = document.getElementById('quick-note-ta');
-  if (ta) ta.focus();
-  // Single named handler so Cancel button can also remove it
-  function _qnOutsideClick(e) {
-    const qn = document.getElementById('quick-note-pop');
-    if (!qn) { document.removeEventListener('click', _qnOutsideClick); return; }
-    if (!qn.contains(e.target)) { qn.remove(); document.removeEventListener('click', _qnOutsideClick); }
-  }
-  // Cancel button explicitly removes the handler
-  pop.querySelector('.btn-secondary').addEventListener('click', () => {
-    document.removeEventListener('click', _qnOutsideClick);
-  });
-  setTimeout(() => document.addEventListener('click', _qnOutsideClick), 0);
-}
 
-async function saveQuickNote(spId) {
-  const ta   = document.getElementById('quick-note-ta'); if(!ta) return;
-  const note = ta.value.trim();
-  const task = _tasks.find(t=>t._spId===spId); if(!task) return;
-  document.getElementById('quick-note-pop')?.remove();
-  task.notes       = note;
-  task.description = note;
-  renderCurrentView();
-  try {
-    await updateListItem(LISTS.tasks, spId, { Notes: note, Description: note });
-    showToast('Note saved.', 'success', 2000);
-  } catch(e) { showToast('Could not save note: '+e.message, 'error'); }
-}
+
+
 
 // ── ADMIN ─────────────────────────────────────────────────────
 function renderAdmin() {
