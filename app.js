@@ -475,8 +475,8 @@ let _tableSort = { col: null, dir: 1 }; // col: 'due'|'status'|'owner'|'name', d
 let currentUser      = null;
 let activeFilter     = 'all';
 let activeTypeFilter = 'all';
-let calYear          = new Date().getFullYear();
-let calMonth         = new Date().getMonth();
+let calYear  = new Date().getFullYear();
+let calMonth = new Date().getMonth();
 let editingTaskId    = null;
 let commentingTaskId = null;
 let _calResolve      = null;
@@ -1427,7 +1427,20 @@ function switchView(view, el) {
   if (_undoTimer) removeUndoToast();
   if (view==='dashboard') renderDashboard();
   if (view==='tasks')     { populateOwnerFilter(); renderAllTasks(); }
-  if (view==='calendar')  renderCalendar();
+  if (view==='calendar') {
+    // Default calendar to the month after the working quarter end on first open
+    const wq = loadWorkingQuarter();
+    if (wq?.q && wq?.yr) {
+      const afterQtr = { Q1:{m:3,yr:wq.yr}, Q2:{m:6,yr:wq.yr},
+                         Q3:{m:9,yr:wq.yr}, Q4:{m:0,yr:wq.yr+1} }[wq.q];
+      if (afterQtr && calYear === new Date().getFullYear() && calMonth === new Date().getMonth()) {
+        // Only auto-set if user hasn't manually navigated the calendar yet
+        calYear  = afterQtr.yr;
+        calMonth = afterQtr.m;
+      }
+    }
+    renderCalendar();
+  }
   if (view==='team') {
     const now=new Date(); const m=now.getMonth();
     const q=m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4';
