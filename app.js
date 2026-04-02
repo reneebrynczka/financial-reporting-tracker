@@ -663,6 +663,50 @@ function nearestWorkingDay(dateStr) {
 
 // ── Admin: Custom Holiday Manager ────────────────────────────
 
+// ── WORKING QUARTER PICKER ──────────────────────────────────
+// Renders the working quarter selector in the Admin panel.
+// Admins set this once per quarter — all team members default to it on login.
+function renderWorkingQuarterPicker() {
+  const el = document.getElementById('admin-working-quarter');
+  if (!el) return;
+  const cur = new Date().getFullYear();
+  const wq  = loadWorkingQuarter();
+  const quarters = ['Q1','Q2','Q3','Q4'];
+  const years    = [cur-1, cur, cur+1];
+  el.innerHTML = `
+    <div class="card-header">
+      <h3 class="card-title">📌 Working Quarter</h3>
+    </div>
+    <div style="padding:14px 22px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <p style="font-size:13px;color:var(--text-muted);margin:0;flex:1;min-width:200px">
+        The quarter your team is currently closing. All team members default to this quarter on login.
+      </p>
+      <div style="display:flex;align-items:center;gap:8px">
+        <select id="wq-quarter" class="filter-select">
+          ${quarters.map(q => `<option value="${q}" ${wq?.q===q?'selected':''}>${q}</option>`).join('')}
+        </select>
+        <select id="wq-year" class="filter-select">
+          ${years.map(y => `<option value="${y}" ${wq?.yr===y?'selected':''}>${y}</option>`).join('')}
+        </select>
+        <button class="btn-primary small" onclick="applyWorkingQuarter()">Set</button>
+        ${wq ? `<span style="font-size:12px;color:var(--text-faint)">Currently: ${wq.q} ${wq.yr}</span>` : ''}
+      </div>
+    </div>`;
+}
+
+function applyWorkingQuarter() {
+  const q  = document.getElementById('wq-quarter')?.value;
+  const yr = parseInt(document.getElementById('wq-year')?.value);
+  if (!q || !yr) return;
+  saveWorkingQuarter(q, yr);
+  // Update the dashboard filter immediately
+  const qf = document.getElementById('quarter-filter'); if(qf) qf.value = q;
+  const yf = document.getElementById('year-filter');    if(yf) yf.value = yr;
+  saveQuarterPref(q, yr);
+  renderAdmin();
+  showToast(`Working quarter set to ${q} ${yr} — all team members will default to this on login.`, 'success');
+}
+
 // ── CLOSE CALENDARS PANEL (in Admin) ────────────────────────
 function renderCloseCalendarsPanel() {
   const el = document.getElementById('admin-calendars-list');
@@ -1333,13 +1377,15 @@ function launchApp() {
 
 function setCurrentQuarter() {
   const now  = new Date(); const m = now.getMonth();
-  const defQ = m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4';
-  const pref = loadQuarterPref();
-  const q    = pref.q  || defQ;
-  const yr   = pref.yr ? parseInt(pref.yr) : now.getFullYear();
-  const qf   = document.getElementById('quarter-filter'); if(qf) qf.value = q;
-  const yf   = document.getElementById('year-filter');    if(yf) yf.value = yr;
-  const lbl  = document.getElementById('dashboard-quarter-label');
+  const calQ = m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4'; // calendar-based quarter
+  // Use working quarter (set in Admin) if available, then session pref, then calendar
+  const working = loadWorkingQuarter();
+  const pref    = loadQuarterPref();
+  const q  = pref.q  || working?.q  || calQ;
+  const yr = pref.yr ? parseInt(pref.yr) : (working?.yr || now.getFullYear());
+  const qf = document.getElementById('quarter-filter'); if(qf) qf.value = q;
+  const yf = document.getElementById('year-filter');    if(yf) yf.value = yr;
+  const lbl = document.getElementById('dashboard-quarter-label');
   if(lbl) lbl.textContent = `${q} ${yr} · Financial Reporting`;
 }
 function populateYearSelects() {
@@ -3059,6 +3105,8 @@ function renderAdmin() {
   const pendingTasks = _tasks.filter(t=>t.reassignRequested);
   const pendingSteps = _steps.filter(s=>s.reassignRequested);
   const pendingTotal = pendingTasks.length + pendingSteps.length;
+  // Render working quarter picker at top of admin
+  renderWorkingQuarterPicker();
   const reassignBanner = document.getElementById('admin-reassign-banner');
   if (reassignBanner) {
     if (pendingTotal > 0) {
@@ -4431,6 +4479,20 @@ function saveQuarterPref(q, yr) {
 }
 function loadQuarterPref() {
   try { return { q: sessionStorage.getItem('ft_quarter'), yr: sessionStorage.getItem('ft_year') }; } catch(e) { return {}; }
+}
+
+// Working quarter — the quarter your team is currently closing.
+// Set in Admin. Persists in localStorage so every team member's app
+// defaults to the right quarter on login, regardless of calendar month.
+function saveWorkingQuarter(q, yr) {
+  try { localStorage.setItem('ft_working_q', q); localStorage.setItem('ft_working_yr', String(yr)); } catch(e) {}
+}
+function loadWorkingQuarter() {
+  try {
+    const q  = localStorage.getItem('ft_working_q');
+    const yr = localStorage.getItem('ft_working_yr');
+    return (q && yr) ? { q, yr: parseInt(yr) } : null;
+  } catch(e) { return null; }
 }
 
 // ═══════════════════════════════════════════════════════════════
