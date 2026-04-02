@@ -1451,8 +1451,11 @@ function switchView(view, el) {
   if (view==='admin')     renderAdmin();
   if (view==='mytasks') {
     const wq=workingQ();
-    const qEl=document.getElementById('mytasks-quarter'); if(qEl&&qEl.value==='all') qEl.value=wq.q;
-    const yEl=document.getElementById('mytasks-year');    if(yEl&&!yEl.value) yEl.value=wq.yr;
+    const qEl=document.getElementById('mytasks-quarter');
+    const yEl=document.getElementById('mytasks-year');
+    // Always default to working quarter — user can change it manually after
+    if (qEl && (qEl.value==='all' || !qEl.value)) qEl.value=wq.q;
+    if (yEl) yEl.value=wq.yr;
     toggleMyTasksYearVisibility();
     renderMyTasks();
   }
@@ -1460,8 +1463,8 @@ function switchView(view, el) {
   if (view==='report')    { initReportSelects(); renderReport(); }
   if (view==='exec') {
     const wq=workingQ();
-    const qEl=document.getElementById('exec-quarter'); if(qEl&&!qEl.value) qEl.value=wq.q;
-    const yEl=document.getElementById('exec-year');    if(yEl&&!yEl.value) yEl.value=wq.yr;
+    const qEl=document.getElementById('exec-quarter'); if(qEl) qEl.value=wq.q;
+    const yEl=document.getElementById('exec-year');    if(yEl) yEl.value=wq.yr;
     renderExecView();
   }
 }
@@ -5086,11 +5089,10 @@ function renderMyTasks() {
 // ═══════════════════════════════════════════════════════════════
 function initKanbanSelects() {
   const wq = workingQ();
-  // Only set defaults if no value is already selected — preserve user's last choice
   const qEl = document.getElementById('kanban-quarter');
-  if (qEl && !qEl.value) qEl.value = wq.q;
+  if (qEl) qEl.value = wq.q;
   const yEl = document.getElementById('kanban-year');
-  if (yEl && !yEl.value) yEl.value = wq.yr;
+  if (yEl) yEl.value = wq.yr;
 }
 
 function renderKanban() {
