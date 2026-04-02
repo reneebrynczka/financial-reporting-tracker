@@ -2417,7 +2417,7 @@ function renderStepsPanel() {
                   onclick="cycleStepStatus('${step._spId}')">
                   ${isGated ? '🔒 ' : ''}${escHtml(step.status)}
                 </span>
-                ${isGated && currentUser.isAdmin ? `<button class="icon-btn step-force-btn" title="Admin: force unlock" onclick="forceUnlockStep('${step._spId}')">⚡ Force</button>` : ''}
+
                 ${isGated ? `<span class="gate-label">${gateLabel}</span>` : ''}
               </div>
               <button class="icon-btn" onclick="openEditStep('${step._spId}')">✏️</button>`;
@@ -2427,6 +2427,7 @@ function renderStepsPanel() {
             : (!currentUser.isAdmin && (step.ownerId===currentUser.id||step.ownerId===currentUser._spId||step.reviewerId===currentUser.id||step.reviewer2Id===currentUser.id))
               ? `<button class="icon-btn" title="Request reassignment" onclick="openReassignRequest('${step._spId}','step','${escHtml(step.name)}')">🔄</button>`
               : ''}
+          ${isGated && currentUser.isAdmin ? `<button class="icon-btn" title="Admin: force unlock (bypasses gate)" onclick="forceUnlockStep('${step._spId}')">🔓</button>` : ''}
           ${currentUser.isAdmin ? `<button class="icon-btn" onclick="deleteStep('${step._spId}',this)">🗑</button>` : ''}
         </div>
       </div>`;
