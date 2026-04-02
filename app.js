@@ -4845,14 +4845,10 @@ async function stepDrop(e, targetSpId) {
   const vEl = document.getElementById('app-version');
   if (vEl) vEl.textContent = APP_VERSION;
 
-  // Show current quarter on login screen
+  // Show today's date on login screen
   const qCtx = document.getElementById('login-quarter-context');
   if (qCtx) {
-    const now = new Date();
-    const m   = now.getMonth();
-    const q   = m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4';
-    const yr  = now.getFullYear();
-    qCtx.textContent = `${q} ${yr} Close`;
+    qCtx.textContent = new Date().toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
   }
 
   msalInstance.handleRedirectPromise().catch(console.error);
