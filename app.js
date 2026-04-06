@@ -13,11 +13,11 @@
 // ── CONFIG ────────────────────────────────────────────────────
 const CONFIG = {
   // Azure AD — requires User.Read + Sites.ReadWrite.All
-  clientId:  "bb00291f-d451-4e74-b8cf-10c334efb0ed",
-  tenantId:  "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",
+  clientId:  "REPLACE_WITH_YOUR_APP_CLIENT_ID",
+  tenantId:  "REPLACE_WITH_YOUR_TENANT_ID",
 
   // SharePoint site URL — e.g. https://moodys.sharepoint.com/sites/FinancialReporting
-  siteUrl:   "https://moodys.sharepoint.com/sites/finance_home_finrptg",
+  siteUrl:   "REPLACE_WITH_YOUR_SHAREPOINT_SITE_URL",
 };
 // ─────────────────────────────────────────────────────────────
 
@@ -324,15 +324,15 @@ function normaliseQuarterDate(f) {
   let calOverrides = {};
   try { calOverrides = JSON.parse(f.CalOverrides || '{}'); } catch { calOverrides = {}; }
   return {
-    _spId:          f.id || f.ID || '',
-    quarter:        f.Quarter || '',
-    year:           parseInt(f.Year) || 0,
-    wd1Date:        (f.WD1Date || '').slice(0,10),
+    _spId:            f.id || f.ID || '',
+    quarter:          f.Quarter || '',
+    year:             parseInt(f.Year) || 0,
+    wd1Date:          (f.WD1Date || '').slice(0,10),
     calOverrides,
-    secFilingDate:  (f.SECFilingDate  || '').slice(0,10),
-    earningsDate:   (f.EarningsCallDate || '').slice(0,10),
-    earningsTime:   f.EarningsCallTime  || '',
-
+    isWorkingQuarter: f.IsWorkingQuarter === 'Yes',
+    secFilingDate:    (f.SECFilingDate  || '').slice(0,10),
+    earningsDate:     (f.EarningsCallDate || '').slice(0,10),
+    earningsTime:     f.EarningsCallTime  || '',
   };
 }
 function normaliseStep(f) {
@@ -706,12 +706,40 @@ function renderWorkingQuarterPicker() {
     </div>`;
 }
 
-function applyWorkingQuarter() {
+async function applyWorkingQuarter() {
   const q  = document.getElementById('wq-quarter')?.value;
   const yr = parseInt(document.getElementById('wq-year')?.value);
   if (!q || !yr) return;
+
+  // Persist to localStorage for instant local effect
   saveWorkingQuarter(q, yr);
-  // Update the dashboard filter immediately
+
+  // Write IsWorkingQuarter to SharePoint so all team members get the same default
+  try {
+    // Clear the flag on any previously marked record
+    const prev = _quarterDates.find(d => d.isWorkingQuarter && !(d.quarter===q && d.year===yr));
+    if (prev) {
+      prev.isWorkingQuarter = false;
+      await updateListItem(LISTS.quarterDates, prev._spId, { IsWorkingQuarter: 'No' });
+    }
+
+    // Find or create the FT_QuarterDates record for the new working quarter
+    const existing = _quarterDates.find(d => d.quarter===q && d.year===yr);
+    if (existing) {
+      existing.isWorkingQuarter = true;
+      await updateListItem(LISTS.quarterDates, existing._spId, { IsWorkingQuarter: 'Yes' });
+    } else {
+      // No record yet for this quarter — create one
+      const fields = { Title: `${q} ${yr}`, Quarter: q, Year: String(yr), IsWorkingQuarter: 'Yes' };
+      const created = await createListItem(LISTS.quarterDates, fields);
+      _quarterDates.push(normaliseQuarterDate({ ...fields, id: created?.id || uid() }));
+    }
+  } catch(e) {
+    console.warn('Could not save working quarter to SharePoint:', e.message);
+    showToast('Working quarter saved locally — could not sync to SharePoint.', 'warning');
+  }
+
+  // Update the dashboard filter immediately for this user
   const qf = document.getElementById('quarter-filter'); if(qf) qf.value = q;
   const yf = document.getElementById('year-filter');    if(yf) yf.value = yr;
   saveQuarterPref(q, yr);
@@ -1388,13 +1416,11 @@ function launchApp() {
 }
 
 function setCurrentQuarter() {
-  const now  = new Date(); const m = now.getMonth();
-  const calQ = m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4'; // calendar-based quarter
-  // Use working quarter (set in Admin) if available, then session pref, then calendar
-  const working = loadWorkingQuarter();
-  const pref    = loadQuarterPref();
-  const q  = pref.q  || working?.q  || calQ;
-  const yr = pref.yr ? parseInt(pref.yr) : (working?.yr || now.getFullYear());
+  // Use session pref if set (user changed filter this session), else working quarter
+  const pref = loadQuarterPref();
+  const wq   = workingQ(); // reads SharePoint first, then localStorage, then calendar
+  const q    = pref.q  || wq.q;
+  const yr   = pref.yr ? parseInt(pref.yr) : wq.yr;
   const qf = document.getElementById('quarter-filter'); if(qf) qf.value = q;
   const yf = document.getElementById('year-filter');    if(yf) yf.value = yr;
   const lbl = document.getElementById('dashboard-quarter-label');
@@ -2417,17 +2443,16 @@ function renderStepsPanel() {
                   onclick="cycleStepStatus('${step._spId}')">
                   ${isGated ? '🔒 ' : ''}${escHtml(step.status)}
                 </span>
-
                 ${isGated ? `<span class="gate-label">${gateLabel}</span>` : ''}
               </div>
-              <button class="icon-btn" onclick="openEditStep('${step._spId}')">✏️</button>`;
+              <button class="icon-btn" onclick="openEditStep('${step._spId}')">✏️</button>
+              ${isGated && currentUser.isAdmin ? `<button class="icon-btn" title="Admin: force unlock (bypasses gate)" onclick="forceUnlockStep('${step._spId}')">🔓</button>` : ''}`;
           })()}
           ${step.reassignRequested && currentUser.isAdmin
             ? `<button class="icon-btn reassign-flag-btn" title="Reassignment requested${step.reassignNote?' — '+step.reassignNote:''}" onclick="clearReassignFlag('${step._spId}','step')">🔄</button>`
             : (!currentUser.isAdmin && (step.ownerId===currentUser.id||step.ownerId===currentUser._spId||step.reviewerId===currentUser.id||step.reviewer2Id===currentUser.id))
               ? `<button class="icon-btn" title="Request reassignment" onclick="openReassignRequest('${step._spId}','step','${escHtml(step.name)}')">🔄</button>`
               : ''}
-          ${isGated && currentUser.isAdmin ? `<button class="icon-btn" title="Admin: force unlock (bypasses gate)" onclick="forceUnlockStep('${step._spId}')">🔓</button>` : ''}
           ${currentUser.isAdmin ? `<button class="icon-btn" onclick="deleteStep('${step._spId}',this)">🗑</button>` : ''}
         </div>
       </div>`;
@@ -4468,8 +4493,13 @@ function loadQuarterPref() {
 // across all views. Uses the Admin-set working quarter if available,
 // otherwise falls back to the current calendar quarter.
 function workingQ() {
-  const wq  = loadWorkingQuarter();
-  if (wq?.q && wq?.yr) return wq;
+  // SharePoint is the source of truth — check _quarterDates first
+  const spWq = _quarterDates.find(d => d.isWorkingQuarter);
+  if (spWq) return { q: spWq.quarter, yr: spWq.year };
+  // Fall back to localStorage (set before data loaded, or for offline use)
+  const local = loadWorkingQuarter();
+  if (local?.q && local?.yr) return local;
+  // Final fallback: current calendar quarter
   const now = new Date(); const m = now.getMonth();
   return { q: m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4', yr: now.getFullYear() };
 }
