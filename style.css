@@ -628,6 +628,14 @@ select:focus-visible, textarea:focus-visible {
   display: flex; align-items: center; justify-content: center;
   z-index: 200; backdrop-filter: blur(3px);
 }
+/* Steps panel sits above main content but below all modals.
+   Any modal opened from within the steps panel will render on top. */
+#steps-overlay       { z-index: 300; }
+#modal-overlay,
+#comment-overlay,
+#setup-wizard,
+#checklist-overlay,
+#quarter-wizard      { z-index: 400; }
 .modal {
   background: var(--white);
   border-radius: var(--radius-lg);
