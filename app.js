@@ -13,11 +13,11 @@
 // ── CONFIG ────────────────────────────────────────────────────
 const CONFIG = {
   // Azure AD — requires User.Read + Sites.ReadWrite.All
-  clientId:  "REPLACE_WITH_YOUR_APP_CLIENT_ID",
-  tenantId:  "REPLACE_WITH_YOUR_TENANT_ID",
+  clientId:  "bb00291f-d451-4e74-b8cf-10c334efb0ed",
+  tenantId:  "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",
 
   // SharePoint site URL — e.g. https://moodys.sharepoint.com/sites/FinancialReporting
-  siteUrl:   "REPLACE_WITH_YOUR_SHAREPOINT_SITE_URL",
+  siteUrl:   "https://moodys.sharepoint.com/sites/finance_home_finrptg",
 };
 // ─────────────────────────────────────────────────────────────
 
