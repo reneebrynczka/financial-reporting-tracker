@@ -1745,7 +1745,7 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
             task.ownerId===uid || task.reviewerId===uid || task.reviewer2Id===uid
           );
           return `<span class="status-badge ${statusBadgeClass(task.status)}"
-            onclick="${canInteract?`openQuickStatus('${task._spId}','task',this)`:''}"
+            onclick="${canInteract?`event.stopPropagation();openQuickStatus('${task._spId}','task',this)`:''}"
             style="${canInteract?'cursor:pointer':''}"
             title="${!locked?'Click to change status':''}"
           >${escHtml(task.status)}</span>`;
@@ -2440,7 +2440,7 @@ function renderStepsPanel() {
               <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
                 <span class="status-badge ${statusBadgeClass(step.status)} ${isGated?'step-gated':''}"
                   style="cursor:pointer;font-size:11px" title="${badgeTitle}"
-                  onclick="openQuickStatus('${step._spId}','step',this)">
+                  onclick="event.stopPropagation();openQuickStatus('${step._spId}','step',this)">
                   ${isGated ? '🔒 ' : ''}${escHtml(step.status)}
                 </span>
                 ${isGated ? `<span class="gate-label">${gateLabel}</span>` : ''}
@@ -3710,7 +3710,7 @@ function renderPriorityCard() {
         <span class="priority-item-meta">${escHtml(t.type)} · ${isOverdue?'<span style="color:#ef4444;font-weight:600">OVERDUE</span>':'Due '+formatDate(t.dueDate)}</span>
       </div>
       <span class="status-badge ${statusBadgeClass(t.status)}" style="cursor:pointer;font-size:11px"
-        onclick="openQuickStatus('${t._spId}','task',this)">${escHtml(t.status)}</span>
+        onclick="event.stopPropagation();openQuickStatus('${t._spId}','task',this)">${escHtml(t.status)}</span>
     </div>`;
   }).join('');
 
@@ -3724,7 +3724,7 @@ function renderPriorityCard() {
         <span class="priority-item-meta">Step · ${escHtml(task?.name||'')} · ${isOverdue?'<span style="color:#ef4444;font-weight:600">OVERDUE</span>':'Due '+formatDate(s.dueDate)}</span>
       </div>
       <span class="status-badge ${statusBadgeClass(s.status)}" style="cursor:pointer;font-size:11px"
-        onclick="openQuickStatus('${s._spId}','step',this)">${escHtml(s.status)}</span>
+        onclick="event.stopPropagation();openQuickStatus('${s._spId}','step',this)">${escHtml(s.status)}</span>
     </div>`;
   }).join('');
 
@@ -3748,9 +3748,9 @@ function openQuickStatus(spId, type, anchorEl) {
   if (!item) return;
   const cycle = getStatusCycle(item);
 
-  // Remove any existing menu
+  // Remove any existing menu before opening a new one
   const existing = document.getElementById('quick-status-menu');
-  if (existing) { existing.remove(); return; } // second click on same badge closes it
+  if (existing) existing.remove();
 
   const menu = document.createElement('div');
   menu.id = 'quick-status-menu';
@@ -5039,7 +5039,7 @@ function renderMyTasks() {
         </div>
       </div>
       <div class="mytask-actions">
-        <span class="status-badge ${statusBadgeClass(task.status)}" ${canEdit?`onclick="openQuickStatus('${task._spId}','task',this)" style="cursor:pointer"`:''}>${escHtml(task.status)}</span>
+        <span class="status-badge ${statusBadgeClass(task.status)}" ${canEdit?`onclick="event.stopPropagation();openQuickStatus('${task._spId}','task',this)" style="cursor:pointer"`:''}>${escHtml(task.status)}</span>
         <button class="icon-btn" title="Steps" onclick="openSteps('${task._spId}','${escHtml(task.name)}')">📋</button>
         <button class="icon-btn ${unresolvedComments>0 ? 'comment-btn-unresolved' : ''}"
           title="Comments"
@@ -5071,7 +5071,7 @@ function renderMyTasks() {
         ${!locked
           ? `<span class="status-badge ${statusBadgeClass(step.status)}"
                style="cursor:pointer;font-size:11px"
-               onclick="openQuickStatus('${step._spId}','step',this)">${escHtml(step.status)}</span>`
+               onclick="event.stopPropagation();openQuickStatus('${step._spId}','step',this)">${escHtml(step.status)}</span>`
           : `<span class="status-badge ${statusBadgeClass(step.status)}"
                style="font-size:11px">${escHtml(step.status)}</span>`}
       </div>
