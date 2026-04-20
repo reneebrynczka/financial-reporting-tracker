@@ -3769,12 +3769,20 @@ function openQuickStatus(spId, type, anchorEl) {
 
   // Position below anchor if provided, else centre on screen
   if (anchorEl && anchorEl.getBoundingClientRect) {
-    const rect = anchorEl.getBoundingClientRect();
-    const top  = rect.bottom + window.scrollY + 4;
-    const left = Math.min(Math.max(8, rect.left + window.scrollX), window.innerWidth - 200);
+    const rect    = anchorEl.getBoundingClientRect();
+    const menuW   = 200; // approximate menu width
+    const menuH   = 200; // approximate menu height
+    // Use viewport-relative coords with fixed positioning to avoid scroll issues
+    let top  = rect.bottom + 4;
+    let left = rect.left;
+    // Clamp so menu never goes off-screen
+    if (left + menuW > window.innerWidth  - 8) left = window.innerWidth  - menuW - 8;
+    if (top  + menuH > window.innerHeight - 8) top  = rect.top - menuH - 4; // flip above
+    if (left < 8) left = 8;
+    if (top  < 8) top  = 8;
+    menu.style.position = 'fixed';
     menu.style.top  = top  + 'px';
     menu.style.left = left + 'px';
-    menu.style.position = 'absolute';
   } else {
     menu.style.top       = '50%';
     menu.style.left      = '50%';
