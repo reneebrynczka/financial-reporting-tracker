@@ -1744,10 +1744,9 @@ function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
             task.ownerId===uid || task.reviewerId===uid || task.reviewer2Id===uid
           );
           return `<span class="status-badge ${statusBadgeClass(task.status)}"
-            onclick="${canInteract?`cycleStatus('${task._spId}')`:''}"
-            oncontextmenu="event.preventDefault();${canInteract?`openQuickStatus('${task._spId}','task')`:''}"
+            onclick="${canInteract?`openQuickStatus('${task._spId}','task',this)`:''}"
             style="${canInteract?'cursor:pointer':''}"
-            title="${!locked?'Click to advance · Right-click for all options incl. Not Applicable':''}"
+            title="${!locked?'Click to change status':''}"
           >${escHtml(task.status)}</span>`;
         })()}</td>
       <td><div class="action-row">
@@ -2440,7 +2439,7 @@ function renderStepsPanel() {
               <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
                 <span class="status-badge ${statusBadgeClass(step.status)} ${isGated?'step-gated':''}"
                   style="cursor:pointer;font-size:11px" title="${badgeTitle}"
-                  onclick="cycleStepStatus('${step._spId}')">
+                  onclick="openQuickStatus('${step._spId}','step',this)">
                   ${isGated ? '🔒 ' : ''}${escHtml(step.status)}
                 </span>
                 ${isGated ? `<span class="gate-label">${gateLabel}</span>` : ''}
@@ -3710,7 +3709,7 @@ function renderPriorityCard() {
         <span class="priority-item-meta">${escHtml(t.type)} · ${isOverdue?'<span style="color:#ef4444;font-weight:600">OVERDUE</span>':'Due '+formatDate(t.dueDate)}</span>
       </div>
       <span class="status-badge ${statusBadgeClass(t.status)}" style="cursor:pointer;font-size:11px"
-        onclick="cycleStatus('${t._spId}')">${escHtml(t.status)}</span>
+        onclick="openQuickStatus('${t._spId}','task',this)">${escHtml(t.status)}</span>
     </div>`;
   }).join('');
 
@@ -3724,7 +3723,7 @@ function renderPriorityCard() {
         <span class="priority-item-meta">Step · ${escHtml(task?.name||'')} · ${isOverdue?'<span style="color:#ef4444;font-weight:600">OVERDUE</span>':'Due '+formatDate(s.dueDate)}</span>
       </div>
       <span class="status-badge ${statusBadgeClass(s.status)}" style="cursor:pointer;font-size:11px"
-        onclick="cycleStepStatus('${s._spId}')">${escHtml(s.status)}</span>
+        onclick="openQuickStatus('${s._spId}','step',this)">${escHtml(s.status)}</span>
     </div>`;
   }).join('');
 
@@ -5022,7 +5021,7 @@ function renderMyTasks() {
         </div>
       </div>
       <div class="mytask-actions">
-        <span class="status-badge ${statusBadgeClass(task.status)}" ${canEdit?`onclick="cycleStatus('${task._spId}')" style="cursor:pointer"`:''}>${escHtml(task.status)}</span>
+        <span class="status-badge ${statusBadgeClass(task.status)}" ${canEdit?`onclick="openQuickStatus('${task._spId}','task',this)" style="cursor:pointer"`:''}>${escHtml(task.status)}</span>
         <button class="icon-btn" title="Steps" onclick="openSteps('${task._spId}','${escHtml(task.name)}')">📋</button>
         <button class="icon-btn ${unresolvedComments>0 ? 'comment-btn-unresolved' : ''}"
           title="Comments"
@@ -5054,7 +5053,7 @@ function renderMyTasks() {
         ${!locked
           ? `<span class="status-badge ${statusBadgeClass(step.status)}"
                style="cursor:pointer;font-size:11px"
-               onclick="cycleStepStatus('${step._spId}')">${escHtml(step.status)}</span>`
+               onclick="openQuickStatus('${step._spId}','step',this)">${escHtml(step.status)}</span>`
           : `<span class="status-badge ${statusBadgeClass(step.status)}"
                style="font-size:11px">${escHtml(step.status)}</span>`}
       </div>
