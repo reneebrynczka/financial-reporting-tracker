@@ -3777,8 +3777,8 @@ function openQuickStatus(spId, type, anchorEl) {
     menu.style.position  = 'fixed';
   }
 
-  const closeMenu = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', closeMenu); } };
-  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+  const closeMenu = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', closeMenu); } };
+  setTimeout(() => document.addEventListener('mousedown', closeMenu), 0);
 }
 
 async function quickSetStatus(spId, type, newStatus) {
