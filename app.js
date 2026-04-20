@@ -1422,7 +1422,7 @@ function setCurrentQuarter() {
   const q    = pref.q  || wq.q;
   const yr   = pref.yr ? parseInt(pref.yr) : wq.yr;
   const qf = document.getElementById('quarter-filter'); if(qf) qf.value = q;
-  const yf = document.getElementById('year-filter');    if(yf) yf.value = yr;
+  const yf = document.getElementById('year-filter');    if(yf) yf.value = String(yr);
   const lbl = document.getElementById('dashboard-quarter-label');
   if(lbl) lbl.textContent = `${q} ${yr} · Financial Reporting`;
 }
@@ -1434,7 +1434,8 @@ function populateYearSelects() {
   ['year-filter','template-year-select','rf-from-year','rf-to-year','kanban-year','report-year','team-year','exec-year','mytasks-year','all-year-filter'].forEach(id => {
     const el = document.getElementById(id); if(!el) return;
     el.innerHTML = years.map(y=>`<option value="${y}">${y}</option>`).join('');
-    el.value = cur;
+    // Do NOT set .value here — setCurrentQuarter and per-view defaults handle this
+    // so the working quarter from SharePoint always wins on first load
   });
 }
 
@@ -3746,39 +3747,57 @@ function openQuickStatus(spId, type, anchorEl) {
   const item = type==='task' ? _tasks.find(t=>t._spId===spId) : _steps.find(s=>s._spId===spId);
   if (!item) return;
   const cycle = getStatusCycle(item);
+
+  // Remove any existing menu
   const existing = document.getElementById('quick-status-menu');
-  if (existing) existing.remove();
+  if (existing) { existing.remove(); return; } // second click on same badge closes it
 
   const menu = document.createElement('div');
   menu.id = 'quick-status-menu';
   menu.className = 'quick-status-menu';
-  menu.innerHTML = `
-    <div style="font-size:11px;font-weight:600;color:var(--text-faint);padding:6px 12px 4px;border-bottom:1px solid var(--border)">
-      ${escHtml(item.name)}
-    </div>` +
+  menu.innerHTML =
+    `<div style="font-size:11px;font-weight:600;color:var(--text-faint);padding:6px 12px 4px;border-bottom:1px solid var(--border)">${escHtml(item.name)}</div>` +
     cycle.concat(['Not Applicable']).map(s =>
-    `<div class="quick-status-option ${s===item.status?'active':''}"
-      onclick="quickSetStatus('${spId}','${type}','${s}');document.getElementById('quick-status-menu')?.remove()">
-      <span class="status-badge ${statusBadgeClass(s)}" style="font-size:11px;pointer-events:none">${escHtml(s)}</span>
-    </div>`
-  ).join('');
+      `<div class="quick-status-option ${s===item.status?'active':''}"
+        onmousedown="event.stopPropagation();quickSetStatus('${spId}','${type}','${s}');document.getElementById('quick-status-menu')?.remove()">
+        <span class="status-badge ${statusBadgeClass(s)}" style="font-size:11px;pointer-events:none">${escHtml(s)}</span>
+      </div>`
+    ).join('') +
+    `<div style="font-size:10px;color:var(--text-faint);padding:4px 10px;border-top:1px solid var(--border);text-align:center">Esc to close</div>`;
 
   document.body.appendChild(menu);
 
-  // Position near anchor element if provided, otherwise centre on screen
-  if (anchorEl) {
+  // Position below anchor if provided, else centre on screen
+  if (anchorEl && anchorEl.getBoundingClientRect) {
     const rect = anchorEl.getBoundingClientRect();
-    menu.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
-    menu.style.left = Math.max(8, rect.left + window.scrollX) + 'px';
+    const top  = rect.bottom + window.scrollY + 4;
+    const left = Math.min(Math.max(8, rect.left + window.scrollX), window.innerWidth - 200);
+    menu.style.top  = top  + 'px';
+    menu.style.left = left + 'px';
+    menu.style.position = 'absolute';
   } else {
-    menu.style.top  = '50%';
-    menu.style.left = '50%';
+    menu.style.top       = '50%';
+    menu.style.left      = '50%';
     menu.style.transform = 'translate(-50%, -50%)';
     menu.style.position  = 'fixed';
   }
 
-  const closeMenu = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', closeMenu); } };
-  setTimeout(() => document.addEventListener('mousedown', closeMenu), 0);
+  // Close on outside click — use capture phase so it fires before any other handlers
+  function onOutside(e) {
+    if (!menu.isConnected) { document.removeEventListener('click', onOutside, true); return; }
+    if (!menu.contains(e.target) && e.target !== anchorEl) {
+      menu.remove();
+      document.removeEventListener('click', onOutside, true);
+    }
+  }
+  // Delay so the current click event doesn't immediately trigger onOutside
+  setTimeout(() => document.addEventListener('click', onOutside, true), 200);
+
+  // Also close on Escape
+  function onKey(e) {
+    if (e.key === 'Escape') { menu.remove(); document.removeEventListener('keydown', onKey); }
+  }
+  document.addEventListener('keydown', onKey);
 }
 
 async function quickSetStatus(spId, type, newStatus) {
