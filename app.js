@@ -3767,28 +3767,11 @@ function openQuickStatus(spId, type, anchorEl) {
 
   document.body.appendChild(menu);
 
-  // Position below anchor if provided, else centre on screen
-  if (anchorEl && anchorEl.getBoundingClientRect) {
-    const rect    = anchorEl.getBoundingClientRect();
-    const menuW   = 200; // approximate menu width
-    const menuH   = 200; // approximate menu height
-    // Use viewport-relative coords with fixed positioning to avoid scroll issues
-    let top  = rect.bottom + 4;
-    let left = rect.left;
-    // Clamp so menu never goes off-screen
-    if (left + menuW > window.innerWidth  - 8) left = window.innerWidth  - menuW - 8;
-    if (top  + menuH > window.innerHeight - 8) top  = rect.top - menuH - 4; // flip above
-    if (left < 8) left = 8;
-    if (top  < 8) top  = 8;
-    menu.style.position = 'fixed';
-    menu.style.top  = top  + 'px';
-    menu.style.left = left + 'px';
-  } else {
-    menu.style.top       = '50%';
-    menu.style.left      = '50%';
-    menu.style.transform = 'translate(-50%, -50%)';
-    menu.style.position  = 'fixed';
-  }
+  // Always centre on screen — consistent across all views
+  menu.style.position  = 'fixed';
+  menu.style.top       = '50%';
+  menu.style.left      = '50%';
+  menu.style.transform = 'translate(-50%, -50%)';
 
   // Close on outside click — use capture phase so it fires before any other handlers
   function onOutside(e) {
