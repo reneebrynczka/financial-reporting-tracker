@@ -1315,8 +1315,8 @@ async function loginWithMicrosoft() {
   const errEl = document.getElementById('sp-error');
   if (errEl) { errEl.textContent = ''; errEl.classList.add('hidden'); }
   try {
-    await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
-    await afterMicrosoftLogin();
+    // Use redirect flow — works in all browsers including Edge with strict tracking prevention
+    await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
   } catch(e) {
     showError("Microsoft sign-in failed: " + e.message);
   }
@@ -1368,7 +1368,7 @@ function logout() {
   stopCommentPolling();
   if (_pollTimer) clearInterval(_pollTimer);
   if (typeof _stampTimer !== 'undefined') clearInterval(_stampTimer);
-  msalInstance.logoutPopup().catch(()=>{});
+  msalInstance.logoutRedirect().catch(()=>{});
   document.getElementById('app-screen').classList.remove('active');
   document.getElementById('login-screen').classList.add('active');
 }
@@ -4900,7 +4900,15 @@ async function stepDrop(e, targetSpId) {
     qCtx.textContent = new Date().toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
   }
 
-  msalInstance.handleRedirectPromise().catch(console.error);
+  // Handle redirect — when returning from Microsoft login, complete the sign-in
+  msalInstance.handleRedirectPromise()
+    .then(async result => {
+      if (result) {
+        // Returning from loginRedirect — complete the login flow
+        await afterMicrosoftLogin();
+      }
+    })
+    .catch(e => { showError("Sign-in failed: " + e.message); });
 
   // Check if setup is needed (after redirect promise so auth state is settled)
   showSetupWizardIfNeeded();
