@@ -943,17 +943,18 @@ function showView(viewName) {
     btn.classList.toggle('active', btn.dataset.view === viewName);
   });
 
-  // Hide all views
+  // Hide all views — add hidden class so display:none !important applies
   document.querySelectorAll('.view').forEach(v => {
     v.classList.remove('active');
-    v.style.display = 'none';
+    v.classList.add('hidden');
+    v.style.display = '';
   });
 
-  // Show target view
+  // Show target view — remove hidden first so !important doesn't override display:block
   const target = document.getElementById(`view-${viewName}`);
   if (target) {
+    target.classList.remove('hidden');
     target.classList.add('active');
-    target.style.display = 'block';
   }
 
   // Close side panel
