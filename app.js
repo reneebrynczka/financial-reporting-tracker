@@ -665,7 +665,7 @@ async function populateQuarterPicker() {
   // Fetch distinct quarters from QuarterlyAssignments.
   // We use a small select to avoid loading all items — just fetch the field.
   try {
-    const items = await getListItems(CONFIG.lists.quarterlyAssignments, '', 'fields/Quarter', '');
+    const items = await getListItems(CONFIG.lists.quarterlyAssignments);
     const quarters = [...new Set(
       items.map(i => i.fields?.Quarter).filter(Boolean)
     )].sort().reverse(); // newest first
