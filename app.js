@@ -358,6 +358,9 @@ async function graphRequest(method, endpoint, body = null, retries = 3) {
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
+        // Allow filtering on non-indexed SharePoint columns.
+        // Without this header SharePoint returns 400 on unindexed column filters.
+        'Prefer': 'HonorNonIndexedQueriesWarningMayFailRandomly',
       },
     };
     if (bodyStr) options.body = bodyStr;
