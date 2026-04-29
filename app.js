@@ -15,7 +15,7 @@ const CONFIG = {
   // Azure App Registration
   clientId:    'bb00291f-d451-4e74-b8cf-10c334efb0ed',
   tenantId:    '1061a8b8-b1ee-4249-bb84-9a2cd2792fae',
-  redirectUri: 'https://reneebrynczka.github.io/financial-reporting-tracker',  // Full URL to index.html
+  redirectUri: 'https://reneebrynczka.github.io/financial-reporting-tracker/',  // Full URL to index.html
 
   // SharePoint Site
   siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
