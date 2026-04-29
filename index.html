@@ -2,698 +2,878 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Financial Reporting Tracker</title>
-  <link rel="stylesheet" href="style.css" />
-  <!-- Favicon — FRT monogram -->
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230A1264'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='central' text-anchor='middle' font-family='DM Sans,Arial,sans-serif' font-size='11' font-weight='700' fill='white' letter-spacing='0.5'%3EFRT%3C/text%3E%3C/svg%3E" />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Lora:wght@600;700&display=swap" rel="stylesheet"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Folio — Financial Reporting Tracker</title>
+  <link rel="stylesheet" href="style.css?v=1.0.0" />
+  <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js" integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb" crossorigin="anonymous"></script>
 </head>
 <body>
 
-<!-- LOGIN SCREEN -->
-<div id="login-screen" class="screen active">
-  <div class="login-card">
-    <div class="login-logo">
-      <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;border-radius:5px">
-          <rect width="32" height="32" rx="5" fill="#0A1264"/>
-          <text x="50%" y="52%" dominant-baseline="central" text-anchor="middle" font-family="DM Sans,Arial,sans-serif" font-size="10.5" font-weight="700" fill="white" letter-spacing="0.5">FRT</text>
+  <!-- SIGN-IN SCREEN -->
+  <div id="screen-signin" class="screen hidden">
+    <div class="signin-wrap">
+      <div class="signin-logo">
+        <svg width="56" height="64" viewBox="0 0 56 64">
+          <rect x="0" y="10" width="38" height="48" rx="5" fill="rgba(10,18,100,0.15)"/>
+          <rect x="8" y="5" width="38" height="48" rx="5" fill="rgba(10,18,100,0.35)"/>
+          <rect x="16" y="0" width="38" height="48" rx="5" fill="#0A1264"/>
+          <line x1="25" y1="13" x2="46" y2="13" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.35"/>
+          <line x1="25" y1="22" x2="46" y2="22" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.35"/>
+          <line x1="25" y1="31" x2="38" y2="31" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.35"/>
+          <polyline points="25,42 31,51 54,34" fill="none" stroke="#005EFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-      <span class="logo-text">Financial Reporting Tracker</span>
-    </div>
-    <h1 class="login-title">Welcome back</h1>
-    <p id="login-quarter-context" class="login-quarter-context"></p>
-    <p class="login-sub">Financial Reporting Project Management</p>
-
-    <!-- Microsoft Sign-In — goes straight to dashboard on success -->
-    <div id="ms-login-row">
-      <button class="btn-ms full-width" onclick="loginWithMicrosoft()">
-        <svg width="18" height="18" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
-        Sign in with Microsoft
-      </button>
-      <p class="login-sub" style="margin-top:14px;font-size:12px">Uses your Moodys Microsoft 365 account</p>
-      <p id="login-error-msg" class="hidden" style="color:#ef4444;font-size:12px;margin-top:10px;text-align:center"></p>
-      <p id="sp-error" class="error-msg hidden" style="margin-top:10px"></p>
+      </div>
+      <h1 class="signin-title">FOLIO</h1>
+      <p class="signin-subtitle">Financial Reporting Tracker</p>
+      <p class="signin-desc">Sign in with your Moody's Microsoft account to continue.</p>
+      <button id="btn-signin" class="btn-primary btn-lg">Sign in with Microsoft</button>
+      <p class="signin-version">Folio v<span id="app-version-signin"></span></p>
     </div>
   </div>
-</div>
 
-<!-- MAIN APP -->
-<div id="app-screen" class="screen">
+  <!-- FIRST LOGIN PROFILE SETUP -->
+  <div id="screen-profile-setup" class="screen hidden">
+    <div class="setup-wrap">
+      <h2 class="setup-title">Welcome to Folio</h2>
+      <p class="setup-desc">Before you get started, set up your profile so your teammates can recognize you.</p>
+      <div class="setup-field">
+        <label class="field-label" for="setup-name">Preferred first name</label>
+        <input type="text" id="setup-name" class="field-input" placeholder="e.g. Renee" maxlength="30" />
+      </div>
+      <div class="setup-field">
+        <label class="field-label" for="setup-emoji-custom">Pick an emoji</label>
+        <div class="emoji-grid" id="emoji-grid" role="group" aria-label="Choose emoji"></div>
+        <input type="text" id="setup-emoji-custom" class="field-input" placeholder="Or type any emoji here" maxlength="4" style="margin-top:8px" />
+      </div>
+      <div class="setup-field">
+        <label class="field-label" id="setup-color-label">Pick a color</label>
+        <div class="color-grid" id="color-grid" role="group" aria-labelledby="setup-color-label"></div>
+      </div>
+      <div class="setup-preview">
+        <span id="preview-badge" class="person-badge">🦊 Renee</span>
+      </div>
+      <button id="btn-save-setup" class="btn-primary btn-lg" style="width:100%">Save &amp; Continue</button>
+      <p class="signin-version" style="margin-top:12px">You can update your name, emoji, and color anytime from the Profile menu.</p>
+    </div>
+  </div>
 
-  <!-- Mobile sidebar toggle (shown at ≤900px) -->
-  <button id="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle menu">☰</button>
-  <div id="sidebar-backdrop" onclick="closeSidebar()"></div>
+  <!-- MAIN APP -->
+  <div id="screen-app" class="screen hidden">
 
-  <!-- SIDEBAR -->
-  <nav class="sidebar">
-    <div class="sidebar-logo">
-      <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;border-radius:5px">
-          <rect width="32" height="32" rx="5" fill="#0A1264"/>
-          <text x="50%" y="52%" dominant-baseline="central" text-anchor="middle" font-family="DM Sans,Arial,sans-serif" font-size="10.5" font-weight="700" fill="white" letter-spacing="0.5">FRT</text>
+    <!-- NAV BAR -->
+    <nav class="nav">
+      <div class="nav-logo">
+        <svg width="22" height="26" viewBox="0 0 22 26">
+          <rect x="0" y="4" width="16" height="20" rx="2" fill="rgba(255,255,255,0.2)"/>
+          <rect x="3" y="2" width="16" height="20" rx="2" fill="rgba(255,255,255,0.4)"/>
+          <rect x="6" y="0" width="16" height="20" rx="2" fill="white"/>
+          <line x1="10" y1="6" x2="18" y2="6" stroke="#0A1264" stroke-width="1.2" stroke-linecap="round" opacity="0.35"/>
+          <line x1="10" y1="10" x2="18" y2="10" stroke="#0A1264" stroke-width="1.2" stroke-linecap="round" opacity="0.35"/>
+          <line x1="10" y1="14" x2="15" y2="14" stroke="#0A1264" stroke-width="1.2" stroke-linecap="round" opacity="0.35"/>
+          <polyline points="10,19 13,23 22,16" fill="none" stroke="#005EFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-      <span class="logo-text">Financial Reporting Tracker</span>
-    </div>
-    <div class="sidebar-user" id="sidebar-user-info"></div>
-    <ul class="sidebar-nav">
-      <li class="nav-item active" data-view="dashboard" onclick="switchView('dashboard', this)">
-        <span class="nav-icon">⬡</span> Dashboard
-      </li>
-      <li class="nav-item" data-view="mytasks" onclick="switchView('mytasks', this)">
-        <span class="nav-icon">★</span> My Tasks
-      </li>
-      <li class="nav-item" data-view="tasks" onclick="switchView('tasks', this)">
-        <span class="nav-icon">☑</span> All Tasks
-      </li>
-      <li class="nav-item" data-view="calendar" onclick="switchView('calendar', this)">
-        <span class="nav-icon">◷</span> Calendar
-      </li>
-      <li class="nav-item" data-view="team" onclick="switchView('team', this)">
-        <span class="nav-icon">◎</span> Team
-      </li>
-      <!-- Kanban hidden — preserved for future use
-      <li class="nav-item" data-view="kanban" onclick="switchView('kanban', this)">
-        <span class="nav-icon">▦</span> Kanban
-      </li>
-      -->
-      <li class="nav-item" data-view="report" onclick="switchView('report', this)">
-        <span class="nav-icon">◉</span> Report
-      </li>
-      <li class="nav-item" data-view="exec" onclick="switchView('exec', this)">
-        <span class="nav-icon">📊</span> Exec View
-      </li>
-      <li class="nav-item admin-only hidden" data-view="admin" onclick="switchView('admin', this)">
-        <span class="nav-icon">⚙</span> Admin
-      </li>
-    </ul>
-    <div class="sidebar-footer">
-      <div style="display:flex;gap:6px;margin-bottom:6px">
-        <button id="search-btn" class="sidebar-action-btn" onclick="openGlobalSearch()" title="Search (press /)">🔍 Search</button>
-        <button id="refresh-btn" class="sidebar-action-btn" onclick="manualRefresh()" title="Refresh all data">↺ Refresh</button>
+        <span class="nav-brand">FOLIO</span>
       </div>
-      <div id="refresh-stamp" style="font-size:10px;color:rgba(255,255,255,.3);text-align:center;margin-bottom:4px"></div>
-      <button class="btn-logout" onclick="logout()">← Sign Out</button>
-      <div id="app-version" style="font-size:10px;color:rgba(255,255,255,.3);text-align:center;margin-top:6px">v2.0</div>
-    </div>
-  </nav>
-
-  <!-- MAIN CONTENT -->
-  <main class="main-content">
-
-    <!-- DASHBOARD VIEW -->
-    <div id="view-dashboard" class="view active">
-      <div class="page-header">
-        <div>
-          <h2 class="page-title" id="dashboard-greeting">Good morning</h2>
-          <p class="page-sub" id="dashboard-quarter-label">Q1 2025 · Financial Reporting</p>
-        </div>
-        <div class="header-actions">
-          <select id="quarter-filter" class="filter-select" onchange="renderDashboard()">
-            <option value="Q1">Q1 (Jan–Mar)</option>
-            <option value="Q2">Q2 (Apr–Jun)</option>
-            <option value="Q3">Q3 (Jul–Sep)</option>
-            <option value="Q4">Q4 (Oct–Dec)</option>
-          </select>
-          <select id="year-filter" class="filter-select" onchange="renderDashboard()"></select>
-          <button class="btn-secondary small" id="compact-toggle" onclick="toggleCompactMode()" title="Toggle compact rows">⊟ Compact</button>
-        </div>
+      <div class="nav-links" id="nav-links">
+        <button class="nav-link" data-view="my-tasks">My Tasks</button>
+        <button class="nav-link" data-view="all-tasks">All Tasks</button>
+        <button class="nav-link" data-view="review-comments">Review Comments</button>
+        <button class="nav-link nav-matrix-link hidden" data-view="matrix">Matrix</button>
+        <button class="nav-link" data-view="dashboard">Dashboard</button>
+        <button class="nav-link" data-view="calendar">Calendar</button>
+        <button class="nav-link nav-admin-link hidden" data-view="admin">Admin</button>
+        <button class="nav-link" data-view="profile">Profile</button>
       </div>
-
-      <!-- QUICK FILTERS -->
-      <div class="quick-filters">
-        <button class="qfilter active" data-filter="all" onclick="setQuickFilter('all', this)">All</button>
-        <button class="qfilter" data-filter="overdue" onclick="setQuickFilter('overdue', this)">🔴 Overdue</button>
-        <button class="qfilter" data-filter="this-week" onclick="setQuickFilter('this-week', this)">📅 Due This Week</button>
-        <button class="qfilter-link" onclick="switchView('mytasks', document.querySelector('[data-view=\"mytasks\"]'))">★ My Tasks →</button>
-        <select id="type-filter" class="filter-select qfilter-select" onchange="setTypeFilter(this.value)">
-          <option value="all">All Report Types</option>
-          <option value="Close">Close</option>
-          <option value="Financial Report">Financial Report</option>
-          <option value="Master SS">Master SS</option>
-          <option value="Ops Book">Ops Book</option>
-          <option value="Other">Other</option>
-          <option value="Press Release">Press Release</option>
-          <option value="Post-Filing">Post-Filing</option>
-          <option value="Pre-Filing">Pre-Filing</option>
-        </select>
+      <div class="nav-right">
+        <select id="quarter-picker" class="quarter-picker" aria-label="Select quarter to view"></select>
+        <button class="nav-refresh" id="btn-refresh" title="Refresh data">↻</button>
+        <div class="wd-pill" id="wd-indicator">—</div>
+        <button class="nav-user-avatar" id="nav-user-avatar"></button>
       </div>
+    </nav>
 
-      <!-- SAVED FILTERS — collapsible -->
-      <details id="saved-filters-details" style="margin-bottom:10px">
-        <summary style="font-size:11px;color:var(--text-faint);font-weight:600;cursor:pointer;user-select:none;list-style:none;display:flex;align-items:center;gap:5px;width:fit-content">
-          <span id="saved-filters-summary-label">☆ Saved filters</span>
-        </summary>
-        <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-          <div id="saved-filters-bar" style="display:contents"></div>
-          <button class="btn-secondary small" onclick="saveCurrentFilter()" style="font-size:11px;padding:4px 10px">+ Save current</button>
-        </div>
-      </details>
-
-      <!-- LOCK BANNER -->
-      <div id="lock-banner" class="lock-banner hidden"></div>
-
-      <!-- FEATURE 1 — PRIORITY CARD -->
-      <div id="priority-card" class="priority-card hidden">
-        <div class="priority-card-header">
-          <span class="priority-card-title">⚡ Needs Your Attention</span>
-          <button class="priority-toggle" onclick="togglePriorityCard()" id="priority-toggle-btn">▾ Hide</button>
-        </div>
-        <div id="priority-card-body"></div>
-      </div>
-
-      <!-- STAT CARDS -->
-      <div class="stat-grid" id="stat-grid"></div>
-
-      <!-- FEATURE 2 — KEY DATES STRIP -->
-      <div id="deadline-strip" class="deadline-strip"></div>
-      <div class="card mt-24">
-        <div class="card-header">
-          <h3 class="card-title">Deliverables</h3>
-          <button class="btn-primary small" onclick="openAddTask()">+ Add Task</button>
-          <button class="icon-btn" onclick="enterChecklistMode()" title="Checklist mode — step through incomplete tasks one by one" style="font-size:14px;width:30px;height:30px">☑</button>
-        </div>
-        <div id="bulk-bar" class="bulk-bar hidden">
-            <span id="bulk-count-label">0 tasks selected</span>
-            <button class="btn-primary small" onclick="openBulkEdit()">✏️ Bulk Edit</button>
-            <button class="btn-secondary" style="font-size:12px;padding:5px 12px" onclick="document.querySelectorAll('.bulk-check').forEach(c=>c.checked=false);updateBulkBar()">Clear</button>
-          </div>
-        <table class="task-table">
-          <thead>
-            <tr>
-              <th style="width:32px"><input type="checkbox" onchange="toggleBulkSelectAll(this,'dashboard-task-body')" style="cursor:pointer" /></th>
-              <th onclick="sortTaskTable('name')" style="cursor:pointer;user-select:none" title="Sort by name">Deliverable <span id="sort-ind-name" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
-              <th>Type</th>
-              <th onclick="sortTaskTable('owner')" style="cursor:pointer;user-select:none" title="Sort by owner">Owner <span id="sort-ind-owner" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
-              <th onclick="sortTaskTable('due')" style="cursor:pointer;user-select:none" title="Sort by due date">Due Date <span id="sort-ind-due" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
-              <th onclick="sortTaskTable('status')" style="cursor:pointer;user-select:none" title="Sort by status">Status <span id="sort-ind-status" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="dashboard-task-body"></tbody>
-        </table>
-      </div>
+    <!-- STALE DATA BANNER -->
+    <div id="stale-banner" class="stale-banner hidden">
+      ⚠ Connection issue — showing cached data.
+      <button class="stale-retry" id="btn-stale-retry">Retry now</button>
     </div>
 
-    <!-- ALL TASKS VIEW -->
-    <div id="view-tasks" class="view">
-      <div class="page-header">
-        <div>
-          <h2 class="page-title">All Tasks</h2>
-          <p class="page-sub">Every deliverable across all quarters</p>
-        </div>
-        <button class="btn-primary" onclick="openAddTask()">+ Add Task</button>
-      </div>
-      <div class="card">
-        <div class="card-header">
-          <div class="search-bar">
-            <input type="text" id="task-search" placeholder="Search deliverables…" oninput="renderAllTasks()" />
-          </div>
-          <div class="filter-row">
-            <select id="all-quarter-filter" class="filter-select" onchange="renderAllTasks()">
-              <option value="all">All Quarters</option>
-              <option value="Q1">Q1</option>
-              <option value="Q2">Q2</option>
-              <option value="Q3">Q3</option>
-              <option value="Q4">Q4</option>
-            </select>
-            <select id="all-year-filter" class="filter-select" onchange="renderAllTasks()"></select>
-            <select id="all-status-filter" class="filter-select" onchange="renderAllTasks()">
-              <option value="all">All Statuses</option>
-              <option value="Not Started">Not Started</option>
-              <option value="In Progress">In Progress</option>
-              <option value="Ready for Review 1">Ready for Review 1</option>
-              <option value="Ready for Review 2">Ready for Review 2</option>
-              <option value="Complete">Complete</option>
-              <option value="Not Applicable">Not Applicable</option>
-            </select>
-            <select id="all-type-filter" class="filter-select" onchange="renderAllTasks()">
-              <option value="all">All Types</option>
-              <option value="Close">Close</option>
-              <option value="Financial Report">Financial Report</option>
-              <option value="Master SS">Master SS</option>
-              <option value="Ops Book">Ops Book</option>
-              <option value="Other">Other</option>
-              <option value="Press Release">Press Release</option>
-              <option value="Post-Filing">Post-Filing</option>
-              <option value="Pre-Filing">Pre-Filing</option>
-            </select>
-            <select id="all-owner-filter" class="filter-select" onchange="renderAllTasks()">
-              <option value="all">All Owners</option>
-            </select>
-          </div>
-        </div>
-        <table class="task-table">
-          <thead>
-            <tr>
-              <th style="width:32px"><input type="checkbox" onchange="toggleBulkSelectAll(this,'all-task-body')" style="cursor:pointer" /></th>
-              <th onclick="sortTaskTable('name')" style="cursor:pointer;user-select:none" title="Sort by name">Deliverable <span id="all-sort-ind-name" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
-              <th>Type</th>
-              <th>Quarter</th>
-              <th onclick="sortTaskTable('owner')" style="cursor:pointer;user-select:none" title="Sort by owner">Owner <span id="all-sort-ind-owner" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
-              <th onclick="sortTaskTable('due')" style="cursor:pointer;user-select:none" title="Sort by due date">Due Date <span id="all-sort-ind-due" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
-              <th onclick="sortTaskTable('status')" style="cursor:pointer;user-select:none" title="Sort by status">Status <span id="all-sort-ind-status" style="font-size:9px;color:var(--gray-400)">⇅</span></th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="all-task-body"></tbody>
-        </table>
-      </div>
+    <!-- HISTORY BANNER -->
+    <div id="history-banner" class="history-banner hidden" role="status" aria-live="polite">
+      <span id="history-banner-label">Viewing historical quarter — read only</span>
+      <button class="history-return" id="btn-return-live">← Return to live quarter</button>
     </div>
 
-    <!-- CALENDAR VIEW -->
-    <div id="view-calendar" class="view">
-      <div class="page-header">
-        <div>
-          <h2 class="page-title">Calendar</h2>
-          <p class="page-sub" id="cal-month-label"></p>
-        </div>
-        <div class="header-actions">
-          <button class="btn-secondary" onclick="changeCalMonth(-1)">← Prev</button>
-          <button class="btn-secondary" onclick="jumpCalToToday()">Today</button>
-          <button class="btn-secondary" onclick="changeCalMonth(1)">Next →</button>
+    <!-- VIEW CONTAINER -->
+    <main class="view-container">
+
+      <!-- NO ACTIVE QUARTER -->
+      <div id="view-no-quarter" class="view hidden">
+        <div class="empty-state">
+          <div class="empty-icon">📋</div>
+          <h2 class="empty-title">No active quarter right now.</h2>
+          <p class="empty-sub">Check back soon.</p>
+          <p class="empty-last" id="empty-last-quarter"></p>
         </div>
       </div>
-      <div class="card">
-        <div class="calendar-grid" id="calendar-grid"></div>
+
+      <!-- MY TASKS -->
+      <div id="view-my-tasks" class="view hidden">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">My Tasks</h1>
+            <p class="view-sub" id="my-tasks-sub"></p>
+          </div>
+        </div>
+        <div id="my-tasks-overdue" class="task-section hidden">
+          <div class="section-label overdue-label">OVERDUE <span class="section-count overdue-count" id="overdue-count">0</span></div>
+          <div id="overdue-cards"></div>
+          <hr class="section-divider" />
+        </div>
+        <div id="my-tasks-today" class="task-section hidden">
+          <div class="section-label" id="today-section-label">DUE TODAY</div>
+          <div id="today-cards"></div>
+          <hr class="section-divider" />
+        </div>
+        <div id="my-tasks-tomorrow" class="task-section hidden">
+          <div class="section-label" id="tomorrow-section-label">DUE TOMORROW <span class="section-count" id="tomorrow-count">0</span></div>
+          <div id="tomorrow-cards"></div>
+          <hr class="section-divider" />
+        </div>
+        <div id="my-tasks-upcoming" class="task-section hidden">
+          <div class="section-label">UPCOMING <span class="section-count" id="upcoming-count">0</span></div>
+          <div id="upcoming-cards"></div>
+          <hr class="section-divider" />
+        </div>
+        <div id="my-tasks-waiting" class="task-section">
+          <div class="waiting-header" id="waiting-toggle-header">
+            <div class="section-label" style="margin:0">WAITING ON OTHERS <span class="section-count" id="waiting-count">0</span></div>
+            <button class="toggle-btn" id="waiting-toggle">▼ Show</button>
+          </div>
+          <div id="waiting-cards" class="hidden"></div>
+        </div>
       </div>
-    </div>
 
-    <!-- TEAM VIEW -->
-    <div id="view-team" class="view">
-      <div class="page-header">
-        <div>
-          <h2 class="page-title">Team</h2>
-          <p class="page-sub">Workload overview per team member — prep and review assignments</p>
+      <!-- ALL TASKS -->
+      <div id="view-all-tasks" class="view hidden">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">All Tasks</h1>
+            <p class="view-sub" id="all-tasks-sub"></p>
+          </div>
+          <div class="view-actions">
+            <button class="btn-secondary btn-sm" id="btn-suggest-change">Suggest a Change</button>
+            <button class="btn-secondary btn-sm" id="btn-export-log">Export Sign-off Log</button>
+          </div>
         </div>
-        <div class="header-actions">
-          <select id="team-quarter" class="filter-select" onchange="toggleTeamYearVisibility();renderTeam()">
-            <option value="">All Quarters</option>
-            <option value="Q1">Q1</option><option value="Q2">Q2</option>
-            <option value="Q3">Q3</option><option value="Q4">Q4</option>
-          </select>
-          <select id="team-year" class="filter-select" onchange="renderTeam()"></select>
+        <div class="toolbar">
+          <div class="filter-group">
+            <span class="filter-label">Status:</span>
+            <button class="filter-btn active" data-filter="status" data-value="all">All</button>
+            <button class="filter-btn" data-filter="status" data-value="unsigned">Unsigned only</button>
+            <button class="filter-btn" data-filter="status" data-value="overdue">Overdue</button>
+            <button class="filter-btn" data-filter="status" data-value="complete">Complete</button>
+          </div>
+          <div class="filter-group">
+            <span class="filter-label">Category:</span>
+            <select class="filter-select" id="filter-category" aria-label="Filter by category"></select>
+          </div>
+          <div class="filter-group">
+            <span class="filter-label">Assignee:</span>
+            <select class="filter-select" id="filter-assignee" aria-label="Filter by assignee"></select>
+          </div>
+          <input type="text" class="filter-search" id="filter-search" placeholder="🔍 Search tasks..." aria-label="Search tasks" />
+          <div class="view-toggle-grp">
+            <button class="view-toggle-btn active" id="btn-table-view">≡ Table</button>
+            <button class="view-toggle-btn" id="btn-card-view">⊞ Cards</button>
+          </div>
+        </div>
+        <div id="active-filters-bar" class="active-filters-bar hidden" aria-live="polite"></div>
+        <div id="all-tasks-table-wrap">
+          <table class="data-table" aria-label="All tasks">
+            <thead id="all-tasks-thead"><tr>
+              <th data-sort="task" class="sortable" aria-sort="none">Task<span class="sort-arrow"> ⇅</span></th>
+              <th data-sort="category" class="sortable" aria-sort="none">Category<span class="sort-arrow"> ⇅</span></th>
+              <th>Preparer</th>
+              <th>Reviewer</th>
+              <th data-sort="prepWD" class="sortable" aria-sort="none">Prep WD<span class="sort-arrow"> ⇅</span></th>
+              <th data-sort="revWD" class="sortable" aria-sort="none">Rev WD<span class="sort-arrow"> ⇅</span></th>
+              <th data-sort="status" class="sortable" aria-sort="none">Status<span class="sort-arrow"> ⇅</span></th>
+              <th>💬</th>
+            </tr></thead>
+            <tbody id="all-tasks-tbody"></tbody>
+          </table>
+        </div>
+        <div id="all-tasks-cards-wrap" class="hidden"></div>
+      </div>
+
+      <!-- REVIEW COMMENTS -->
+      <div id="view-review-comments" class="view hidden">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">Review Comments</h1>
+            <p class="view-sub" id="rc-sub"></p>
+          </div>
+          <div class="view-actions">
+            <button class="btn-primary btn-sm" id="btn-new-rc">+ New Comment</button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <div class="filter-group">
+            <span class="filter-label">Status:</span>
+            <button class="filter-btn active" data-filter="rc-status" data-value="all">All</button>
+            <button class="filter-btn" data-filter="rc-status" data-value="open">Open</button>
+            <button class="filter-btn" data-filter="rc-status" data-value="resolved">Resolved</button>
+          </div>
+          <div class="filter-group">
+            <span class="filter-label">Priority:</span>
+            <button class="filter-btn active" data-filter="rc-priority" data-value="all">All</button>
+            <button class="filter-btn" data-filter="rc-priority" data-value="urgent">Urgent</button>
+          </div>
+          <select class="filter-select" id="rc-quarter-filter" aria-label="Filter by quarter"></select>
+        </div>
+        <div id="rc-urgent-section" class="hidden">
+          <div class="section-label overdue-label">URGENT — OPEN <span class="section-count overdue-count" id="rc-urgent-count">0</span></div>
+          <div id="rc-urgent-list"></div>
+        </div>
+        <div id="rc-open-section" class="hidden">
+          <hr class="section-divider"/>
+          <div class="section-label">NORMAL — OPEN <span class="section-count" id="rc-open-count">0</span></div>
+          <div id="rc-open-list"></div>
+        </div>
+        <hr class="section-divider"/>
+        <div class="waiting-header" id="rc-resolved-header">
+          <div class="section-label" style="margin:0;opacity:0.5">RESOLVED <span class="section-count" id="rc-resolved-count">0</span></div>
+          <button class="toggle-btn" id="rc-resolved-toggle">▼ Show</button>
+        </div>
+        <div id="rc-resolved-list" class="hidden"></div>
+      </div>
+
+      <!-- MATRIX -->
+      <div id="view-matrix" class="view hidden">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">Matrix</h1>
+            <p class="view-sub" id="matrix-sub"></p>
+          </div>
+          <div class="view-actions">
+            <span class="live-indicator"><span class="live-dot"></span>Live</span>
+            <button class="btn-secondary btn-sm" id="btn-export-matrix-excel">Export Excel</button>
+          </div>
+        </div>
+        <div class="matrix-scroll-wrap">
+          <div id="matrix-container"></div>
+        </div>
+        <div class="matrix-legend">
+          <div class="legend-item"><div class="legend-swatch swatch-complete"></div>Signed off</div>
+          <div class="legend-item"><div class="legend-swatch swatch-empty"></div>Not yet complete</div>
+          <div class="legend-item"><div class="legend-swatch swatch-na"></div>Not applicable</div>
+          <div class="legend-item"><div class="legend-swatch swatch-actionable"></div>Awaiting your sign-off</div>
         </div>
       </div>
-      <div id="team-grid" class="team-grid"></div>
-    </div>
 
-    <!-- ADMIN VIEW -->
-    <div id="view-admin" class="view">
-      <div class="page-header">
-        <div>
-          <h2 class="page-title">Admin</h2>
-          <p class="page-sub">Manage team members & quarterly templates</p>
-        </div>
-      </div>
-      <div id="admin-reassign-banner"></div>
-      <div id="admin-working-quarter" class="card" style="margin-bottom:16px"></div>
-      <div class="admin-grid">
-        <!-- Team Members -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">Team Members</h3>
-            <button class="btn-primary small" onclick="openAddUser()">+ Add Member</button>
-          </div>
-          <div id="admin-user-list"></div>
-        </div>
-        <!-- Templates -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">Quarterly Templates</h3>
-            <button class="btn-primary small" onclick="openAddTemplate()">+ Add Template</button>
-          </div>
-          <div id="admin-template-list"></div>
-          <div class="card-footer">
-            <label>Apply template to quarter:</label>
-            <select id="template-quarter-select" class="filter-select">
-              <option value="Q1">Q1</option><option value="Q2">Q2</option>
-              <option value="Q3">Q3</option><option value="Q4">Q4</option>
-            </select>
-            <select id="template-year-select" class="filter-select"></select>
-            <button class="btn-primary small" onclick="applyTemplate()">Apply</button>
+      <!-- DASHBOARD -->
+      <div id="view-dashboard" class="view hidden">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title">Dashboard</h1>
+            <p class="view-sub" id="dashboard-sub"></p>
           </div>
         </div>
-        <!-- New Quarter Wizard — Feature 10 -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🔄 Start New Quarter</h3>
+        <div class="metric-grid" id="metric-grid"></div>
+        <div class="two-col">
+          <div class="card">
+            <div class="card-title">Completion by category</div>
+            <div id="category-bars"></div>
           </div>
-          <div style="padding:18px 22px">
-            <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
-              Guided setup for a new quarter — sets close calendar, key dates, previews tasks, and runs rollforward in one go.
-            </p>
-            <button class="btn-primary" onclick="openQuarterWizard()">Start New Quarter →</button>
-            <p style="font-size:11px;color:var(--text-faint);margin-top:10px">The wizard walks through every step — you can review and deselect tasks before anything is copied.</p>
-          </div>
-          <!-- Manual rollforward backup -->
-          <div style="border-top:0.5px solid var(--border);padding:14px 22px">
-            <details>
-              <summary style="font-size:12px;font-weight:600;color:var(--gray-600);cursor:pointer;user-select:none">
-                ↳ Manual rollforward (advanced)
-              </summary>
-              <p style="font-size:12px;color:var(--gray-400);margin:10px 0">
-                Copies all applicable tasks and steps directly without the wizard. The source quarter is locked automatically on completion.
-              </p>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-                <div class="form-group">
-                  <label style="font-size:12px">From Quarter</label>
-                  <select id="rf-from-quarter" class="filter-select" style="width:100%">
-                    <option value="Q1">Q1</option><option value="Q2">Q2</option>
-                    <option value="Q3">Q3</option><option value="Q4">Q4</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label style="font-size:12px">From Year</label>
-                  <select id="rf-from-year" class="filter-select" style="width:100%"></select>
-                </div>
-                <div class="form-group">
-                  <label style="font-size:12px">To Quarter</label>
-                  <select id="rf-to-quarter" class="filter-select" style="width:100%">
-                    <option value="Q1">Q1</option><option value="Q2">Q2</option>
-                    <option value="Q3">Q3</option><option value="Q4">Q4</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label style="font-size:12px">To Year</label>
-                  <select id="rf-to-year" class="filter-select" style="width:100%"></select>
-                </div>
-              </div>
-              <button class="btn-secondary small" onclick="rollForward()">Roll Forward →</button>
-            </details>
+          <div class="card">
+            <div class="card-title">Per-person progress</div>
+            <div id="person-bars"></div>
+            <hr class="card-divider"/>
+            <div class="card-title" style="margin-top:12px">Upcoming milestones</div>
+            <div id="milestone-list"></div>
           </div>
         </div>
-        <!-- Locked Quarters -->
         <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🔒 Locked Quarters</h3>
-          </div>
-          <div id="admin-locks-list"></div>
-        </div>
-
-        <!-- Quarter Key Dates — Feature 2 -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🗓 Quarter Key Dates</h3>
-            <button class="btn-primary small" onclick="openAddQuarterDate()">+ Add Quarter</button>
-          </div>
-          <p style="font-size:13px;color:var(--text-muted);padding:14px 22px 4px">
-            Set key external deadlines for each quarter. These appear as a countdown strip on the dashboard.
-          </p>
-          <div id="admin-quarter-dates-list"></div>
-        </div>
-        <!-- Close Calendars -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">📆 Close Calendars</h3>
-          </div>
-          <p style="font-size:13px;color:var(--text-muted);padding:14px 22px 0">
-            Set Workday 1 for each quarter. All task and step due dates expressed
-            as workday numbers will resolve to real calendar dates from this anchor.
-          </p>
-          <div id="admin-calendars-list"></div>
-        </div>
-        <!-- Custom Holidays -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">📅 Working Day Holidays</h3>
-          </div>
-          <div style="padding:14px 22px 6px">
-            <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
-              US Federal &amp; NYSE holidays are built in automatically.
-              Add any company-specific closures below — they will be respected
-              when due dates are calculated during rollforward and template apply.
-            </p>
-            <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
-              <input type="date" id="holiday-input" class="filter-select" style="flex:1" />
-              <button class="btn-primary small" onclick="addCustomHoliday()">+ Add</button>
-            </div>
-          </div>
-          <div id="admin-holidays-list"></div>
-          <div style="padding:10px 22px 14px">
-            <details style="font-size:12px;color:var(--text-faint)">
-              <summary style="cursor:pointer;font-weight:600;color:var(--text-muted)">Built-in holidays for this year</summary>
-              <div id="holiday-preview" style="margin-top:10px;line-height:2"></div>
-            </details>
-          </div>
-        </div>
-        <!-- Feature 7 — Connection Health Check -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🔌 Connection Health</h3>
-            <button class="btn-secondary small" onclick="runHealthCheck()">↺ Test Now</button>
-          </div>
-          <p style="font-size:13px;color:var(--gray-600);padding:12px 22px 4px">Tests your Azure AD credentials, Graph API access, SharePoint site connection, and each list.</p>
-          <div id="health-check-results" style="padding:0 22px 16px">
-            <p style="font-size:13px;color:var(--text-faint)">Click "Test Now" to run a connection check.</p>
-          </div>
-        </div>
-
-        <!-- Feature 9 — Data Import -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">📥 Import Data from Excel</h3>
-          </div>
-          <div style="padding:14px 22px">
-            <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
-              Upload the Financial Reporting Tracker Import Template (.xlsx) to load tasks, steps, and users into SharePoint. A preview is shown before anything is written.
-            </p>
-            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-              <input type="file" id="import-file-input" accept=".xlsx" onchange="handleImportFile(this)" style="font-size:13px;color:var(--gray-600)" />
-            </div>
-            <div id="import-preview" style="margin-top:14px"></div>
-          </div>
-        </div>
-
-        <!-- Feature 12 — Audit Log Export -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">📋 Export Audit Log</h3>
-          </div>
-          <div style="padding:14px 22px">
-            <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
-              Download a full audit log — all status changes, comments, and sign-offs across all quarters — as a multi-tab Excel file.
-            </p>
-            <div style="display:flex;gap:10px;flex-wrap:wrap">
-              <button class="btn-secondary" onclick="exportFullAuditLog('all')">⬇ All Quarters</button>
-              <div style="display:flex;align-items:center;gap:8px">
-                <select id="audit-quarter-select" class="filter-select">
-                  <option value="Q1">Q1</option><option value="Q2">Q2</option>
-                  <option value="Q3">Q3</option><option value="Q4">Q4</option>
-                </select>
-                <select id="audit-year-select" class="filter-select"></select>
-                <button class="btn-primary small" onclick="exportFullAuditLog('quarter')">⬇ This Quarter</button>
+          <div class="overdue-summary-row" id="overdue-summary-row">
+            <div class="overdue-summary-left">
+              <div class="overdue-dot-red"></div>
+              <div>
+                <div class="overdue-summary-title" id="overdue-summary-title">0 overdue tasks</div>
+                <div class="overdue-summary-sub" id="overdue-summary-sub"></div>
               </div>
             </div>
+            <button class="toggle-btn" id="overdue-expand-toggle">▼ Show all</button>
           </div>
+          <div id="overdue-detail-list" class="hidden"></div>
         </div>
       </div>
-    </div>
-    <!-- EXECUTIVE STATUS VIEW -->
-    <div id="view-exec" class="view">
-      <div class="page-header no-print">
-        <div>
-          <h2 class="page-title">Executive Status</h2>
-          <p class="page-sub">Print-ready quarter summary for senior stakeholders</p>
+
+      <!-- CALENDAR -->
+      <div id="view-calendar" class="view hidden">
+        <div class="view-header">
+          <h1 class="view-title">Calendar</h1>
+          <div class="view-sub" id="calendar-sub"></div>
         </div>
-        <div class="header-actions">
-          <select id="exec-quarter" class="filter-select" onchange="renderExecView()">
-            <option value="Q1">Q1</option><option value="Q2">Q2</option>
-            <option value="Q3">Q3</option><option value="Q4">Q4</option>
-          </select>
-          <select id="exec-year" class="filter-select" onchange="renderExecView()"></select>
-          <button class="btn-primary" onclick="window.print()">🖨 Print / PDF</button>
+        <div class="cal-view-wrap" id="cal-view-body"></div>
+      </div>
+
+      <!-- ADMIN -->
+      <div id="view-admin" class="view hidden">
+        <div class="admin-layout">
+          <aside class="admin-sidebar">
+            <div class="sidebar-label">ADMIN</div>
+            <button class="sidebar-btn active" data-panel="overview">Overview<span class="sidebar-sub">Status &amp; diagnostics</span></button>
+            <button class="sidebar-btn" data-panel="calendar">Close Calendar<span class="sidebar-sub">WD dates &amp; milestones</span></button>
+            <button class="sidebar-btn" data-panel="rollforward">Rollforward<span class="sidebar-sub">Stage &amp; activate</span></button>
+            <button class="sidebar-btn" data-panel="templates">Task Templates<span class="sidebar-sub">Add, edit, deactivate</span></button>
+            <button class="sidebar-btn" data-panel="suggestions">Suggestions<span class="sidebar-sub" id="suggestions-count-badge">—</span></button>
+            <button class="sidebar-btn" data-panel="users">Users<span class="sidebar-sub">Roles &amp; access</span></button>
+            <button class="sidebar-btn" data-panel="auditlog">Audit Log<span class="sidebar-sub">Full history</span></button>
+            <button class="sidebar-btn" data-panel="import">Bulk Import<span class="sidebar-sub">CSV import</span></button>
+          </aside>
+          <div class="admin-content" id="admin-content"></div>
         </div>
       </div>
-      <div id="exec-content"></div>
-    </div>
 
-    <div id="view-mytasks" class="view">
-      <div class="page-header">
-        <div>
-          <h2 class="page-title" id="mytasks-title">My Tasks</h2>
-          <p class="page-sub">Ready for you · Waiting · Complete</p>
-        </div>
-        <div class="header-actions">
-          <select id="mytasks-quarter" class="filter-select" onchange="toggleMyTasksYearVisibility();renderMyTasks()">
-            <option value="all">All Quarters</option>
-            <option value="Q1">Q1</option>
-            <option value="Q2">Q2</option>
-            <option value="Q3">Q3</option>
-            <option value="Q4">Q4</option>
-          </select>
-          <select id="mytasks-year" class="filter-select" onchange="renderMyTasks()"></select>
-        </div>
-      </div>
-      <div id="mytasks-content"></div>
-    </div>
-
-    <!-- KANBAN VIEW -->
-    <div id="view-kanban" class="view">
-      <div class="page-header">
-        <div>
-          <h2 class="page-title">Kanban</h2>
-          <p class="page-sub" id="kanban-sub">Task board</p>
-        </div>
-        <div class="header-actions">
-          <select id="kanban-mode" class="filter-select" onchange="renderKanban()">
-            <option value="personal">My Board</option>
-            <option value="team">Full Team</option>
-          </select>
-          <select id="kanban-quarter" class="filter-select" onchange="renderKanban()">
-            <option value="Q1">Q1</option><option value="Q2">Q2</option>
-            <option value="Q3">Q3</option><option value="Q4">Q4</option>
-          </select>
-          <select id="kanban-year" class="filter-select" onchange="renderKanban()"></select>
+      <!-- PROFILE -->
+      <div id="view-profile" class="view hidden">
+        <div class="view-header"><h1 class="view-title">Profile</h1></div>
+        <div class="profile-card">
+          <div class="profile-preview"><span id="profile-preview-badge" class="person-badge person-badge-lg"></span></div>
+          <div class="setup-field">
+            <label class="field-label" for="profile-name">Preferred first name</label>
+            <input type="text" id="profile-name" class="field-input" maxlength="30"/>
+          </div>
+          <div class="setup-field">
+            <label class="field-label" for="profile-emoji-custom">Emoji</label>
+            <div class="emoji-grid" id="profile-emoji-grid" role="group" aria-label="Choose emoji"></div>
+            <input type="text" id="profile-emoji-custom" class="field-input" placeholder="Or type any emoji" maxlength="4" style="margin-top:8px"/>
+          </div>
+          <div class="setup-field">
+            <label class="field-label" id="profile-color-label">Color</label>
+            <div class="color-grid" id="profile-color-grid" role="group" aria-labelledby="profile-color-label"></div>
+          </div>
+          <div class="setup-field">
+            <label class="field-label" id="notif-prefs-label">Notification preferences</label>
+            <p style="font-size:11px;color:var(--slate);margin-bottom:8px">Controls your Teams messages from the Folio notification flows. Changes take effect immediately.</p>
+            <div id="notif-prefs-list" role="group" aria-labelledby="notif-prefs-label"></div>
+          </div>
+          <div class="setup-field">
+            <label class="field-label" id="quiet-hours-label">Quiet hours (Eastern Time)</label>
+            <div class="quiet-hours-row">
+              <span>From</span>
+              <input type="time" id="quiet-start" class="field-input-sm" aria-label="Quiet hours start time"/>
+              <span>to</span>
+              <input type="time" id="quiet-end" class="field-input-sm" aria-label="Quiet hours end time"/>
+            </div>
+          </div>
+          <button class="btn-primary" id="btn-save-profile" style="width:100%;margin-top:16px">Save Profile</button>
         </div>
       </div>
-      <div id="kanban-board" class="kanban-board"></div>
-    </div>
 
-    <!-- SUMMARY REPORT VIEW -->
-    <div id="view-report" class="view">
-      <div class="page-header">
-        <div>
-          <h2 class="page-title">Summary Report</h2>
-          <p class="page-sub">Quarter-end management one-pager</p>
-        </div>
-        <div class="header-actions">
-          <select id="report-quarter" class="filter-select" onchange="renderReport();renderTeamSummary()">
-            <option value="Q1">Q1</option><option value="Q2">Q2</option>
-            <option value="Q3">Q3</option><option value="Q4">Q4</option>
-          </select>
-          <select id="report-year" class="filter-select" onchange="renderReport();renderTeamSummary()"></select>
-          <button class="btn-secondary" onclick="exportExcel()">⬇ Export Quarter</button>
-          <button class="btn-secondary" onclick="exportTeamSummary()">⬇ Export Team Summary</button>
-          <button class="btn-primary" onclick="window.print()">🖨 Print / PDF</button>
-        </div>
-      </div>
-      <!-- Report tabs -->
-      <div style="display:flex;gap:0;border-bottom:1.5px solid var(--border);margin-bottom:20px">
-        <button id="report-tab-quarter" class="report-tab report-tab-active" onclick="switchReportTab('quarter')">Quarter Summary</button>
-        <button id="report-tab-team"    class="report-tab" onclick="switchReportTab('team')">Team Summary</button>
-      </div>
-      <div id="report-content" class="report-page"></div>
-      <div id="team-summary-content" style="display:none"></div>
-    </div>
+    </main>
 
-  </main>
-</div>
-
-<!-- MODALS -->
-<div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal(event)">
-  <div class="modal" id="modal-box" style="width:600px;max-width:96vw" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <h3 id="modal-title">Modal</h3>
-      <button class="modal-close" onclick="closeAllModals()">✕</button>
-    </div>
-    <div class="modal-body" id="modal-body"></div>
-  </div>
-</div>
-
-<!-- STEPS PANEL -->
-<div id="steps-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeStepsPanel()">
-  <div class="modal wide" style="max-height:88vh;display:flex;flex-direction:column" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <h3 id="steps-task-title">Steps</h3>
-      <button class="modal-close" onclick="closeStepsPanel()">✕</button>
-    </div>
-    <div class="modal-body" style="flex:1;overflow-y:auto">
-      <div id="steps-list"></div>
-    </div>
-    <div id="steps-panel-footer" style="padding:14px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end"></div>
-  </div>
-</div>
-
-<!-- COMMENT MODAL -->
-<div id="comment-overlay" class="modal-overlay hidden" onclick="closeModal(event)">
-  <div class="modal wide" id="comment-box" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <h3 id="comment-task-title">Comments</h3>
-      <button class="modal-close" onclick="closeCommentModal()">✕</button>
-    </div>
-    <div class="modal-body">
-      <div id="comment-list" class="comment-list"></div>
-      <div class="comment-input-row">
-        <input type="text" id="comment-input" placeholder="Add a comment…" onkeydown="if(event.key==='Enter'&&!event.shiftKey)addComment()" />
-        <button class="btn-primary small" onclick="addComment()">Post</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- MSAL loaded first, then app.js -->
-<script>
-(function loadMSAL() {
-  var sources = [
-    "msal-browser.min.js",
-    "https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js",
-    "https://alcdn.msftauth.net/browser/2.38.3/js/msal-browser.min.js",
-    "https://alcdn.msftlogin.com/browser/2.38.3/js/msal-browser.min.js",
-    "https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"
-  ];
-  var idx = 0;
-  function tryNext() {
-    if (idx >= sources.length) {
-      var el = document.getElementById('login-error-msg');
-      if (el) { el.textContent = 'Could not load the Microsoft login library. Please try again or contact support.'; el.classList.remove('hidden'); }
-      return;
-    }
-    var s = document.createElement('script');
-    s.src = sources[idx++];
-    s.onload = function() {
-      var app = document.createElement('script');
-      app.src = 'app.js';
-      document.head.appendChild(app);
-    };
-    s.onerror = function() { tryNext(); };
-    document.head.appendChild(s);
-  }
-  tryNext();
-})();
-</script>
-
-<!-- FEATURE 6 — SETUP WIZARD -->
-<div id="setup-wizard" class="modal-overlay hidden">
-  <div class="modal" style="width:680px;max-width:96vw;max-height:90vh;overflow-y:auto" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <h3>⚙ Setup Wizard — Financial Reporting Tracker</h3>
-    </div>
-    <div class="modal-body" id="wizard-body">
-      <p style="color:var(--gray-600);font-size:13px;margin-bottom:20px">
-        Some configuration values are missing. Complete the steps below to connect the app to your SharePoint site.
-      </p>
-      <div id="wizard-steps"></div>
-      <div style="margin-top:20px;display:flex;gap:10px;justify-content:flex-end">
-        <button class="btn-secondary" onclick="document.getElementById('setup-wizard').classList.add('hidden')">Close — I'll do this later</button>
-        <button class="btn-primary" onclick="saveWizardConfig()">Save Configuration</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- FEATURE 5 — CHECKLIST MODE OVERLAY -->
-<div id="checklist-overlay" class="modal-overlay hidden" style="background:rgba(10,18,100,0.97);align-items:flex-start;padding:20px">
-  <div style="width:100%;max-width:860px;margin:0 auto">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+  <!-- SIDE PANEL -->
+  <div id="panel-overlay" class="panel-overlay hidden"></div>
+  <div id="task-panel" class="side-panel hidden">
+    <div class="panel-header">
       <div>
-        <h2 style="color:#fff;font-size:20px;font-weight:700;margin:0">Close Checklist</h2>
-        <p style="color:rgba(255,255,255,.5);font-size:13px;margin:4px 0 0" id="checklist-subtitle"></p>
+        <div class="panel-title" id="panel-title"></div>
+        <div class="panel-meta" id="panel-meta"></div>
       </div>
-      <button class="btn-secondary" onclick="exitChecklistMode()" style="background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.2)">✕ Exit Checklist Mode</button>
+      <button class="panel-close" id="panel-close">✕</button>
     </div>
-    <div id="checklist-body"></div>
+    <div class="panel-body">
+      <div class="panel-section">
+        <div class="panel-section-label">ASSIGNMENT</div>
+        <div id="panel-assignment"></div>
+      </div>
+      <div class="panel-section">
+        <div class="panel-section-label">SIGN-OFF STATUS</div>
+        <div id="panel-status-chain"></div>
+      </div>
+      <div class="panel-section" id="panel-action-section">
+        <div id="panel-action"></div>
+      </div>
+      <div class="panel-section" id="panel-rc-section">
+        <div class="panel-section-label">REVIEW COMMENTS</div>
+        <div id="panel-rc-preview"></div>
+        <button class="panel-link-btn" id="panel-rc-link">View on Review Comments page →</button>
+      </div>
+      <div class="panel-section">
+        <div class="panel-section-label">AUDIT TRAIL</div>
+        <div id="panel-audit"></div>
+      </div>
+    </div>
   </div>
-</div>
 
-<!-- FEATURE 10 — NEW QUARTER WIZARD -->
-<div id="quarter-wizard" class="modal-overlay hidden" onclick="if(event.target===this)document.getElementById('quarter-wizard').classList.add('hidden')">
-  <div class="modal" style="width:780px;max-width:96vw;max-height:92vh;overflow-y:auto" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <h3 id="qwiz-title">🔄 Start New Quarter</h3>
-      <button class="modal-close" onclick="document.getElementById('quarter-wizard').classList.add('hidden')">✕</button>
-    </div>
-    <div class="modal-body" id="qwiz-body"></div>
   </div>
-</div>
+  <footer class="app-footer">Folio v<span id="app-version-footer"></span> &nbsp;·&nbsp; Moody's Financial Reporting &nbsp;·&nbsp; &copy; 2026</footer>
+
+
+  <!-- MODALS -->
+  <div id="modal-backdrop" class="modal-backdrop hidden"></div>
+
+  <div id="modal-signoff" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-signoff-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-signoff-title">Sign off?</div>
+      <div class="modal-body" id="modal-signoff-body"></div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-signoff-confirm">✓ Confirm</button>
+        <button class="btn-secondary" id="btn-signoff-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-reversal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-reversal-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-reversal-title">Reverse sign-off</div>
+      <div class="modal-body">
+        <p id="reversal-desc" class="modal-desc"></p>
+        <label class="field-label" for="reversal-reason">Reason for reversal (required)</label>
+        <textarea id="reversal-reason" class="field-textarea" rows="3" placeholder="Explain why this sign-off is being reversed..."></textarea>
+        <div id="reversal-error" class="field-error hidden">Please enter a reason.</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-danger" id="btn-reversal-confirm">Confirm Reversal</button>
+        <button class="btn-secondary" id="btn-reversal-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-resolve-rc" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-resolve-rc-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-resolve-rc-title">Resolve Comment</div>
+      <div class="modal-body">
+        <p class="modal-desc">Optionally add a note explaining how this was resolved.</p>
+        <label class="field-label" for="resolve-rc-note">Resolution note (optional)</label>
+        <textarea id="resolve-rc-note" class="field-textarea" rows="3" placeholder="e.g. Updated per reviewer feedback..."></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-success" id="btn-resolve-rc-confirm">✓ Mark Resolved</button>
+        <button class="btn-secondary" id="btn-resolve-rc-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-reject-suggestion" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-reject-suggestion-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-reject-suggestion-title">Reject Suggestion</div>
+      <div class="modal-body">
+        <p class="modal-desc">Optionally explain why this suggestion is being rejected. The submitter will be notified.</p>
+        <label class="field-label" for="reject-suggestion-note">Note to submitter (optional)</label>
+        <textarea id="reject-suggestion-note" class="field-textarea" rows="3" placeholder="e.g. This task is covered by an existing template..."></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-danger" id="btn-reject-suggestion-confirm">Reject Suggestion</button>
+        <button class="btn-secondary" id="btn-reject-suggestion-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-new-rc" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-new-rc-title">
+    <div class="modal-box modal-lg">
+      <div class="modal-title" id="modal-new-rc-title">New Review Comment</div>
+      <div class="modal-body">
+        <div class="setup-field">
+          <label class="field-label" for="rc-task-select">Task</label>
+          <select id="rc-task-select" class="field-input"></select>
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="rc-comment-text">Comment</label>
+          <textarea id="rc-comment-text" class="field-textarea" rows="4" placeholder="Describe the review issue..."></textarea>
+        </div>
+        <div class="setup-field">
+          <label class="field-label" id="rc-priority-label">Priority</label>
+          <div class="radio-group" role="group" aria-labelledby="rc-priority-label">
+            <label class="radio-opt"><input type="radio" name="rc-priority" value="Normal" checked/> Normal</label>
+            <label class="radio-opt"><input type="radio" name="rc-priority" value="Urgent"/> Urgent</label>
+          </div>
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="rc-tag-users">Tag teammates (optional)</label>
+          <div id="rc-tag-users" class="tag-select" style="font-size:11px;color:var(--slate);display:flex;align-items:center;padding:4px 6px">Tagging coming soon</div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-rc-save">Post Comment</button>
+        <button class="btn-secondary" id="btn-rc-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-suggest" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-suggest-title">
+    <div class="modal-box modal-lg">
+      <div class="modal-title" id="modal-suggest-title">Suggest a Change</div>
+      <div class="modal-body">
+        <div class="setup-field">
+          <label class="field-label" id="suggest-type-label">Type</label>
+          <div class="radio-group" role="group" aria-labelledby="suggest-type-label">
+            <label class="radio-opt"><input type="radio" name="suggest-type" value="Edit" checked/> Edit existing task</label>
+            <label class="radio-opt"><input type="radio" name="suggest-type" value="Add"/> Add new task</label>
+            <label class="radio-opt"><input type="radio" name="suggest-type" value="Retire"/> Retire a task</label>
+          </div>
+        </div>
+        <div class="setup-field" id="suggest-task-wrap">
+          <label class="field-label" for="suggest-task-select">Task</label>
+          <select id="suggest-task-select" class="field-input"></select>
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="suggest-desc">Description</label>
+          <textarea id="suggest-desc" class="field-textarea" rows="4" placeholder="What would you like changed and why?"></textarea>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-suggest-save">Submit</button>
+        <button class="btn-secondary" id="btn-suggest-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-matrix-action" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="matrix-modal-title">
+    <div class="modal-box">
+      <div class="modal-title" id="matrix-modal-title">Update Status</div>
+      <div class="modal-body">
+        <p id="matrix-modal-desc" class="modal-desc"></p>
+        <div class="radio-group" id="matrix-modal-options"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-matrix-confirm">Confirm</button>
+        <button class="btn-secondary" id="btn-matrix-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-activate" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="activate-modal-title">
+    <div class="modal-box">
+      <div class="modal-title" id="activate-modal-title">Activate Quarter</div>
+      <div class="modal-body">
+        <p id="activate-modal-desc" class="modal-desc"></p>
+        <div class="warning-box">⚠ This will immediately make the quarter visible to all team members and trigger assignment notifications. This cannot be undone.</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-success" id="btn-activate-confirm">Activate Quarter</button>
+        <button class="btn-secondary" id="btn-activate-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-cascade" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-cascade-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-cascade-title">Cascade Workday Shift</div>
+      <div class="modal-body">
+        <p id="cascade-modal-desc" class="modal-desc"></p>
+        <div id="cascade-warnings" class="warning-box hidden"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-cascade-confirm">Yes, Cascade</button>
+        <button class="btn-secondary" id="btn-cascade-no">No, Manual Only</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: EDIT TEMPLATE -->
+  <div id="modal-edit-template" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-edit-template-title">
+    <div class="modal-box modal-lg">
+      <div class="modal-title" id="modal-edit-template-title">Edit Template</div>
+      <div class="modal-body">
+        <div class="setup-field">
+          <label class="field-label" for="edit-tpl-name">Task Name</label>
+          <input type="text" id="edit-tpl-name" class="field-input" maxlength="200" />
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="edit-tpl-category">Category</label>
+          <select id="edit-tpl-category" class="field-input">
+            <option>Close</option><option>Financials</option><option>Footnotes</option>
+            <option>Master Spreadsheet</option><option>MD&amp;A/Other</option><option>Ops Book</option>
+            <option>Other</option><option>Post-Filing</option><option>Press Release</option>
+            <option>Tie Out</option><option>XBRL</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div class="setup-field" style="flex:1">
+            <label class="field-label" for="edit-tpl-filingtype">Filing Type</label>
+            <select id="edit-tpl-filingtype" class="field-input">
+              <option>10-Q</option><option>10-K</option><option>Both</option>
+            </select>
+          </div>
+          <div class="setup-field" style="flex:1">
+            <label class="field-label" for="edit-tpl-signoffmode">Sign-off Mode</label>
+            <select id="edit-tpl-signoffmode" class="field-input">
+              <option>Sequential</option><option>Preparer Only</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div class="setup-field" style="flex:1">
+            <label class="field-label" for="edit-tpl-prepwd">Preparer Workday</label>
+            <input type="number" id="edit-tpl-prepwd" class="field-input" min="1" max="35" />
+          </div>
+          <div class="setup-field" style="flex:1">
+            <label class="field-label" for="edit-tpl-revwd">Reviewer Workday</label>
+            <input type="number" id="edit-tpl-revwd" class="field-input" min="1" max="35" placeholder="Leave blank for Preparer Only" />
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div class="setup-field" style="flex:1">
+            <label class="field-label" for="edit-tpl-prepwd-10k">Preparer Workday — 10-K <span style="font-weight:400;opacity:0.6">(Q4 only, optional)</span></label>
+            <input type="number" id="edit-tpl-prepwd-10k" class="field-input" min="1" max="35" placeholder="Leave blank to use standard WD" />
+          </div>
+          <div class="setup-field" style="flex:1">
+            <label class="field-label" for="edit-tpl-revwd-10k">Reviewer Workday — 10-K <span style="font-weight:400;opacity:0.6">(Q4 only, optional)</span></label>
+            <input type="number" id="edit-tpl-revwd-10k" class="field-input" min="1" max="35" placeholder="Leave blank to use standard WD" />
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-edit-tpl-save">Save Changes</button>
+        <button class="btn-secondary" id="btn-edit-tpl-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: EDIT CALENDAR ROW -->
+  <div id="modal-edit-calendar" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-edit-calendar-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-edit-calendar-title">Edit Workday</div>
+      <div class="modal-body">
+        <div class="setup-field">
+          <label class="field-label" for="edit-cal-date">Actual Date</label>
+          <input type="date" id="edit-cal-date" class="field-input" />
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="edit-cal-milestone">Milestone label (optional)</label>
+          <input type="text" id="edit-cal-milestone" class="field-input" placeholder="e.g. BOD Meeting" maxlength="100" />
+          <div class="setup-field" style="margin-top:8px">
+            <label class="field-label" for="edit-cal-milestone-type">Milestone type</label>
+            <select id="edit-cal-milestone-type" class="field-input">
+              <option value="Standard">Standard — meetings, mailouts, filings, press release</option>
+              <option value="SVP">SVP deliverable</option>
+              <option value="MD">MD deliverable</option>
+              <option value="CFO">CFO deliverable</option>
+            </select>
+          </div>
+        </div>
+        <div class="setup-field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="edit-cal-weekend" aria-label="Falls on a weekend" />
+            <span class="field-label" style="margin:0">Falls on a weekend</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-edit-cal-save">Save</button>
+        <button class="btn-secondary" id="btn-edit-cal-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: EDIT USER ROLE -->
+  <div id="modal-edit-user" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-edit-user-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-edit-user-title">Edit User</div>
+      <div class="modal-body">
+        <p class="modal-desc" id="edit-user-name"></p>
+        <div class="setup-field">
+          <label class="field-label" for="edit-user-role">Role</label>
+          <select id="edit-user-role" class="field-input">
+            <option value="TeamMember">Team Member</option>
+            <option value="FinalReviewer">Final Reviewer</option>
+            <option value="Admin">Admin</option>
+          </select>
+        </div>
+        <div class="setup-field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="edit-user-active" checked aria-label="User is active" />
+            <span class="field-label" style="margin:0">Active (uncheck to deactivate)</span>
+          </label>
+        </div>
+        <div class="warning-box" style="margin-top:8px">
+          Changing role takes effect on the user's next page load.
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-edit-user-save">Save</button>
+        <button class="btn-secondary" id="btn-edit-user-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: NEW QUARTER -->
+  <div id="modal-new-quarter" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-new-quarter-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-new-quarter-title">Start New Quarter</div>
+      <div class="modal-body">
+        <p class="modal-desc">Enter the quarter name to create as a staging quarter. You will set up assignments and the close calendar before activating it.</p>
+        <label class="field-label" for="new-quarter-name">Quarter name</label>
+        <input type="text" id="new-quarter-name" class="field-input" placeholder="e.g. Q2 2026" maxlength="20" />
+        <p id="new-quarter-error" class="modal-desc hidden" style="color:var(--red);margin-top:6px"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-new-quarter-confirm">Create Quarter</button>
+        <button class="btn-secondary" id="btn-new-quarter-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ROLLFORWARD CONFIRM -->
+  <div id="modal-rollforward-confirm" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-rollforward-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-rollforward-title">Confirm Rollforward</div>
+      <div class="modal-body">
+        <p class="modal-desc" id="rollforward-confirm-detail"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-rollforward-confirm">Roll Forward</button>
+        <button class="btn-secondary" id="btn-rollforward-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: RETIRE TEMPLATE -->
+  <div id="modal-retire-template" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-retire-template-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-retire-template-title">Retire Template</div>
+      <div class="modal-body">
+        <p class="modal-desc" id="retire-template-detail"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-danger" id="btn-retire-template-confirm">Retire Template</button>
+        <button class="btn-secondary" id="btn-retire-template-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD USER -->
+  <div id="modal-add-user" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-add-user-title">
+    <div class="modal-box modal-lg">
+      <div class="modal-title" id="modal-add-user-title">Add Team Member</div>
+      <div class="modal-body">
+        <p class="modal-desc">Pre-add a user before their first login. Emoji and color are optional — they can update them when they first sign in.</p>
+        <div class="setup-field">
+          <label class="field-label" for="add-user-name">Preferred first name (optional)</label>
+          <input type="text" id="add-user-name" class="field-input" placeholder="e.g. Mike" maxlength="30" />
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="add-user-email">Moody's email address</label>
+          <input type="email" id="add-user-email" class="field-input" placeholder="firstname.lastname@moodys.com" />
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="add-user-role">Role</label>
+          <select id="add-user-role" class="field-input">
+            <option value="TeamMember">Team Member</option>
+            <option value="FinalReviewer">Final Reviewer</option>
+            <option value="Admin">Admin</option>
+          </select>
+        </div>
+        <div class="setup-field">
+          <label class="field-label">Emoji (optional)</label>
+          <div class="emoji-grid" id="add-user-emoji-grid" role="group" aria-label="Choose emoji"></div>
+          <input type="text" id="add-user-emoji-custom" class="field-input" placeholder="Or type any emoji" maxlength="4" style="margin-top:8px" />
+        </div>
+        <div class="setup-field">
+          <label class="field-label" id="add-user-color-label">Color (optional)</label>
+          <div class="color-grid" id="add-user-color-grid" role="group" aria-labelledby="add-user-color-label"></div>
+        </div>
+        <div class="setup-preview" id="add-user-preview-wrap" style="display:none">
+          <span id="add-user-preview-badge" class="person-badge"></span>
+        </div>
+        <p class="modal-desc" id="add-user-error" style="color:var(--red);margin-top:4px"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-add-user-confirm">Add User</button>
+        <button class="btn-secondary" id="btn-add-user-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CALENDAR BULK SETUP -->
+  <div id="modal-cal-setup" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-cal-setup-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-cal-setup-title">Setup Close Calendar</div>
+      <div class="modal-body">
+        <p class="modal-desc">Creates all workday rows for a quarter starting from WD1 = your chosen date. Each subsequent workday is the next calendar day. Weekend dates are flagged automatically — you can adjust individual dates after setup.</p>
+        <div class="setup-field">
+          <label class="field-label" for="cal-setup-quarter">Quarter</label>
+          <input type="text" id="cal-setup-quarter" class="field-input" placeholder="e.g. Q2 2026" maxlength="10" />
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="cal-setup-start">WD1 start date</label>
+          <input type="date" id="cal-setup-start" class="field-input" />
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="cal-setup-maxwd">Number of workdays</label>
+          <select id="cal-setup-maxwd" class="field-input">
+            <option value="20">20 workdays (10-Q quarters)</option>
+            <option value="35">35 workdays (Q4 / 10-K)</option>
+          </select>
+        </div>
+        <div class="warning-box" style="margin-top:8px;font-size:12px">
+          If rows already exist for this quarter they will be replaced. Milestone labels are not preserved — you'll need to re-add them after setup.
+        </div>
+        <p id="cal-setup-error" class="modal-desc hidden" style="color:var(--red);margin-top:6px"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-cal-setup-confirm">Create Calendar</button>
+        <button class="btn-secondary" id="btn-cal-setup-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: REASSIGN -->
+  <div id="modal-reassign" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="reassign-modal-title">
+    <div class="modal-box">
+      <div class="modal-title" id="reassign-modal-title">Reassign</div>
+      <div class="modal-body">
+        <p class="modal-desc" id="reassign-current"></p>
+        <div class="setup-field">
+          <label class="field-label" for="reassign-user-select">Assign to</label>
+          <select id="reassign-user-select" class="field-input"></select>
+        </div>
+        <div class="warning-box" style="margin-top:8px;font-size:12px">
+          Reassigning a task that has already been signed off will not reverse the sign-off — only the assignee record changes.
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-reassign-confirm">Reassign</button>
+        <button class="btn-secondary" id="btn-reassign-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: SOX EXPORT -->
+  <!-- MODAL: AUDIT LOG EXPORT -->
+  <div id="modal-sox-export" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-sox-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-sox-title">Audit Log Export</div>
+      <div class="modal-body">
+        <p class="modal-desc">Generates a single Excel workbook with seven tabs: Summary, Sign-Offs, Unsigned Tasks, Reversals, Review Comments, Reassignments, and Admin Actions. The export is logged to the AuditLog.</p>
+        <div class="setup-field">
+          <label class="field-label" for="sox-export-quarter">Quarter</label>
+          <select id="sox-export-quarter" class="field-input"></select>
+        </div>
+        <div class="warning-box" style="margin-top:8px;font-size:12px">
+          Export this report at the end of each quarter and save it to a permanent location outside Folio. The AuditLog list in SharePoint is mutable — the exported file is your immutable record.
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-sox-confirm">Generate Report</button>
+        <button class="btn-secondary" id="btn-sox-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- LOADING -->
+  <div id="loading-overlay" class="loading-overlay hidden">
+    <div class="spinner"></div>
+    <div id="loading-text" class="loading-text">Loading...</div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="app.js?v=1.0.0"></script>
 </body>
 </html>
