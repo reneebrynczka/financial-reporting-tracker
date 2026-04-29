@@ -442,15 +442,19 @@ async function updateListItem(listName, itemId, fields) {
 }
 
 async function getAppSetting(key) {
-  const items = await getListItems(CONFIG.lists.appSettings, `fields/Title eq '${key}'`);
-  if (items.length) return items[0].fields.SettingValue;
-  return null;
+  // Load all AppSettings rows and filter client-side.
+  // Avoids server-side filter on Title which requires a SharePoint index.
+  // AppSettings is a tiny list (< 10 rows) so loading all is negligible.
+  const items = await getListItems(CONFIG.lists.appSettings);
+  const match = items.find(i => i.fields.Title === key);
+  return match ? match.fields.SettingValue : null;
 }
 
 async function setAppSetting(key, value) {
-  const items = await getListItems(CONFIG.lists.appSettings, `fields/Title eq '${key}'`);
-  if (items.length) {
-    await updateListItem(CONFIG.lists.appSettings, items[0].id, { SettingValue: value });
+  const items = await getListItems(CONFIG.lists.appSettings);
+  const match = items.find(i => i.fields.Title === key);
+  if (match) {
+    await updateListItem(CONFIG.lists.appSettings, match.id, { SettingValue: value });
   } else {
     await createListItem(CONFIG.lists.appSettings, { Title: key, SettingValue: value });
   }
