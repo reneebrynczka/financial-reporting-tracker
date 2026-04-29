@@ -1,5705 +1,5281 @@
 /* ============================================================
-   FINANCIAL REPORTING TRACKER — app.js
-   Hosted on:  GitHub Pages
-   Database:   SharePoint Lists via Microsoft Graph API
-   Auth:       Microsoft SSO (User.Read + Sites.ReadWrite.All)
-   Admin:      IsAdmin = Yes in FT_Users
-
-   Data operations call the Microsoft Graph API directly using
-   a Bearer token obtained via MSAL. No Power Automate flows
-   needed — the app reads and writes SharePoint lists directly.
+   FOLIO — APP.JS v1.0.0
+   Moody's Financial Reporting Tracker
+   ============================================================
+   SETUP: Fill in CONFIG values before first deployment.
+   See Section 4 of the Build Guide for details.
    ============================================================ */
 
-// ── CONFIG ────────────────────────────────────────────────────
+'use strict';
+
+// ============================================================
+// CONFIGURATION — FILL IN YOUR VALUES HERE
+// ============================================================
 const CONFIG = {
-  // Azure AD — requires User.Read + Sites.ReadWrite.All
-  clientId:  "bb00291f-d451-4e74-b8cf-10c334efb0ed",
-  tenantId:  "1061a8b8-b1ee-4249-bb84-9a2cd2792fae",
+  // Azure App Registration
+  clientId:    'bb00291f-d451-4e74-b8cf-10c334efb0ed',
+  tenantId:    '1061a8b8-b1ee-4249-bb84-9a2cd2792fae',
+  redirectUri: 'https://reneebrynczka.github.io/financial-reporting-tracker/',  // Full URL to index.html
 
-  // SharePoint site URL — e.g. https://moodys.sharepoint.com/sites/FinancialReporting
-  siteUrl:   "https://moodys.sharepoint.com/sites/finance_home_finrptg",
+  // SharePoint Site
+  siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
+
+  // SharePoint List Names — must match exactly
+  lists: {
+    taskTemplates:        'TaskTemplates',
+    quarterlyAssignments: 'QuarterlyAssignments',
+    closeCalendar:        'CloseCalendar',
+    appSettings:          'AppSettings',
+    users:                'Users',
+    auditLog:             'AuditLog',
+    taskSuggestions:      'TaskSuggestions',
+    matrixStatus:         'MatrixStatus',
+    reviewComments:       'ReviewComments',
+    reviewCommentReplies: 'ReviewCommentReplies',
+  },
+
+  // App Settings
+  version:         '1.0.0',
+  pollIntervalMs:  60000,           // 60 seconds — balances freshness vs API call volume
+  timezone:        'America/New_York',
+  verboseLogging:  false,           // Set true temporarily to debug — logs all API calls to browser console
+
+  // Matrix checkpoints (order matters — defines column order)
+  matrixCheckpoints: [
+    'Prepared in Workiva',
+    '1st Review Workiva',
+    'Tie-out',
+    '1st Review Tie-out',
+    'XBRL',
+    '1st Review XBRL',
+    'SP Preparer',
+    'SP 1st Reviewer',
+    'Loaded to Clara',
+    'Final Review',
+  ],
+
+  // Matrix-only columns (not tied to tasks)
+  matrixOnlyColumns: ['SP Preparer', 'SP 1st Reviewer', 'Loaded to Clara', 'Final Review'],
+
+  // User emoji options
+  emojiOptions: ['🦊','⭐','💜','🌊','🦋','🔥','🎯','🚀','🎨','🌙','☀️','🐬','🦅','💎','🎵','🌺','🦁','🐋','🌻','🦄','🎸','🔮','🍀','🐝','🦉','🌴','🎲','⚡','🐧','🐶','🧁','🍓','🍦','🎈','🪅','✈️','🧸','🧢'],
+
+  // User color options
+  colorOptions: [
+    { hex: '#F5A623', label: 'Amber' },
+    { hex: '#00897B', label: 'Teal' },
+    { hex: '#7B61FF', label: 'Purple' },
+    { hex: '#29ABE2', label: 'Sky' },
+    { hex: '#3AB54A', label: 'Green' },
+    { hex: '#E91E8C', label: 'Rose' },
+    { hex: '#75787B', label: 'Slate' },
+    { hex: '#D4537E', label: 'Pink' },
+    { hex: '#FF7043', label: 'Tangerine' },
+    { hex: '#26C6DA', label: 'Cyan' },
+    { hex: '#5C6BC0', label: 'Indigo' },
+    { hex: '#8D6E63', label: 'Brown' },
+    { hex: '#EC407A', label: 'Fuchsia' },
+    { hex: '#66BB6A', label: 'Mint' },
+    { hex: '#AB47BC', label: 'Violet' },
+    { hex: '#EF5350', label: 'Red' },
+    { hex: '#26A69A', label: 'Sea' },
+    { hex: '#BDBDBD', label: 'Silver' },
+    { hex: '#F5BCDD', label: 'Light Pink' },
+    { hex: '#D0BCF5', label: 'Lilac' },
+  ],
 };
-// ─────────────────────────────────────────────────────────────
 
-// ── MSAL — User.Read + Sites.ReadWrite.All ────────────────────
+// ============================================================
+// CONSTANTS
+// ============================================================
+
+// Single source of truth for matrix-only column -> SharePoint field mapping.
+// Used by performMatrixUpdate, renderMatrixView, and exportMatrixExcel.
+const MATRIX_FIELD_MAP = {
+  'SP Preparer':     { status: 'SPPreparer',    date: 'SPPreparerDate',    by: 'SPPreparerBy'    },
+  'SP 1st Reviewer': { status: 'SP1stReviewer', date: 'SP1stReviewerDate', by: 'SP1stReviewerBy' },
+  'Loaded to Clara': { status: 'LoadedToClara', date: 'LoadedToClaraDate', by: 'LoadedToClaraBy' },
+  'Final Review':    { status: 'FinalReview',   date: 'FinalReviewDate',   by: 'FinalReviewBy'   },
+};
+
+// ============================================================
+// MSAL SETUP
+// ============================================================
 const msalConfig = {
   auth: {
-    clientId:  CONFIG.clientId,
-    authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
-    redirectUri: window.location.origin + window.location.pathname,
+    clientId:    CONFIG.clientId,
+    authority:   `https://login.microsoftonline.com/${CONFIG.tenantId}`,
+    redirectUri: CONFIG.redirectUri,
   },
   cache: {
-    cacheLocation: "sessionStorage",
-    storeAuthStateInCookie: true,  // avoids Edge tracking prevention
+    cacheLocation:          'sessionStorage',
+    storeAuthStateInCookie: false,
   },
-  system: { allowNativeBroker: false }
 };
 
-const msalInstance = new msal.PublicClientApplication(msalConfig);
-const GRAPH_SCOPES = ["User.Read", "Sites.ReadWrite.All"];
+const loginRequest = { scopes: ['User.Read', 'Sites.ReadWrite.All'] };
 
-// ── GRAPH TOKEN ───────────────────────────────────────────────
-// Acquires a fresh (or cached) Bearer token for every Graph call.
-async function getGraphToken() {
-  const account = msalInstance.getAllAccounts()[0];
-  if (!account) throw new Error("Not signed in — please sign in with Microsoft first.");
+let msalInstance = null;
+let currentAccount = null;
+
+// ============================================================
+// APP STATE
+// ============================================================
+const STATE = {
+  currentUser:    null,       // User object from Users list
+  activeQuarter:  null,       // e.g. "Q2 2026" — set by admin, never changed by users
+  viewingQuarter: null,       // Quarter currently browsed — equals activeQuarter unless viewing history
+  workingQuarter: null,       // Admin staging quarter
+  assignments:    [],         // QuarterlyAssignments for active quarter
+  templates:      [],         // TaskTemplates (cached)
+  users:          [],         // Users list (cached)
+  calendar:       [],         // CloseCalendar for active quarter
+  matrixStatus:   [],         // MatrixStatus for active quarter
+  reviewComments: [],         // ReviewComments for active quarter
+  rcReplies:      [],         // ReviewCommentReplies for active quarter
+  currentView:    'my-tasks',
+  pollTimer:      null,
+  siteId:         null,       // SharePoint site ID (auto-populated)
+  isAdmin:        false,
+  isFinalReviewer: false,
+  taskDetailId:   null,       // Currently open task panel assignment ID
+  filters: {
+    status:    'all',
+    category:  'all',
+    assignee:  'all',
+    search:    '',
+    rcStatus:  'all',
+    rcPriority:'all',
+    rcQuarter: 'all',
+    sort:      'overdue', // 'overdue' | 'category' | 'prepWD' | 'revWD' | 'status' | 'task'
+    sortDir:   'asc',     // 'asc' | 'desc'
+  },
+  pendingMatrixAction: null,  // {item, column, quarter} — pending matrix update confirmation
+  pendingSignoff: null,       // {assignmentId, role}
+  pendingReversal: null,      // {assignmentId, role}
+  pendingActivation: null,    // quarter name
+  pendingRCResolve:       null,   // review comment ID
+  pendingSuggestionReject: null,  // suggestion ID pending rejection
+  pendingTemplateEdit:    null,   // template ID being edited
+  pendingTemplateRetire:  null,   // template ID pending retire confirm
+  pendingReassign:        null,   // {assignmentId, role} pending reassignment
+  _stagingItems:          [],     // Cached staging assignments for rollforward grid
+  _stagingLoading:        false,  // True while staging items are being fetched
+  _addUserEmoji:          null,   // Emoji selected in Add User modal
+  _addUserColor:          null,   // Color selected in Add User modal
+  pendingCalendarEdit:    null,   // calendar row ID being edited
+  pendingUserEdit:        null,   // user email being edited
+  suggestions:            [],         // TaskSuggestions (loaded when admin panel opens)
+  pendingCascade:      null,  // {quarter, wdNumber, shift, newDate}
+  pendingRollforward:  null,  // quarter name awaiting rollforward confirm
+  _auditEntries:       [],    // Loaded on-demand when audit log panel opens
+  _auditFilter:        { type: 'All', person: '', quarter: '' }, // Audit log filter state
+};
+
+// ============================================================
+// LOGGING
+// ============================================================
+function log(...args) {
+  if (CONFIG.verboseLogging) console.log('[Folio]', ...args);
+}
+function logError(...args) {
+  console.error('[Folio ERROR]', ...args);
+}
+
+// ============================================================
+// UTILITY — EASTERN TIME
+// ============================================================
+function nowET() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+}
+
+function todayET() {
+  const d = nowET();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function formatDateET(isoString) {
+  if (!isoString) return '—';
   try {
-    const result = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account });
-    return result.accessToken;
-  } catch(e) {
-    // Silent acquisition failed (e.g. consent not yet granted) — fall back to popup
-    const result = await msalInstance.acquireTokenPopup({ scopes: GRAPH_SCOPES });
-    return result.accessToken;
-  }
+    const d = new Date(isoString);
+    return d.toLocaleString('en-US', {
+      timeZone: CONFIG.timezone,
+      month: 'short', day: 'numeric', year: 'numeric',
+      hour: 'numeric', minute: '2-digit', hour12: true
+    }) + ' ET';
+  } catch { return isoString; }
 }
 
-// ── GRAPH API HELPER ─────────────────────────────────────────
-// Low-level call to any Graph endpoint with automatic token attachment.
-// Handles 429 throttling: reads Retry-After header and retries once after
-// the indicated delay. Graph's limit is 10k req/10min per app — a 5-person
-// team won't hit it under normal use, but during bulk import it's possible.
-async function callGraph(method, path, body) {
-  if (!CONFIG.siteUrl || CONFIG.siteUrl.startsWith("REPLACE_")) {
-    throw new Error("SharePoint site URL not configured — set CONFIG.siteUrl at the top of app.js.");
-  }
-  const token = await getGraphToken();
-  const url   = path.startsWith("https://") ? path : `https://graph.microsoft.com/v1.0${path}`;
-  const opts  = {
-    method,
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type":  "application/json",
-    },
+function formatDateShort(isoString) {
+  if (!isoString) return '—';
+  try {
+    const d = new Date(isoString + 'T12:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch { return isoString; }
+}
+
+// Returns the CSS class for a milestone pill based on MilestoneType.
+// Falls back gracefully for legacy IsCustomMilestone boolean rows.
+function milestoneClass(calRow) {
+  const t = calRow.MilestoneType;
+  if (t === 'SVP')      return 'milestone-svp';
+  if (t === 'MD')       return 'milestone-md';
+  if (t === 'CFO')      return 'milestone-cfo';
+  if (t === 'Standard') return 'milestone-std';
+  // Legacy fallback: IsCustomMilestone = true → SVP style
+  if (calRow.IsCustomMilestone) return 'milestone-svp';
+  return 'milestone-std';
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function isQuarterQ4(quarter) {
+  return quarter && quarter.trim().toUpperCase().startsWith('Q4');
+}
+
+function getMaxWorkday(quarter) {
+  return isQuarterQ4(quarter) ? 35 : 20;
+}
+
+// Returns which sign-off role a matrix checkpoint represents.
+// '1st Review *' checkpoints map to the reviewer; everything else is the preparer.
+function getCheckpointRole(checkpoint) {
+  return checkpoint.startsWith('1st Review') ? 'reviewer' : 'preparer';
+}
+
+// Returns the sign-off field names for a given role on an assignment.
+function getSignOffFields(role) {
+  const isPreparer = role === 'preparer';
+  return {
+    signOff:    isPreparer ? 'PreparerSignOff'     : 'ReviewerSignOff',
+    signOffDate:isPreparer ? 'PreparerSignOffDate'  : 'ReviewerSignOffDate',
+    signOffBy:  isPreparer ? 'PreparerSignOffBy'    : 'ReviewerSignOffBy',
+    assignee:   isPreparer ? 'Preparer'             : 'Reviewer',
+    workday:    isPreparer ? 'PreparerWorkday'       : 'ReviewerWorkday',
   };
-  if (body) opts.body = JSON.stringify(body);
-
-  const res = await fetch(url, opts);
-
-  // 429 Too Many Requests — Graph throttling. Wait Retry-After seconds then retry once.
-  if (res.status === 429) {
-    const retryAfter = parseInt(res.headers.get('Retry-After') || '10', 10);
-    console.warn(`Graph throttled (429) — retrying after ${retryAfter}s`);
-    await new Promise(r => setTimeout(r, retryAfter * 1000));
-    const retry = await fetch(url, opts);
-    if (!retry.ok) {
-      const err = await retry.text();
-      throw new Error(`Graph ${method} ${path} → ${retry.status} (after retry): ${err.slice(0, 200)}`);
-    }
-    if (retry.status === 204) return null;
-    const retryText = await retry.text();
-    return retryText ? JSON.parse(retryText) : null;
-  }
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Graph ${method} ${path} → ${res.status}: ${err.slice(0, 200)}`);
-  }
-  if (res.status === 204) return null; // DELETE / no-content responses
-  const text = await res.text();
-  if (!text) return null;
-  return JSON.parse(text);
 }
 
-// ── GRAPH SITE ID (resolved once per session) ────────────────
-// Graph list operations require the internal site ID, which we
-// resolve from the site URL once and cache for the session.
-// Throws on failure — callers (getListItems etc.) propagate to loadAllData/refreshData.
-let _graphSiteId = null;
-async function getGraphSiteId() {
-  if (_graphSiteId) return _graphSiteId;
-  // Convert https://tenant.sharepoint.com/sites/SiteName
-  //    into  graph.microsoft.com/v1.0/sites/tenant.sharepoint.com:/sites/SiteName
-  const url   = new URL(CONFIG.siteUrl);
-  const host  = url.hostname;                   // moodys.sharepoint.com
-  const path  = url.pathname;                   // /sites/FinancialReporting
-  const data  = await callGraph("GET", `/sites/${host}:${path}`);
-  _graphSiteId = data.id;
-  return _graphSiteId;
+// ============================================================
+// UTILITY — WORKDAY RESOLUTION (single source of truth)
+// ============================================================
+function resolveWorkday(quarter, wdNumber) {
+  const entry = STATE.calendar.find(c =>
+    c.Quarter === quarter && Number(c.WorkdayNumber) === Number(wdNumber)
+  );
+  return entry ? entry.ActualDate : null;
 }
 
-// ── LIST HELPERS (via Microsoft Graph) ───────────────────────
-// Graph returns list items with fields nested under item.fields.
-// All normaliser functions already expect a flat fields object,
-// so we return item.fields merged with item.id (the SP item ID).
-// All four helpers throw on failure — callers are responsible for
-// catching errors (typically in try/catch inside the calling function).
+function getTodaysWorkday(quarter) {
+  const today = todayET();
+  const sorted = [...STATE.calendar]
+    .filter(c => c.Quarter === quarter)
+    .sort((a,b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
+  if (!sorted.length) return null;
+  const match = sorted.find(c => c.ActualDate === today);
+  if (match) return Number(match.WorkdayNumber);
+  if (today < sorted[0].ActualDate) return 'pre-close';
+  if (today > sorted[sorted.length-1].ActualDate) return 'post-close';
+  const prev = sorted.filter(c => c.ActualDate < today).pop();
+  const next = sorted.find(c => c.ActualDate > today);
+  if (prev && next) return `Between WD${prev.WorkdayNumber} and WD${next.WorkdayNumber}`;
+  return null;
+}
 
-async function getListItems(listName) {
-  const siteId = await getGraphSiteId();
-  const all    = [];
-  // Graph paginates at 200 items — follow @odata.nextLink until done
-  let url = `/sites/${siteId}/lists/${encodeURIComponent(listName)}/items?expand=fields&$top=999`;
-  while (url) {
-    const data = await callGraph("GET", url);
-    (data?.value || []).forEach(item => {
-      all.push({ id: item.id, ID: item.id, ...item.fields });
+// Returns the workday number for the next calendar workday after today,
+// or null if today is the last workday or the calendar has no future entries.
+function getTomorrowWorkday(quarter) {
+  const today = todayET();
+  const sorted = [...STATE.calendar]
+    .filter(c => c.Quarter === quarter)
+    .sort((a, b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
+  const next = sorted.find(c => c.ActualDate > today);
+  return next ? Number(next.WorkdayNumber) : null;
+}
+
+function getWDIndicatorText(quarter) {
+  if (!quarter) return '—';
+  const wd = getTodaysWorkday(quarter);
+  if (wd === null) return quarter;
+  if (wd === 'pre-close') return `Pre-close · ${quarter}`;
+  if (wd === 'post-close') return `Post-close · ${quarter}`;
+  if (typeof wd === 'string') return wd; // "Between WD3 and WD4"
+  const date = resolveWorkday(quarter, wd);
+  const dateStr = date ? formatDateShort(date) : '';
+  return `WD${wd}${dateStr ? ' · ' + dateStr : ''}`;
+}
+
+function isTaskOverdue(assignment) {
+  const wd = getTodaysWorkday(STATE.activeQuarter);
+  if (!wd || typeof wd !== 'number') return false;
+  const role = assignment.SignOffMode === 'Preparer Only' ? 'preparer' :
+    !assignment.PreparerSignOff ? 'preparer' : 'reviewer';
+  const dueWD = role === 'preparer'
+    ? Number(assignment.PreparerWorkday)
+    : Number(assignment.ReviewerWorkday);
+  return wd > dueWD && assignment.Status !== 'Complete';
+}
+
+// ============================================================
+// GRAPH API — CENTRAL REQUEST HANDLER
+// ============================================================
+async function getToken() {
+  if (!msalInstance || !currentAccount) throw new Error('Not authenticated');
+  try {
+    const result = await msalInstance.acquireTokenSilent({
+      ...loginRequest,
+      account: currentAccount,
     });
-    url = data?.["@odata.nextLink"] || null;
+    return result.accessToken;
+  } catch (err) {
+    log('Silent token failed, redirecting...', err);
+    await msalInstance.acquireTokenRedirect(loginRequest);
+    throw err;
   }
-  return all;
+}
+
+async function graphRequest(method, endpoint, body = null, retries = 3) {
+  const url = endpoint.startsWith('https://')
+    ? endpoint
+    : `https://graph.microsoft.com/v1.0${endpoint}`;
+
+  log(`${method} ${endpoint}`);
+
+  const bodyStr = body ? JSON.stringify(body) : null;
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    // Re-fetch token on every attempt so a long backoff sleep never uses a stale token.
+    const token = await getToken();
+    const options = {
+      method,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    };
+    if (bodyStr) options.body = bodyStr;
+
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429) {
+        const retryAfter = parseInt(res.headers.get('Retry-After') || '5', 10);
+        log(`Throttled. Retrying after ${retryAfter}s...`);
+        await sleep(retryAfter * 1000 * attempt);
+        continue;
+      }
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Graph API ${res.status}: ${errText}`);
+      }
+      if (res.status === 204) return null;
+      return await res.json();
+    } catch (err) {
+      if (attempt === retries) throw err;
+      await sleep(1000 * attempt);
+    }
+  }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ============================================================
+// SHAREPOINT — SITE ID
+// ============================================================
+async function getSiteId() {
+  if (STATE.siteId) return STATE.siteId;
+  // Strip trailing slash so the Graph API path is always well-formed
+  const url = CONFIG.siteUrl.replace(/\/$/, '').replace('https://', '').replace('.sharepoint.com', '');
+  const parts = url.split('/sites/');
+  const hostname = parts[0] + '.sharepoint.com';
+  const sitePath = 'sites/' + parts[1];
+  const data = await graphRequest('GET', `/sites/${hostname}:/${sitePath}`);
+  STATE.siteId = data.id;
+  log('Site ID:', STATE.siteId);
+  return STATE.siteId;
+}
+
+// ============================================================
+// SHAREPOINT — LIST OPERATIONS
+// ============================================================
+// Fetches all items from a SharePoint list, following @odata.nextLink pages until
+// the full result set is returned. Handles lists of any size including AuditLog.
+async function getListItems(listName, filter = '', select = '', expand = '') {
+  const siteId = await getSiteId();
+  let url = `/sites/${siteId}/lists/${listName}/items?$top=500&$expand=fields`;
+  if (filter) url += `&$filter=${encodeURIComponent(filter)}`;
+  if (select) url += `&$select=${encodeURIComponent(select)}`;
+  if (expand) url += `&$expand=${encodeURIComponent(expand)}`;
+
+  const allItems = [];
+  let pageCount = 0;
+
+  while (url) {
+    const data = await graphRequest('GET', url);
+    const page = data.value || [];
+    allItems.push(...page);
+    pageCount++;
+
+    // Follow the next page link if present, otherwise stop.
+    url = data['@odata.nextLink'] || null;
+
+    log(`${listName}: fetched page ${pageCount} (${page.length} items, ${allItems.length} total)`);
+  }
+
+  return allItems;
 }
 
 async function createListItem(listName, fields) {
-  const siteId  = await getGraphSiteId();
-  const payload = { fields };
-  const data    = await callGraph(
-    "POST",
-    `/sites/${siteId}/lists/${encodeURIComponent(listName)}/items`,
-    payload
-  );
-  // Graph always returns the created item with a numeric string id at data.id.
-  // Throw rather than silently return '' — callers that use the ID for follow-up
-  // writes (e.g. applyTemplate creating steps under a new task) would otherwise
-  // write orphaned records with TaskId = '' that can never be retrieved.
-  const id = data?.id || data?.fields?.id;
-  if (!id) throw new Error(`createListItem(${listName}): Graph response missing item ID`);
-  return { id };
+  const siteId = await getSiteId();
+  return graphRequest('POST', `/sites/${siteId}/lists/${listName}/items`, { fields });
 }
 
 async function updateListItem(listName, itemId, fields) {
-  const siteId = await getGraphSiteId();
-  await callGraph(
-    "PATCH",
-    `/sites/${siteId}/lists/${encodeURIComponent(listName)}/items/${itemId}/fields`,
-    fields
+  const siteId = await getSiteId();
+  return graphRequest('PATCH', `/sites/${siteId}/lists/${listName}/items/${itemId}/fields`, fields);
+}
+
+async function getAppSetting(key) {
+  const items = await getListItems(CONFIG.lists.appSettings, `fields/Title eq '${key}'`);
+  if (items.length) return items[0].fields.SettingValue;
+  return null;
+}
+
+async function setAppSetting(key, value) {
+  const items = await getListItems(CONFIG.lists.appSettings, `fields/Title eq '${key}'`);
+  if (items.length) {
+    await updateListItem(CONFIG.lists.appSettings, items[0].id, { SettingValue: value });
+  } else {
+    await createListItem(CONFIG.lists.appSettings, { Title: key, SettingValue: value });
+  }
+}
+
+// ============================================================
+// AUDIT LOG
+// ============================================================
+async function writeAuditLog(actionType, details) {
+  try {
+    await createListItem(CONFIG.lists.auditLog, {
+      Title: `${actionType}: ${details.taskName || details.description || ''}`,
+      Quarter:       STATE.activeQuarter || '',
+      ActionType:    actionType,
+      ActionBy:      STATE.currentUser?.Email || '',
+      ActionDate:    new Date().toISOString(),
+      WorkdayNumber: (() => { const w = getTodaysWorkday(STATE.activeQuarter); return typeof w === 'number' ? w : 0; })(),
+      TaskName:      details.taskName || '',
+      AssignmentID:  details.assignmentId || null,
+      PreviousValue: details.previousValue || '',
+      NewValue:      details.newValue || '',
+      ReasonNote:    details.reason || '',
+    });
+  } catch (err) {
+    logError('Failed to write audit log:', err);
+  }
+}
+
+// ============================================================
+// DATA LOADING
+// ============================================================
+async function loadActiveQuarter() {
+  STATE.activeQuarter  = await getAppSetting('ActiveQuarter');
+  STATE.workingQuarter = await getAppSetting('WorkingQuarter');
+  // viewingQuarter starts equal to activeQuarter on every login.
+  // It diverges only when the user browses a historical quarter.
+  STATE.viewingQuarter = STATE.activeQuarter;
+  log('Active quarter:', STATE.activeQuarter);
+}
+
+async function loadCurrentUser(email) {
+  const items = await getListItems(CONFIG.lists.users, `fields/Email eq '${email}'`);
+  if (items.length) {
+    STATE.currentUser = items[0].fields;
+    STATE.currentUser._id = items[0].id;
+  } else {
+    // First login — create user record
+    const created = await createListItem(CONFIG.lists.users, {
+      Title: email.split('@')[0],
+      Email: email,
+      Role: 'TeamMember',
+      IsActive: true,
+      NotifyOnAssignment:       false,
+      NotifyOnReviewUnlock:     false,
+      NotifyOnOverdue:          false,
+      NotifyOnReassignment:     false,
+      NotifyOnSuggestionUpdate: false,
+    });
+    STATE.currentUser = { ...created.fields, _id: created.id };
+    // Set role flags for first-login users too (Role defaults to TeamMember on creation)
+    STATE.isAdmin = STATE.currentUser.Role === 'Admin';
+    STATE.isFinalReviewer = STATE.currentUser.Role === 'FinalReviewer' || STATE.isAdmin;
+    return false; // First login
+  }
+  STATE.isAdmin = STATE.currentUser.Role === 'Admin';
+  STATE.isFinalReviewer = STATE.currentUser.Role === 'FinalReviewer' || STATE.isAdmin;
+  return true; // Returning user
+}
+
+async function loadUsers() {
+  const items = await getListItems(CONFIG.lists.users, `fields/IsActive eq true`);
+  STATE.users = items.map(i => ({ ...i.fields, _id: i.id }));
+}
+
+async function loadTemplates() {
+  const items = await getListItems(CONFIG.lists.taskTemplates, `fields/IsActive eq true`);
+  STATE.templates = items.map(i => ({ ...i.fields, _id: i.id }));
+  log('Templates loaded:', STATE.templates.length);
+}
+
+async function loadAssignments(quarter) {
+  const items = await getListItems(
+    CONFIG.lists.quarterlyAssignments,
+    `fields/Quarter eq '${quarter}' and fields/IsStaging eq false`
   );
+  STATE.assignments = items.map(i => ({ ...i.fields, _id: i.id }));
+  log('Assignments loaded:', STATE.assignments.length);
 }
 
-async function deleteListItem(listName, itemId) {
-  const siteId = await getGraphSiteId();
-  await callGraph(
-    "DELETE",
-    `/sites/${siteId}/lists/${encodeURIComponent(listName)}/items/${itemId}`
-  );
-}
-// ── LIST NAMES ───────────────────────────────────────────────
-const LISTS = {
-  tasks:         "FT_Tasks",
-  users:         "FT_Users",
-  comments:      "FT_Comments",
-  templates:     "FT_Templates",
-  steps:         "FT_Steps",
-  stepTemplates: "FT_StepTemplates",
-  signOffs:      "FT_SignOffs",
-  locks:         "FT_QuarterLocks",
-  attachments:   "FT_Attachments",
-  quarterDates:  "FT_QuarterDates",
-
-};
-
-// ── IN-MEMORY CACHE ───────────────────────────────────────────
-let _users         = [];
-let _tasks         = [];
-let _templates     = [];
-let _comments      = [];
-let _steps         = [];
-let _stepTemplates = [];
-let _signOffs      = [];
-let _locks         = [];
-let _attachments   = [];
-let _quarterDates  = [];
-let _pollTimer         = null;
-let _commentPollTimer  = null;
-
-function getUserById(id)   { if(!id) return null; return _users.find(u => u._spId===id || u.id===id || u.ID===id) || null; }
-function getUsers()        { return _users; }
-// Returns users eligible to be assigned as owners or reviewers.
-// Excludes read-only users since they cannot interact with tasks.
-function getAssignableUsers() { return _users.filter(u => !u.isReadOnly); }
-function getTasks()        { return _tasks; }
-// Returns tasks excluding fully-locked quarters — used in all views except Admin/Report/Exec
-function getActiveTasks()  { return _tasks.filter(t => !isQuarterLocked(t.quarter, t.year)); }
-function getTemplates()    { return _templates; }
-function getStepsForTask(taskSpId) {
-  return _steps.filter(s => s.taskId === taskSpId).sort((a,b) => (a.order||0)-(b.order||0));
-}
-function isQuarterLocked(quarter, year) {
-  return _locks.some(l => l.quarter === quarter && l.year === parseInt(year));
-}
-function getStepTemplatesForTemplate(templateId) {
-  return _stepTemplates.filter(s => s.templateId === templateId).sort((a,b) => (a.order||0)-(b.order||0));
+async function loadCalendar(quarter) {
+  const items = await getListItems(CONFIG.lists.closeCalendar, `fields/Quarter eq '${quarter}'`);
+  STATE.calendar = items.map(i => ({ ...i.fields, _id: i.id }))
+    .sort((a,b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
 }
 
-// ── DATA NORMALISER ───────────────────────────────────────────
-// SharePoint returns fields with capitalised names; normalise to
-// the same shape the rest of the app expects.
-function normaliseTask(f) {
-  return {
-    _spId:       f.id || f.ID || '',
-    id:          f.TaskId  || f.id || f.ID || '',
-    name:        f.Title   || f.TaskName || '',
-    type:        f.TaskType || '',
-    quarter:     f.Quarter  || '',
-    year:        parseInt(f.Year) || new Date().getFullYear(),
-    dueDate:     (f.DueDate || '').slice(0, 10),
-    status:      f.Status   || 'Not Started',
-    ownerId:     f.OwnerId  || '',
-    reviewerId:  f.ReviewerId  || '',
-    reviewer2Id: f.Reviewer2Id || '',
-    description:        f.Description        || '',
-    notes:              f.Notes              || '',   // rich notes, can carry forward
-    applicability:      f.Applicability      || 'All Quarters',
-    workdayNum:         f.WorkdayNum ? parseInt(f.WorkdayNum) : null,
-    skipNextRollforward: f.SkipNextRollforward === 'Yes' || f.SkipNextRollforward === true,
-    reassignRequested:  f.ReassignRequested === 'Yes' || f.ReassignRequested === true,
-    reassignNote:       f.ReassignNote || '',
-  };
-}
-function normaliseUser(f) {
-  return {
-    _spId:      f.id || f.ID || '',
-    id:         f.UserId   || f.id || f.ID || '',
-    name:       f.Title    || f.FullName || '',
-    role:       f.JobRole  || '',
-    email:      (f.Email   || '').toLowerCase().trim(),
-    isAdmin:    f.IsAdmin   === true || f.IsAdmin   === 'Yes',
-    isReadOnly: f.IsReadOnly === true || f.IsReadOnly === 'Yes',
-  };
-}
-function normaliseTemplate(f) {
-  return {
-    _spId:              f.id || f.ID || '',
-    id:                 f.TemplateId || f.id || f.ID,
-    name:               f.Title || '',
-    type:               f.TaskType || '',
-    dueDaysFromQtrEnd:  parseInt(f.DueDaysFromQtrEnd) || 30,
-    defaultOwnerId:     f.DefaultOwnerId || '',
-  };
-}
-function normaliseComment(f) {
-  return {
-    _spId:      f.id || f.ID || '',
-    id:         f.CommentId || f.id || f.ID,
-    taskId:     f.TaskId    || '',
-    stepId:     f.StepId    || '',
-    authorId:   f.AuthorId  || '',
-    text:       f.CommentText || '',
-    time:       f.CommentTime || '',
-    ts:         f.Timestamp  || 0,
-    tsIso:      f.TimestampISO || '',
-    isResolved: f.IsResolved === 'Yes' || f.IsResolved === true,
-  };
-}
-function normaliseSignOff(f) {
-  return {
-    _spId:      f.id || f.ID || '',
-    id:         f.SignOffId   || f.id || f.ID,
-    refId:      f.RefId       || '',   // _spId of the task or step
-    refType:    f.RefType     || '',   // "task" | "step"
-    refName:    f.RefName     || '',
-    userId:     f.UserId      || '',
-    userName:   f.UserName    || '',
-    fromStatus: f.FromStatus  || '',
-    toStatus:   f.ToStatus    || '',
-    ts:         f.Timestamp   || '',
-    tsIso:      f.TimestampISO|| '',
-  };
-}
-function normaliseLock(f) {
-  return {
-    _spId:   f.id || f.ID || '',
-    id:      f.LockId  || f.id || f.ID,
-    quarter: f.Quarter || '',
-    year:    parseInt(f.Year) || 0,
-    lockedBy:   f.LockedBy   || '',
-    lockedAt:   f.LockedAt   || '',
-  };
-}
-function normaliseAttachment(f) {
-  return {
-    _spId:       f.id || f.ID || '',
-    id:          f.AttachmentId || f.id || f.ID,
-    stepId:      f.StepId       || '',
-    taskId:      f.TaskId       || '',
-    label:       f.Title        || f.Label || '',
-    url:         f.FileUrl      || '',
-    linkedBy:    f.LinkedBy     || '',
-    linkedAt:    f.LinkedAt     || '',
-    versionNote: f.VersionNote  || '',
-  };
+async function loadMatrixStatus(quarter) {
+  const items = await getListItems(CONFIG.lists.matrixStatus, `fields/Quarter eq '${quarter}'`);
+  STATE.matrixStatus = items.map(i => ({ ...i.fields, _id: i.id }));
 }
 
-function normaliseQuarterDate(f) {
-  // CalOverrides stores { wdNum: 'YYYY-MM-DD' } manual date overrides as JSON
-  let calOverrides = {};
-  try { calOverrides = JSON.parse(f.CalOverrides || '{}'); } catch { calOverrides = {}; }
-  return {
-    _spId:            f.id || f.ID || '',
-    quarter:          f.Quarter || '',
-    year:             parseInt(f.Year) || 0,
-    wd1Date:          (f.WD1Date || '').slice(0,10),
-    calOverrides,
-    isWorkingQuarter: f.IsWorkingQuarter === 'Yes',
-    secFilingDate:    (f.SECFilingDate  || '').slice(0,10),
-    earningsDate:     (f.EarningsCallDate || '').slice(0,10),
-    earningsTime:     f.EarningsCallTime  || '',
-  };
-}
-function normaliseStep(f) {
-  return {
-    _spId:   f.id || f.ID || '',
-    id:      f.StepId    || f.id || f.ID,
-    taskId:  f.TaskId    || '',
-    name:    f.Title     || '',
-    order:   parseInt(f.StepOrder) || 0,
-    status:  f.Status    || 'Not Started',
-    ownerId: f.OwnerId   || '',
-    reviewerId:  f.ReviewerId  || '',
-    reviewer2Id: f.Reviewer2Id || '',
-    dueDate: (f.DueDate  || '').slice(0,10),
-    note:          f.Note          || '',   // legacy short note (kept for compat)
-    notes:         f.Notes         || '',   // rich multi-line notes
-    applicability: f.Applicability || 'All Quarters',
-    workdayNum:    f.WorkdayNum ? parseInt(f.WorkdayNum) : null,
-    requiresPrev:  f.RequiresPrev === true || f.RequiresPrev === 'Yes',
-    reassignRequested: f.ReassignRequested === 'Yes' || f.ReassignRequested === true,
-    reassignNote:      f.ReassignNote || '',
-  };
-}
-function normaliseStepTemplate(f) {
-  return {
-    _spId:      f.id || f.ID || '',
-    id:         f.StepTemplateId || f.id || f.ID,
-    templateId: f.TemplateId     || '',
-    name:       f.Title          || '',
-    order:      parseInt(f.StepOrder) || 0,
-    defaultOwnerId: f.DefaultOwnerId || '',
-    dueDaysFromQtrEnd: parseInt(f.DueDaysFromQtrEnd) || 0,
-    workdayNum:    f.WorkdayNum ? parseInt(f.WorkdayNum) : null,
-    requiresPrev:  f.RequiresPrev === true || f.RequiresPrev === 'Yes',
-  };
+async function loadSuggestions() {
+  const items = await getListItems(CONFIG.lists.taskSuggestions);
+  STATE.suggestions = items.map(i => ({ ...i.fields, _id: i.id }));
+  log('Suggestions loaded:', STATE.suggestions.length);
 }
 
-// ── LOAD ALL DATA ─────────────────────────────────────────────
-// _fetchAndStore does the actual fetching and normalisation.
-// loadAllData calls it with all 10 lists (initial load).
-// refreshData calls it skipping static template lists unless Admin is active.
-async function _fetchAndStore({ skipStaticLists = false } = {}) {
-  const adminActive = document.querySelector('#view-admin.active') !== null;
-  const skipTpls    = skipStaticLists && !adminActive;
+async function loadReviewComments(quarter) {
+  const items = await getListItems(CONFIG.lists.reviewComments, `fields/Quarter eq '${quarter}'`);
+  STATE.reviewComments = items.map(i => ({ ...i.fields, _id: i.id }));
+}
 
-  const [rawTasks, rawUsers, rawTemplates, rawComments, rawSteps, rawStepTpls,
-         rawSignOffs, rawLocks, rawAttachments, rawQDates] = await Promise.all([
-    getListItems(LISTS.tasks),
-    getListItems(LISTS.users),
-    skipTpls ? Promise.resolve(null) : getListItems(LISTS.templates),
-    getListItems(LISTS.comments),
-    getListItems(LISTS.steps),
-    skipTpls ? Promise.resolve(null) : getListItems(LISTS.stepTemplates),
-    getListItems(LISTS.signOffs),
-    getListItems(LISTS.locks),
-    getListItems(LISTS.attachments),
-    getListItems(LISTS.quarterDates),
-  ]);
-
-  _tasks        = rawTasks.map(normaliseTask);
-  _users        = rawUsers.map(normaliseUser);
-  buildOwnerColorMap();
-  if (rawTemplates)  _templates     = rawTemplates.map(normaliseTemplate);
-  _comments     = rawComments.map(normaliseComment);
-  _steps        = rawSteps.map(normaliseStep);
-  if (rawStepTpls)   _stepTemplates = rawStepTpls.map(normaliseStepTemplate);
-  _signOffs     = rawSignOffs.map(normaliseSignOff);
-  _locks        = rawLocks.map(normaliseLock);
-  _attachments  = rawAttachments.map(normaliseAttachment);
-  _quarterDates = rawQDates.map(normaliseQuarterDate);
-  _lastRefreshed = new Date();
+async function loadRCReplies() { // quarter param removed — filtering done client-side against loaded comment IDs
+  // Replies don't have a Quarter field — we filter client-side by matching against
+  // parent comment IDs already loaded for this quarter.
+  // KNOWN SCALING ISSUE: this fetches ALL replies across all quarters then discards
+  // those not belonging to the current quarter. This is safe at current scale
+  // (replies are rare and small) but will become expensive once reply counts grow.
+  // Future fix: add a Quarter column to ReviewCommentReplies and filter server-side.
+  const rcIds = new Set(STATE.reviewComments.map(rc => rc._id));
+  if (!rcIds.size) { STATE.rcReplies = []; return; }
+  const items = await getListItems(CONFIG.lists.reviewCommentReplies);
+  STATE.rcReplies = items
+    .map(i => ({ ...i.fields, _id: i.id }))
+    .filter(r => rcIds.has(r.ReviewCommentLookupId));
 }
 
 async function loadAllData() {
-  showLoadingOverlay(true);
+  if (!STATE.activeQuarter) return;
+  // Load review comments first so loadRCReplies can filter by the loaded comment IDs.
+  await Promise.all([
+    loadAssignments(STATE.activeQuarter),
+    loadCalendar(STATE.activeQuarter),
+    loadMatrixStatus(STATE.activeQuarter),
+    loadReviewComments(STATE.activeQuarter),
+    loadUsers(),
+  ]);
+  // Replies depend on STATE.reviewComments being populated, so load sequentially after.
+  await loadRCReplies();
+}
+
+// Returns true when the user is browsing a historical quarter.
+function isViewingHistory() {
+  return STATE.viewingQuarter && STATE.viewingQuarter !== STATE.activeQuarter;
+}
+
+// Use these helpers everywhere quarter context matters:
+// getReadQuarter()  — the quarter currently being displayed (may be historical)
+// getWriteQuarter() — the live quarter all writes must target (never historical)
+function getReadQuarter()  { return getReadQuarter(); }
+function getWriteQuarter() { return STATE.activeQuarter; }
+
+// Loads all data for the viewing quarter (historical or live).
+// Does NOT touch STATE.activeQuarter — write operations always use the live quarter.
+async function loadViewingQuarterData(quarter) {
+  if (!quarter) return;
+  await Promise.all([
+    loadAssignments(quarter),
+    loadCalendar(quarter),
+    loadMatrixStatus(quarter),
+    loadReviewComments(quarter),
+    loadUsers(),
+  ]);
+  await loadRCReplies();
+}
+
+// Switches the viewing context to a different quarter and re-renders.
+async function switchToQuarter(quarter) {
+  if (quarter === STATE.viewingQuarter) return;
+
+  showLoading(`Loading ${quarter}...`);
   try {
-    await _fetchAndStore({ skipStaticLists: false });
-  } catch(e) {
-    console.error("Data load error:", e);
-    showError("Could not load data from SharePoint. Check your config and list names. " + e.message);
-  } finally {
-    showLoadingOverlay(false);
+    STATE.viewingQuarter = quarter;
+    await loadViewingQuarterData(quarter);
+    updateHistoryBanner();
+    updateWDIndicator();
+    refreshCurrentView();
+  } catch (err) {
+    showToast(`Failed to load ${quarter}`, 'error');
+    logError('switchToQuarter failed:', err);
+    // Revert to active quarter on failure
+    STATE.viewingQuarter = STATE.activeQuarter;
+    updateHistoryBanner();
+  }
+  hideLoading();
+}
+
+// Shows or hides the history banner and updates its text.
+function updateHistoryBanner() {
+  const banner = document.getElementById('history-banner');
+  if (!banner) return;
+  if (isViewingHistory()) {
+    banner.classList.remove('hidden');
+    const label = banner.querySelector('#history-banner-label');
+    if (label) label.textContent = `Viewing ${STATE.viewingQuarter} — read only`;
+  } else {
+    banner.classList.add('hidden');
   }
 }
 
-async function refreshData() {
+// Populates the quarter picker dropdown with all quarters that have assignment data.
+async function populateQuarterPicker() {
+  const sel = document.getElementById('quarter-picker');
+  if (!sel) return;
+
+  // Fetch distinct quarters from QuarterlyAssignments.
+  // We use a small select to avoid loading all items — just fetch the field.
   try {
-    // Skip static template lists on background polls — see _fetchAndStore
-    await _fetchAndStore({ skipStaticLists: true });
-    updateRefreshStamp();
-    renderCurrentView();
-  } catch(e) { console.warn("Refresh error:", e); }
+    const items = await getListItems(CONFIG.lists.quarterlyAssignments, '', 'fields/Quarter', '');
+    const quarters = [...new Set(
+      items.map(i => i.fields?.Quarter).filter(Boolean)
+    )].sort().reverse(); // newest first
+
+    const current = getReadQuarter();
+    sel.innerHTML = quarters.map(q =>
+      `<option value="${escapeHtml(q)}" ${q === current ? 'selected' : ''}>${escapeHtml(q)}${q === STATE.activeQuarter ? ' (live)' : ''}</option>`
+    ).join('');
+
+    if (!sel.dataset.listenerAttached) {
+      sel.dataset.listenerAttached = 'true';
+      sel.addEventListener('change', () => switchToQuarter(sel.value));
+    }
+  } catch (err) {
+    logError('populateQuarterPicker failed:', err);
+  }
 }
 
-async function refreshComments() {
-  if (!commentingTaskId) return;
-  try {
-    const raw  = await getListItems(LISTS.comments);
-    _comments  = raw.map(normaliseComment);
-    renderCommentList();
-  } catch(e) { console.warn("Comment refresh error:", e); }
-}
-
-function updateRefreshStamp() {
-  const el = document.getElementById('refresh-stamp');
-  if (!el || !_lastRefreshed) return;
-  const mins = Math.floor((new Date() - _lastRefreshed) / 60000);
-  el.textContent = mins === 0 ? 'Updated just now' : `Updated ${mins}m ago`;
-}
-
-// Update the stamp every minute so "Xm ago" stays current
-const _stampTimer = setInterval(updateRefreshStamp, 60000);
-
-async function manualRefresh() {
-  const btn = document.getElementById('refresh-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '↺ Refreshing…'; }
-  await refreshData();
-  if (btn) { btn.disabled = false; btn.textContent = '↺ Refresh'; }
-}
-
+// ============================================================
+// POLL — SILENT BACKGROUND REFRESH
+// ============================================================
 function startPolling() {
-  if (_pollTimer) clearInterval(_pollTimer);
-  _pollTimer = setInterval(async () => {
-    await refreshData();
-  }, 60000); // every 60 seconds — safe with direct Graph API, no Power Automate run limits
-}
+  stopPolling();
+  STATE.pollTimer = setInterval(async () => {
+    // Skip poll when the tab is hidden — no point refreshing data nobody can see,
+    // and it avoids unnecessary Graph API calls when users leave Folio open overnight.
+    if (document.hidden) return;
 
-function startCommentPolling() {
-  if (_commentPollTimer) clearInterval(_commentPollTimer);
-  _commentPollTimer = setInterval(refreshComments, 60000); // every 60 seconds
-}
+    // Skip poll when there's no active quarter — nothing to refresh.
+    if (!STATE.activeQuarter) return;
 
-function stopCommentPolling() {
-  if (_commentPollTimer) { clearInterval(_commentPollTimer); _commentPollTimer = null; }
-}
-
-// ── STATE ─────────────────────────────────────────────────────
-let _lastRefreshed = null; // Date of last successful data refresh
-let _tableSort = { col: null, dir: 1 }; // col: 'due'|'status'|'owner'|'name', dir: 1=asc -1=desc
-let currentUser      = null;
-let activeFilter     = 'all';
-let activeTypeFilter = 'all';
-let calYear  = new Date().getFullYear();
-let calMonth = new Date().getMonth();
-let editingTaskId    = null;
-let commentingTaskId = null;
-let _calResolve      = null;
-
-// ── HELPERS ───────────────────────────────────────────────────
-function initials(name)  { return (name||'').split(' ').map(p=>p[0]).join('').slice(0,2).toUpperCase(); }
-function formatDate(dateStr) {
-  if (!dateStr) return '—';
-  const d = new Date(dateStr + 'T00:00:00');
-  return d.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
-}
-function deadlineStatus(dueDate, status, workdayNum, quarter, year) {
-  if (status === 'Not Applicable') return 'done'; // N/A never shown as overdue
-  if (status === 'Complete') return 'done';
-  // Resolve effective date — use fixed dueDate if set, otherwise resolve via calendar
-  const effectiveDate = dueDate || (workdayNum && quarter && year
-    ? workdayToDate(workdayNum, quarter, year)
-    : null);
-  if (!effectiveDate) return 'ok'; // no date set — can't determine overdue
-  const today = new Date(); today.setHours(0,0,0,0);
-  const due   = new Date(effectiveDate + 'T00:00:00');
-  const diff  = Math.floor((due - today) / MS_PER_DAY);
-  if (diff < 0)  return 'overdue';
-  if (diff <= 7) return 'soon';
-  return 'ok';
-}
-function daysLabel(dueDate, status, workdayNum, quarter, year) {
-  if (status === 'Complete' || status === 'Not Applicable') return '';
-  const effectiveDate = dueDate || (workdayNum && quarter && year
-    ? workdayToDate(workdayNum, quarter, year)
-    : null);
-  if (!effectiveDate) return '';
-  const today = new Date(); today.setHours(0,0,0,0);
-  const diff  = Math.floor((new Date(effectiveDate+'T00:00:00') - today) / MS_PER_DAY);
-  if (diff < 0)  return `<span style="font-size:10px;font-weight:700;color:var(--deadline-overdue)">${Math.abs(diff)}d overdue</span>`;
-  if (diff === 0) return `<span style="font-size:10px;font-weight:700;color:var(--deadline-soon)">Today</span>`;
-  if (diff <= 7)  return `<span style="font-size:10px;color:var(--deadline-soon)">${diff}d</span>`;
-  return '';
-}
-
-function isThisWeek(dueDate, workdayNum, quarter, year) {
-  const effectiveDate = dueDate || (workdayNum && quarter && year
-    ? workdayToDate(workdayNum, quarter, year)
-    : null);
-  if (!effectiveDate) return false;
-  const today = new Date(); today.setHours(0,0,0,0);
-  const diff  = Math.floor((new Date(effectiveDate+'T00:00:00') - today) / MS_PER_DAY);
-  return diff >= 0 && diff <= 7;
-}
-function quarterEndDate(q, yr) {
-  return {Q1:`${yr}-03-31`,Q2:`${yr}-06-30`,Q3:`${yr}-09-30`,Q4:`${yr}-12-31`}[q];
-}
-function addDays(dateStr, days) {
-  const d = new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+days);
-  return d.toISOString().slice(0,10);
-}
-
-// ══════════════════════════════════════════════════════════════
-// ── WORKING DAY ENGINE ───────────────────────────────────────
-// Handles US Federal holidays, NYSE extra holidays (Good Friday),
-// and custom company holidays managed in Admin.
-// Applied only during rollforward & template apply.
-// ══════════════════════════════════════════════════════════════
-
-// Custom company holidays stored in localStorage (no SharePoint
-// list needed — admin manages them in the Admin panel).
-function loadCustomHolidays() {
-  try { return JSON.parse(localStorage.getItem('ft_custom_holidays') || '[]'); }
-  catch { return []; }
-}
-function saveCustomHolidays(list) {
-  try { localStorage.setItem('ft_custom_holidays', JSON.stringify(list)); }
-  catch(e) { console.warn('Could not save custom holidays to localStorage:', e.message); }
-}
-
-// ── US Federal Holidays (fixed-date + rule-based) ─────────────
-function usFederalHolidays(year) {
-  const h = new Set();
-  const iso = d => d.toISOString().slice(0,10);
-
-  // Helper: nth weekday of a month  (n=1 first, n=-1 last)
-  function nthWeekday(yr, month, weekday, n) {
-    if (n > 0) {
-      const d = new Date(yr, month, 1);
-      while (d.getDay() !== weekday) d.setDate(d.getDate()+1);
-      d.setDate(d.getDate() + (n-1)*7);
-      return d;
-    } else {
-      const d = new Date(yr, month+1, 0); // last day of month
-      while (d.getDay() !== weekday) d.setDate(d.getDate()-1);
-      return d;
+    try {
+      await loadAllData();
+      refreshCurrentView();
+      updateWDIndicator();
+      populateQuarterPicker();
+      showStaleBanner(false);
+    } catch (err) {
+      logError('Poll failed:', err);
+      showStaleBanner(true);
     }
+  }, CONFIG.pollIntervalMs);
+
+  // When the tab becomes visible again after being hidden, do an immediate
+  // refresh so data is never stale when the user returns to Folio.
+  if (!document._folioVisibilityListenerAdded) {
+    document._folioVisibilityListenerAdded = true;
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && STATE.activeQuarter) {
+        loadAllData()
+          .then(() => { refreshCurrentView(); updateWDIndicator(); showStaleBanner(false); })
+          .catch(() => showStaleBanner(true));
+      }
+    });
   }
-
-  // Observed rule: if holiday falls on Sat → Fri, Sun → Mon
-  function observed(d) {
-    const dow = d.getDay();
-    if (dow === 6) { const f=new Date(d); f.setDate(f.getDate()-1); return f; }
-    if (dow === 0) { const m=new Date(d); m.setDate(m.getDate()+1); return m; }
-    return d;
-  }
-
-  const fixed = [
-    new Date(year,  0,  1),   // New Year's Day
-    new Date(year,  6,  4),   // Independence Day
-    new Date(year, 10, 11),   // Veterans Day
-    new Date(year, 11, 25),   // Christmas Day
-  ];
-  fixed.forEach(d => h.add(iso(observed(d))));
-
-  // Rule-based
-  h.add(iso(nthWeekday(year, 0, 1, 3)));   // MLK Day: 3rd Mon Jan
-  h.add(iso(nthWeekday(year, 1, 1, 3)));   // Presidents Day: 3rd Mon Feb
-  h.add(iso(nthWeekday(year, 4, 1,-1)));   // Memorial Day: last Mon May
-  const juneteenth = observed(new Date(year, 5, 19)); h.add(iso(juneteenth));  // Juneteenth: Jun 19, observed
-  h.add(iso(nthWeekday(year, 8, 1, 1)));   // Labor Day: 1st Mon Sep
-  h.add(iso(nthWeekday(year, 9, 1, 2)));   // Columbus Day: 2nd Mon Oct
-  h.add(iso(nthWeekday(year, 10, 4, 4)));  // Thanksgiving: 4th Thu Nov
-
-  return h;
 }
 
-// ── NYSE Extra Holidays ───────────────────────────────────────
-// Good Friday (Friday before Easter Sunday)
-function easterSunday(year) {
-  // Anonymous Gregorian algorithm
-  const a = year % 19, b = Math.floor(year/100), c = year % 100;
-  const d = Math.floor(b/4), e = b % 4, f = Math.floor((b+8)/25);
-  const g = Math.floor((b-f+1)/3), h = (19*a+b-d-g+15) % 30;
-  const i = Math.floor(c/4), k = c % 4;
-  const l = (32+2*e+2*i-h-k) % 7;
-  const m = Math.floor((a+11*h+22*l)/451);
-  const month = Math.floor((h+l-7*m+114)/31) - 1; // 0-indexed
-  const day   = ((h+l-7*m+114) % 31) + 1;
-  return new Date(year, month, day);
+function stopPolling() {
+  if (STATE.pollTimer) clearInterval(STATE.pollTimer);
+  STATE.pollTimer = null;
 }
 
-function nyseExtraHolidays(year) {
-  const h   = new Set();
-  const iso = d => d.toISOString().slice(0,10);
-  const easter = easterSunday(year);
-  const goodFriday = new Date(easter); goodFriday.setDate(easter.getDate()-2);
-  h.add(iso(goodFriday));
-  return h;
-}
+// ============================================================
+// SIGN-OFF
+// ============================================================
+async function performSignOff(assignmentId, role) {
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
 
-// ── Master holiday checker (memoised by year) ────────────────
-const _holidayCache = {};
-function isHoliday(dateStr) {
-  const year = parseInt(dateStr.slice(0,4));
-  if (!_holidayCache[year]) {
-    const fed  = usFederalHolidays(year);
-    const nyse = nyseExtraHolidays(year);
-    loadCustomHolidays().forEach(d => fed.add(d)); // merge custom into fed set
-    _holidayCache[year] = fed; // combined set
-  }
-  return _holidayCache[year].has(dateStr);
-}
-// Call this whenever custom holidays are changed so the cache is rebuilt
-function clearHolidayCache() { Object.keys(_holidayCache).forEach(k => delete _holidayCache[k]); }
+  const f = getSignOffFields(role);
+  const now = new Date().toISOString();
+  const userEmail = STATE.currentUser.Email;
 
-function isWeekend(dateStr) {
-  const dow = new Date(dateStr+'T00:00:00').getDay();
-  return dow === 0 || dow === 6;
-}
+  const fields = {
+    [f.signOff]:    true,
+    [f.signOffDate]:now,
+    [f.signOffBy]:  userEmail,
+    Status: role === 'preparer' && assignment.SignOffMode !== 'Preparer Only' ? 'Prepared' : 'Complete',
+  };
 
-function isNonWorkingDay(dateStr) {
-  return isWeekend(dateStr) || isHoliday(dateStr);
-}
+  // Snapshot the fields we are about to overwrite so we can restore them exactly on failure.
+  const snapshot = {};
+  Object.keys(fields).forEach(k => { snapshot[k] = assignment[k]; });
 
-// ── Adjust to nearest working day ─────────────────────────────
-// Direction: "closest" — if equidistant, prefer the day before.
-function nearestWorkingDay(dateStr) {
-  if (!isNonWorkingDay(dateStr)) return dateStr; // already a working day
+  // Optimistic update
+  Object.assign(assignment, fields);
+  refreshCurrentView();
 
-  let before = dateStr, after = dateStr;
-  let bDays = 0, aDays = 0;
-
-  // Walk backwards to find prev working day
-  for (let i = 1; i <= 14; i++) {
-    const d = addDays(dateStr, -i);
-    if (!isNonWorkingDay(d)) { before = d; bDays = i; break; }
-  }
-  // Walk forwards to find next working day
-  for (let i = 1; i <= 14; i++) {
-    const d = addDays(dateStr, i);
-    if (!isNonWorkingDay(d)) { after = d; aDays = i; break; }
-  }
-
-  // If no working day found backward, bDays stays 0; fall through to `after`
-  // Ties (bDays === aDays > 0) go to the earlier day (more conservative for deadlines)
-  if (bDays === 0) return after;
-  if (aDays === 0) return before;
-  return bDays <= aDays ? before : after;
-}
-
-// ── Admin: Custom Holiday Manager ────────────────────────────
-
-// ── WORKING QUARTER PICKER ──────────────────────────────────
-// Renders the working quarter selector in the Admin panel.
-// Admins set this once per quarter — all team members default to it on login.
-function renderWorkingQuarterPicker() {
-  const el = document.getElementById('admin-working-quarter');
-  if (!el) return;
-  const cur = new Date().getFullYear();
-  const wq  = loadWorkingQuarter();
-  const quarters = ['Q1','Q2','Q3','Q4'];
-  const years    = [cur-1, cur, cur+1];
-  el.innerHTML = `
-    <div class="card-header">
-      <h3 class="card-title">📌 Working Quarter</h3>
-    </div>
-    <div style="padding:14px 22px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <p style="font-size:13px;color:var(--text-muted);margin:0;flex:1;min-width:200px">
-        The quarter your team is currently closing. All team members default to this quarter on login.
-      </p>
-      <div style="display:flex;align-items:center;gap:8px">
-        <select id="wq-quarter" class="filter-select">
-          ${quarters.map(q => `<option value="${q}" ${wq?.q===q?'selected':''}>${q}</option>`).join('')}
-        </select>
-        <select id="wq-year" class="filter-select">
-          ${years.map(y => `<option value="${y}" ${wq?.yr===y?'selected':''}>${y}</option>`).join('')}
-        </select>
-        <button class="btn-primary small" onclick="applyWorkingQuarter()">Set</button>
-        ${wq ? `<span style="font-size:12px;color:var(--text-faint)">Currently: ${wq.q} ${wq.yr}</span>` : ''}
-      </div>
-    </div>`;
-}
-
-async function applyWorkingQuarter() {
-  const q  = document.getElementById('wq-quarter')?.value;
-  const yr = parseInt(document.getElementById('wq-year')?.value);
-  if (!q || !yr) return;
-
-  // Persist to localStorage for instant local effect
-  saveWorkingQuarter(q, yr);
-
-  // Write IsWorkingQuarter to SharePoint so all team members get the same default
   try {
-    // Clear the flag on any previously marked record
-    const prev = _quarterDates.find(d => d.isWorkingQuarter && !(d.quarter===q && d.year===yr));
-    if (prev) {
-      prev.isWorkingQuarter = false;
-      await updateListItem(LISTS.quarterDates, prev._spId, { IsWorkingQuarter: 'No' });
-    }
-
-    // Find or create the FT_QuarterDates record for the new working quarter
-    const existing = _quarterDates.find(d => d.quarter===q && d.year===yr);
-    if (existing) {
-      existing.isWorkingQuarter = true;
-      await updateListItem(LISTS.quarterDates, existing._spId, { IsWorkingQuarter: 'Yes' });
-    } else {
-      // No record yet for this quarter — create one
-      const fields = { Title: `${q} ${yr}`, Quarter: q, Year: String(yr), IsWorkingQuarter: 'Yes' };
-      const created = await createListItem(LISTS.quarterDates, fields);
-      _quarterDates.push(normaliseQuarterDate({ ...fields, id: created?.id || uid() }));
-    }
-  } catch(e) {
-    console.warn('Could not save working quarter to SharePoint:', e.message);
-    showToast('Working quarter saved locally — could not sync to SharePoint.', 'warning');
+    await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, fields);
+    const assignedEmail = role === 'preparer' ? assignment.Preparer : assignment.Reviewer;
+    const onBehalf = assignedEmail && assignedEmail !== userEmail;
+    await writeAuditLog('SignOff', {
+      taskName: assignment.Title || assignment.TaskTemplateLookupId,
+      assignmentId,
+      newValue: onBehalf
+        ? `${role} signed off by ${userEmail} ON BEHALF OF ${assignedEmail}`
+        : `${role} signed off by ${userEmail}`,
+    });
+    showToast('✓ Signed off', 'success');
+  } catch (err) {
+    // Restore full snapshot — covers all fields set above, not just a subset.
+    Object.assign(assignment, snapshot);
+    refreshCurrentView();
+    showToast('Sign-off failed — please try again', 'error');
+    logError('Sign-off failed:', err);
   }
-
-  // Update the dashboard filter immediately for this user
-  const qf = document.getElementById('quarter-filter'); if(qf) qf.value = q;
-  const yf = document.getElementById('year-filter');    if(yf) yf.value = yr;
-  saveQuarterPref(q, yr);
-  renderAdmin();
-  showToast(`Working quarter set to ${q} ${yr} — all team members will default to this on login.`, 'success');
 }
 
-// ── CLOSE CALENDARS PANEL (in Admin) ────────────────────────
-function renderCloseCalendarsPanel() {
-  const el = document.getElementById('admin-calendars-list');
-  if (!el) return;
-  const cur  = new Date().getFullYear();
-  const rows = [];
-  // Show last year, current year, next year — enough history without clutter
-  for (let yr = cur - 1; yr <= cur + 1; yr++) {
-    for (const q of ['Q1','Q2','Q3','Q4']) {
-      const cal = loadCloseCalendar(q, yr);
-      rows.push({ q, yr, cal });
-    }
-  }
-  el.innerHTML = rows.map(({ q, yr, cal }) => `
-    <div class="admin-user-row">
-      <div class="admin-user-info">
-        <div class="user-name-sm">${q} ${yr}</div>
-        <div class="user-role-sm">${cal
-          ? `WD1 = ${formatDate(cal.wd1Date)} · ${cal.days.length} working days mapped`
-          : '<span style="color:var(--text-faint)">No calendar set</span>'
-        }</div>
-      </div>
-      <button class="btn-secondary" style="font-size:12px;padding:5px 12px"
-        onclick="openCloseCalendarAdmin('${q}',${yr})">
-        ${cal ? '✏️ Edit' : '+ Set'}
-      </button>
-    </div>`).join('');
-}
+// ============================================================
+// REVERSAL
+// ============================================================
+async function performReversal(assignmentId, role, reason) {
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
 
-function renderCustomHolidays() {
-  const el = document.getElementById('admin-holidays-list');
-  if (!el) return;
+  const fields = {};
+  let prevValue = '';
 
-  // Populate built-in holiday preview for current year
-  const previewEl = document.getElementById('holiday-preview');
-  if (previewEl) {
-    const yr   = new Date().getFullYear();
-    const summ = holidaySummaryForYear(yr);
-    const tag  = (label, dates) => dates.length
-      ? `<div style="margin-bottom:6px"><span style="font-weight:600;color:var(--text-muted)">${label}:</span> `
-        + dates.map(d => `<span style="display:inline-block;background:var(--bg-secondary);border-radius:4px;padding:1px 6px;margin:1px 2px;font-size:11px">${formatDate(d)}</span>`).join(' ')
-        + '</div>'
+  if (role === 'preparer') {
+    // Capture both sign-offs in prevValue before clearing — reviewer data would
+    // otherwise be lost from the audit trail if it was also cleared.
+    const reviewerNote = assignment.ReviewerSignOff
+      ? ` | Reviewer sign-off by ${assignment.ReviewerSignOffBy} on ${assignment.ReviewerSignOffDate} also cleared`
       : '';
-    previewEl.innerHTML =
-      tag('Federal', summ.federal) +
-      tag('NYSE (Good Friday)', summ.nyse) +
-      (summ.custom.length ? tag('Company', summ.custom) : '');
+    prevValue = `Preparer signed off by ${assignment.PreparerSignOffBy} on ${assignment.PreparerSignOffDate}${reviewerNote}`;
+
+    fields.PreparerSignOff     = false;
+    fields.PreparerSignOffDate = null;
+    fields.PreparerSignOffBy   = null;
+    if (assignment.ReviewerSignOff) {
+      fields.ReviewerSignOff     = false;
+      fields.ReviewerSignOffDate = null;
+      fields.ReviewerSignOffBy   = null;
+    }
+    fields.Status = 'Not Started';
+  } else {
+    prevValue = `Reviewer signed off by ${assignment.ReviewerSignOffBy} on ${assignment.ReviewerSignOffDate}`;
+    fields.ReviewerSignOff     = false;
+    fields.ReviewerSignOffDate = null;
+    fields.ReviewerSignOffBy   = null;
+    fields.Status = 'Prepared';
   }
-  const holidays = loadCustomHolidays().sort();
-  if (!holidays.length) {
-    el.innerHTML = '<p class="text-muted" style="font-size:13px;padding:10px 22px">No custom holidays added yet.</p>';
+
+  // Snapshot before optimistic update so we can restore on failure.
+  const snapshot = {};
+  Object.keys(fields).forEach(k => { snapshot[k] = assignment[k]; });
+
+  Object.assign(assignment, fields);
+  refreshCurrentView();
+
+  try {
+    await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, fields);
+    await writeAuditLog('Reversal', {
+      taskName:      assignment.Title,
+      assignmentId,
+      previousValue: prevValue,
+      reason,
+    });
+    showToast('Sign-off reversed', 'success');
+  } catch (err) {
+    // Restore full snapshot so UI reflects actual SharePoint state.
+    Object.assign(assignment, snapshot);
+    refreshCurrentView();
+    showToast('Reversal failed — please try again', 'error');
+    logError('Reversal failed:', err);
+  }
+}
+
+// ============================================================
+// MATRIX STATUS UPDATE
+// ============================================================
+// Guards against double-clicks while a matrix write is in flight.
+let _matrixUpdateInFlight = false;
+
+async function performMatrixUpdate(matrixItem, column, newStatus) {
+  if (_matrixUpdateInFlight) return;
+  _matrixUpdateInFlight = true;
+
+  const existing = STATE.matrixStatus.find(
+    m => m.MatrixItem === matrixItem && m.Quarter === STATE.activeQuarter
+  );
+
+  const now = new Date().toISOString();
+  const userEmail = STATE.currentUser.Email;
+
+  const fm = MATRIX_FIELD_MAP[column];
+  if (!fm) { _matrixUpdateInFlight = false; return; }
+
+  const fields = {
+    [fm.status]: newStatus,
+    [fm.date]:   now,
+    [fm.by]:     userEmail,
+  };
+
+  // Optimistic update — apply to STATE immediately so the matrix re-renders
+  // without waiting for the SharePoint round-trip.
+  const snapshot = {};
+  if (existing) {
+    Object.keys(fields).forEach(k => { snapshot[k] = existing[k]; });
+    Object.assign(existing, fields);
+  }
+  renderMatrixView();
+
+  try {
+    if (existing) {
+      await updateListItem(CONFIG.lists.matrixStatus, existing._id, fields);
+    } else {
+      // Look up MatrixSection from templates — required field on MatrixStatus list.
+      const sectionTemplate = STATE.templates.find(t => t.MatrixItem === matrixItem);
+      const matrixSection = sectionTemplate?.MatrixSection || null;
+      const created = await createListItem(CONFIG.lists.matrixStatus, {
+        Title:         `${STATE.activeQuarter}-${matrixItem}`,
+        Quarter:       STATE.activeQuarter,
+        MatrixItem:    matrixItem,
+        MatrixSection: matrixSection,
+        ...fields,
+      });
+      STATE.matrixStatus.push({ ...created.fields, _id: created.id });
+    }
+    await writeAuditLog('MatrixStatusChange', {
+      taskName: `${matrixItem} — ${column}`,
+      newValue: newStatus,
+    });
+    showToast(`✓ ${column} updated to ${newStatus}`, 'success');
+  } catch (err) {
+    // Revert optimistic update on failure.
+    if (existing && Object.keys(snapshot).length) {
+      Object.assign(existing, snapshot);
+      renderMatrixView();
+    }
+    showToast('Update failed — please try again', 'error');
+    logError('Matrix update failed:', err);
+  } finally {
+    _matrixUpdateInFlight = false;
+  }
+}
+
+// ============================================================
+// USER HELPERS
+// ============================================================
+function getUserByEmail(email) {
+  return STATE.users.find(u => u.Email === email);
+}
+
+function renderBadge(email) {
+  const user = getUserByEmail(email);
+  // Centralised display name: prefer Title, fall back to email prefix, then '?'.
+  // Always escape to prevent XSS from SharePoint-sourced display names.
+  const displayName = escapeHtml(
+    (user?.Title) || (email ? email.split('@')[0] : null) || '?'
+  );
+  if (!user?.Emoji) {
+    return `<span class="person-badge" style="background:var(--light-gray);color:var(--dark-slate)">${displayName}</span>`;
+  }
+  const hex = user.Color || '#75787B';
+  return `<span class="person-badge" style="background:${hex}22;color:${hex}">${escapeHtml(user.Emoji)} ${displayName}</span>`;
+}
+
+// renderBadgeEl removed — unused. Use renderBadge() which returns an HTML string.
+
+// ============================================================
+// VIEW ROUTING
+// ============================================================
+function showView(viewName) {
+  // My Tasks always shows the live quarter — snap back if viewing history.
+  if (viewName === 'my-tasks' && isViewingHistory()) {
+    switchToQuarter(STATE.activeQuarter);
     return;
   }
-  el.innerHTML = holidays.map(d => `
-    <div class="admin-user-row">
-      <div class="admin-user-info">
-        <div class="user-name-sm">${formatDate(d)}</div>
-        <div class="user-role-sm">${d}</div>
-      </div>
-      <button class="icon-btn" onclick="removeCustomHoliday('${d}')">🗑</button>
-    </div>`).join('');
-}
+  STATE.currentView = viewName;
 
-function addCustomHoliday() {
-  const input = document.getElementById('holiday-input');
-  const val   = input?.value?.trim();
-  if (!val || !/^\d{4}-\d{2}-\d{2}$/.test(val)) {
-    showToast('Please enter a valid date in YYYY-MM-DD format.', 'warning'); return;
-  }
-  const list = loadCustomHolidays();
-  if (!list.includes(val)) { list.push(val); saveCustomHolidays(list); clearHolidayCache(); }
-  if (input) input.value = '';
-  renderCustomHolidays();
-}
-
-function removeCustomHoliday(dateStr) {
-  saveCustomHolidays(loadCustomHolidays().filter(d => d !== dateStr));
-  clearHolidayCache();
-  renderCustomHolidays();
-}
-
-// ── Working day summary for a given year (for display) ────────
-function holidaySummaryForYear(year) {
-  const fed  = [...usFederalHolidays(year)].sort();
-  const nyse = [...nyseExtraHolidays(year)].sort();
-  return { federal: fed, nyse, custom: loadCustomHolidays().filter(d=>d.startsWith(String(year))) };
-}
-
-// ══════════════════════════════════════════════════════════════
-// ── CLOSE CALENDAR ENGINE ────────────────────────────────────
-// Each quarter has a "close calendar": a mapping from workday
-// numbers (WD1, WD2 …) to real calendar dates, starting from
-// a manually-set WD1 date and advancing through working days.
-//
-// Stored in localStorage keyed by "Q1-2025", "Q2-2025" etc.
-// ══════════════════════════════════════════════════════════════
-
-function calendarKey(quarter, year) { return `${quarter}-${year}`; }
-
-function loadCloseCalendar(quarter, year) {
-  // FT_QuarterDates is the source of truth — WD1 and overrides are shared across the team.
-  // localStorage is only used as a fallback before SharePoint data has loaded.
-  const qd = _quarterDates.find(d => d.quarter===quarter && d.year===parseInt(year));
-  if (qd?.wd1Date) {
-    // Build the calendar using SharePoint WD1 and SharePoint overrides
-    return buildCloseCalendar(qd.wd1Date, 40, qd.calOverrides || {});
-  }
-  // Fallback: localStorage only (setup wizard before SharePoint is connected)
-  try { return JSON.parse(localStorage.getItem('ft_cal_' + calendarKey(quarter, year)) || 'null'); }
-  catch { return null; }
-}
-
-function saveCloseCalendar(quarter, year, calObj) {
-  if (typeof calObj === 'string') calObj = buildCloseCalendar(calObj); // accept wd1 string
-  if (!calObj) return;
-
-  const wd1       = calObj.wd1Date;
-  const overrides = calObj.overrides || {};
-  if (!wd1) return;
-
-  // Serialise overrides for SharePoint storage
-  const overridesJson = Object.keys(overrides).length
-    ? JSON.stringify(overrides)
-    : '';
-
-  const existing = _quarterDates.find(d => d.quarter===quarter && d.year===parseInt(year));
-  if (existing) {
-    // Update WD1 and overrides in SharePoint — both shared with the whole team
-    existing.wd1Date     = wd1;
-    existing.calOverrides = overrides;
-    updateListItem(LISTS.quarterDates, existing._spId, {
-      WD1Date:      wd1,
-      CalOverrides: overridesJson,
-    }).catch(e => console.warn('Could not save calendar to SharePoint:', e.message));
-  } else {
-    // Create a new FT_QuarterDates record with WD1 and overrides
-    const fields = {
-      Title:        `${quarter} ${year}`,
-      Quarter:      quarter,
-      Year:         String(year),
-      WD1Date:      wd1,
-      CalOverrides: overridesJson,
-    };
-    createListItem(LISTS.quarterDates, fields).then(created => {
-      _quarterDates.push(normaliseQuarterDate({ ...fields, id: created?.id || uid() }));
-    }).catch(e => console.warn('Could not create QuarterDates for WD1:', e.message));
-  }
-
-  // Keep localStorage in sync as a local cache for faster first render
-  try { localStorage.setItem('ft_cal_' + calendarKey(quarter, year), JSON.stringify(calObj)); }
-  catch(e) { console.warn('Could not cache calendar in localStorage:', e.message); }
-}
-
-// Build a calendar: given WD1 date, generate WD1 … WD(maxDays)
-// skipping weekends and holidays. Returns { wd1Date, days: [{num, date}] }
-// overrides: optional { wdNum: 'YYYY-MM-DD' } map of manual date edits
-function buildCloseCalendar(wd1DateStr, maxDays = 40, overrides = {}) {
-  const days = [];
-  let current = wd1DateStr;
-  // Make sure WD1 itself is a working day (shift forward if not)
-  // unless it has been manually overridden
-  if (!overrides[1]) {
-    while (isNonWorkingDay(current)) current = addDays(current, 1);
-  }
-  for (let n = 1; n <= maxDays; n++) {
-    // Use override if provided for this workday number
-    const date = overrides[n] || current;
-    days.push({ num: n, date, overridden: !!overrides[n] });
-    // Advance to next working day (from the non-overridden position)
-    let next = addDays(current, 1);
-    while (!overrides[n+1] && isNonWorkingDay(next)) next = addDays(next, 1);
-    current = next;
-  }
-  return { wd1Date: days[0].date, days, overrides };
-}
-
-// Convert a workday number to a calendar date for a given quarter
-function workdayToDate(workdayNum, quarter, year) {
-  if (!workdayNum) return null;
-  const cal = loadCloseCalendar(quarter, year);
-  if (!cal) return null;
-  const entry = cal.days.find(d => d.num === workdayNum);
-  return entry ? entry.date : null;
-}
-
-// Convert a calendar date back to a workday number for a given quarter
-function dateToWorkday(dateStr, quarter, year) {
-  if (!dateStr) return null;
-  const cal = loadCloseCalendar(quarter, year);
-  if (!cal) return null;
-  const entry = cal.days.find(d => d.date === dateStr);
-  return entry ? entry.num : null;
-}
-
-// Format workday + date for display: "WD3 · Apr 3, 2025"
-// Accepts optional quarter + year so it can resolve a workday number to a real
-// date via the close calendar when no fixed dateStr is present.
-function formatWorkdayDate(workdayNum, dateStr, quarter, year) {
-  if (!dateStr && !workdayNum) return '—';
-  const wdLabel = workdayNum ? `<span class="wd-badge">WD${workdayNum}</span> ` : '';
-  // If no fixed date but we have a workday number and quarter/year, resolve via calendar
-  const resolvedDate = dateStr || (workdayNum && quarter && year
-    ? workdayToDate(workdayNum, quarter, year)
-    : null);
-  const dateLabel = resolvedDate ? formatDate(resolvedDate) : '';
-  return wdLabel + dateLabel;
-}
-
-// ── CLOSE CALENDAR UI ─────────────────────────────────────────
-
-// Shared state for the editable calendar grid (used by both prompt + admin)
-let _editingCal = { quarter: null, year: null, overrides: {} };
-
-// Renders an editable calendar grid into the given container element.
-// Each WD cell has a date input — changing it updates _editingCal.overrides.
-function renderEditableCalGrid(containerId, wd1DateStr, maxDays, isPrompt) {
-  const el = document.getElementById(containerId);
-  if (!el || !wd1DateStr) return;
-  // Validate format before embedding in onclick attributes
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(wd1DateStr)) return;
-  const overrides = _editingCal.overrides;
-  const cal       = buildCloseCalendar(wd1DateStr, maxDays, overrides);
-
-  const resetBtn = `<button class="btn-secondary"
-    style="font-size:11px;padding:4px 10px"
-    onclick="resetCalOverrides('${containerId}','${wd1DateStr}',${maxDays},${isPrompt})">
-    ↺ Reset overrides
-  </button>`;
-
-  el.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <p style="font-size:12px;font-weight:600;color:var(--text-muted);margin:0">
-        Working day calendar — click any date to override
-      </p>
-      ${resetBtn}
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;max-height:340px;overflow-y:auto;padding-bottom:4px">
-      ${cal.days.map(d => {
-        const isOverridden = !!overrides[d.num];
-        const isHolidayDay = isHoliday(d.date);
-        const isWknd       = isWeekend(d.date);
-        const bgColor      = isOverridden
-          ? 'var(--blue)'
-          : isHolidayDay
-            ? '#fef3c7'
-            : isWknd
-              ? '#fee2e2'
-              : 'var(--blue-pale)';
-        const textColor    = isOverridden ? '#fff' : 'var(--navy)';
-        const wdColor      = isOverridden ? 'rgba(255,255,255,.8)' : 'var(--blue)';
-        const hint         = isOverridden
-          ? 'Manually set'
-          : isHolidayDay
-            ? '⚠ Holiday'
-            : isWknd
-              ? '⚠ Weekend'
-              : '';
-        return `<div style="background:${bgColor};border-radius:6px;padding:5px 6px;text-align:center;position:relative" title="${hint}">
-          <div style="font-size:10px;font-weight:700;color:${wdColor}">WD${d.num}</div>
-          <input type="date" value="${d.date}"
-            style="border:none;background:transparent;font-size:10px;color:${textColor};font-family:inherit;text-align:center;width:100%;cursor:pointer;padding:0;outline:none"
-            onchange="overrideCalDay(${d.num},'${containerId}','${wd1DateStr}',${maxDays},${isPrompt},this.value)"
-          />
-          ${hint ? `<div style="font-size:9px;color:${isOverridden?'rgba(255,255,255,.7)':'#92400e'};margin-top:1px">${hint}</div>` : ''}
-        </div>`;
-      }).join('')}
-    </div>
-    <p style="font-size:11px;color:var(--text-faint);margin-top:8px">
-      🔵 Overridden &nbsp; 🟡 Holiday &nbsp; 🔴 Weekend &nbsp; All other days are working days
-    </p>`;
-}
-
-function overrideCalDay(wdNum, containerId, wd1DateStr, maxDays, isPrompt, newDate) {
-  if (!newDate) return;
-  _editingCal.overrides[wdNum] = newDate;
-  renderEditableCalGrid(containerId, wd1DateStr, maxDays, isPrompt);
-}
-
-function resetCalOverrides(containerId, wd1DateStr, maxDays, isPrompt) {
-  _editingCal.overrides = {};
-  renderEditableCalGrid(containerId, wd1DateStr, maxDays, isPrompt);
-}
-
-// Called from rollForward — opens the close calendar setup modal
-// before proceeding with the actual copy. Returns a Promise that
-// resolves with the calendar object once confirmed, or null if cancelled.
-function promptCloseCalendar(toQ, toY) {
-  return new Promise(resolve => {
-    const existing  = loadCloseCalendar(toQ, toY);
-    const qEndDate  = quarterEndDate(toQ, toY);
-    let suggested   = addDays(qEndDate, 1);
-    while (isNonWorkingDay(suggested)) suggested = addDays(suggested, 1);
-
-    // Restore existing overrides if any
-    _editingCal = { quarter: toQ, year: toY, overrides: existing?.overrides || {} };
-
-    document.getElementById('modal-title').textContent =
-      `Step 1 of 2 — Set Close Calendar for ${toQ} ${toY}`;
-
-    document.getElementById('modal-body').innerHTML = `
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
-        Set <strong>Workday 1</strong> for ${toQ} ${toY}, then adjust any specific
-        dates below — for example if your team works on Good Friday, click that
-        date and change it to the actual day your team is working.
-      </p>
-      <div class="form-group">
-        <label>Workday 1 date for ${toQ} ${toY}</label>
-        <input type="date" id="wd1-input" value="${existing?.wd1Date || suggested}" />
-        <p style="font-size:11px;color:var(--text-faint);margin-top:4px">
-          First working day of your close — quarter ends ${formatDate(qEndDate)}.
-        </p>
-      </div>
-      <div id="cal-preview" style="margin-top:16px"></div>
-      <div class="modal-footer">
-        <button class="btn-secondary" onclick="closeAllModals();if(_calResolve){_calResolve(null);_calResolve=null;}">Cancel</button>
-        <button class="btn-primary" onclick="confirmCloseCalendar('${toQ}',${toY})">Confirm & Continue →</button>
-      </div>`;
-
-    openModal();
-    _calResolve = resolve;
-
-    const input = document.getElementById('wd1-input');
-    function updatePreview() {
-      const val = input.value; if (!val) return;
-      renderEditableCalGrid('cal-preview', val, 20, true);
-    }
-    input.addEventListener('input', updatePreview);
-    updatePreview();
+  // Update nav
+  document.querySelectorAll('.nav-link').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.view === viewName);
   });
-}
 
-function confirmCloseCalendar(toQ, toY) {
-  const input = document.getElementById('wd1-input');
-  const val   = input?.value?.trim();
-  if (!val) { showToast('Please set a Workday 1 date.', 'warning'); return; }
-  const cal = buildCloseCalendar(val, 40, _editingCal.overrides);
-  saveCloseCalendar(toQ, toY, cal);
-  closeAllModals();
-  if (_calResolve) { _calResolve(cal); _calResolve = null; }
-}
-
-// Render/edit the close calendar for a quarter (accessible from Admin)
-function openCloseCalendarAdmin(quarter, year) {
-  const cal       = loadCloseCalendar(quarter, year);
-  const qEndDate  = quarterEndDate(quarter, year);
-  let suggested   = addDays(qEndDate, 1);
-  while (isNonWorkingDay(suggested)) suggested = addDays(suggested, 1);
-
-  // Load existing overrides so edits are preserved
-  _editingCal = { quarter, year, overrides: cal?.overrides || {} };
-
-  document.getElementById('modal-title').textContent = `Close Calendar — ${quarter} ${year}`;
-  document.getElementById('modal-body').innerHTML = `
-    <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
-      Set WD1 to anchor the calendar, then click any date cell to override it —
-      for example, change Good Friday to the actual day your team is working.
-    </p>
-    <div class="form-group">
-      <label>Workday 1 date</label>
-      <input type="date" id="wd1-admin-input" value="${cal?.wd1Date || suggested}" />
-    </div>
-    <div id="admin-cal-preview" style="margin-top:12px"></div>
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="saveCalendarAdmin('${quarter}',${year})">Save Calendar</button>
-    </div>`;
-
-  openModal();
-
-  const input = document.getElementById('wd1-admin-input');
-  function updatePreview() {
-    const val = input?.value; if (!val) return;
-    renderEditableCalGrid('admin-cal-preview', val, 30, false);
-  }
-  input.addEventListener('input', updatePreview);
-  updatePreview();
-}
-
-function saveCalendarAdmin(quarter, year) {
-  const input = document.getElementById('wd1-admin-input');
-  const val   = input?.value?.trim();
-  if (!val) { showToast('Please set a Workday 1 date.', 'warning'); return; }
-  const cal = buildCloseCalendar(val, 40, _editingCal.overrides);
-  saveCloseCalendar(quarter, year, cal);
-  closeAllModals();
-  renderAdmin();
-  const overrideCount = Object.keys(_editingCal.overrides).length;
-  showToast(`Close calendar saved — WD1 ${formatDate(cal.wd1Date)}${overrideCount ? `, ${overrideCount} override(s)` : ''}`, 'success');
-}
-
-// Live WD# → date resolver called from modal inputs
-function resolveWdToDate(wdInputId, dateInputId, quarter, year) {
-  const wdEl   = document.getElementById(wdInputId);
-  const dateEl = document.getElementById(dateInputId);
-  if (!wdEl || !dateEl || !quarter || !year) return;
-  const wdNum  = parseInt(wdEl.value);
-  if (!wdNum) return;
-  const resolved = workdayToDate(wdNum, quarter, parseInt(year));
-  if (resolved) dateEl.value = resolved;
-}
-function uid() { return 'ft-' + Date.now() + '-' + Math.random().toString(36).slice(2,6); }
-function typeBadgeClass(type) {
-  return {
-    'Close':          'badge-type-close',
-    'Financial Report':'badge-type-financial',
-    'Master SS':      'badge-type-master',
-    'Ops Book':       'badge-type-ops',
-    'Other':          'badge-type-other',
-    'Press Release':  'badge-type-press',
-    'Post-Filing':    'badge-type-post',
-    'Pre-Filing':     'badge-type-pre',
-  }[type] || 'badge-type-other';
-}
-function statusBadgeClass(s) {
-  return {'Not Started':'status-not-started','In Progress':'status-in-progress',
-          'Ready for Review 1':'status-review','Ready for Review':'status-review',
-          'Ready for Review 2':'status-review2',
-          'Complete':'status-complete','Not Applicable':'status-na'}[s]||'status-not-started';
-}
-function dotClass(ds) {
-  return {overdue:'dot-overdue',soon:'dot-soon',ok:'dot-ok',done:'dot-done'}[ds]||'dot-ok';
-}
-// Returns the background colour for a task-type calendar chip.
-function calChipBg(type) {
-  return {
-    'Close':           '#e0f2fe',
-    'Financial Report':'#dbeafe',
-    'Master SS':       '#d1fae5',
-    'Ops Book':        '#fce7f3',
-    'Other':           '#f1f5f9',
-    'Press Release':   '#ede9fe',
-    'Post-Filing':     '#fef3c7',
-    'Pre-Filing':      '#ecfdf5',
-  }[type] || '#f1f5f9';
-}
-// Returns the foreground colour for a task-type calendar chip.
-function calChipFg(type) {
-  return {
-    'Close':           '#0369a1',
-    'Financial Report':'#1d4ed8',
-    'Master SS':       '#065f46',
-    'Ops Book':        '#9d174d',
-    'Other':           '#475569',
-    'Press Release':   '#5b21b6',
-    'Post-Filing':     '#92400e',
-    'Pre-Filing':      '#065f46',
-  }[type] || '#334155';
-}
-function escHtml(str) {
-  if (!str) return '';
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-// ── UI HELPERS ────────────────────────────────────────────────
-
-// ── IN-APP TOAST / CONFIRM SYSTEM ───────────────────────────
-// Replaces native alert() / confirm() throughout the app
-
-function showToast(msg, type='info', duration=4000) {
-  // type: 'info' | 'success' | 'error' | 'warning'
-  let container = document.getElementById('toast-container');
-  if (!container) {
-    container = document.createElement('div');
-    container.id = 'toast-container';
-    document.body.appendChild(container);
-  }
-  const id   = 'toast-' + Date.now();
-  const icons = { info:'ℹ', success:'✅', error:'❌', warning:'⚠️' };
-  const toast = document.createElement('div');
-  toast.id        = id;
-  toast.className = `app-toast app-toast-${type}`;
-  toast.innerHTML = `<span class="toast-icon">${icons[type]}</span>
-    <span class="toast-msg">${escHtml(msg)}</span>
-    <button class="toast-close" onclick="this.closest('.app-toast').remove()">✕</button>`;
-  container.appendChild(toast);
-  // Animate in
-  requestAnimationFrame(() => toast.classList.add('visible'));
-  if (duration > 0) setTimeout(() => {
-    toast.classList.remove('visible');
-    setTimeout(() => toast.remove(), 300);
-  }, duration);
-}
-
-function showConfirm(msg, onConfirm, onCancel, confirmLabel='Confirm', danger=false) {
-  // In-app confirm replaces confirm()
-  let overlay = document.getElementById('confirm-overlay');
-  if (overlay) overlay.remove();
-  overlay = document.createElement('div');
-  overlay.id        = 'confirm-overlay';
-  overlay.className = 'confirm-overlay';
-  overlay.innerHTML = `
-    <div class="confirm-box">
-      <div class="confirm-msg">${escHtml(msg)}</div>
-      <div class="confirm-actions">
-        <button class="btn-secondary" id="confirm-cancel">${escHtml('Cancel')}</button>
-        <button class="${danger?'btn-danger':'btn-primary'}" id="confirm-ok">${escHtml(confirmLabel)}</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  document.getElementById('confirm-cancel').onclick = () => {
-    overlay.remove();
-    if (onCancel) onCancel();
-  };
-  document.getElementById('confirm-ok').onclick = () => {
-    overlay.remove();
-    onConfirm();
-  };
-  requestAnimationFrame(() => overlay.classList.add('visible'));
-}
-
-function showInlineConfirm(anchorEl, msg, onConfirm, confirmLabel='Delete', danger=true) {
-  // Small inline confirm that appears next to the element
-  const existing = document.getElementById('inline-confirm-pop');
-  if (existing) existing.remove();
-  const pop = document.createElement('div');
-  pop.id        = 'inline-confirm-pop';
-  pop.className = 'inline-confirm-pop';
-  pop.innerHTML = `<span>${escHtml(msg)}</span>
-    <button class="${danger?'btn-danger':'btn-primary'} small" id="inline-confirm-ok">${escHtml(confirmLabel)}</button>
-    <button class="btn-secondary small" onclick="document.getElementById('inline-confirm-pop').remove()">Cancel</button>`;
-  document.body.appendChild(pop);
-  // Position near anchor
-  const rect = anchorEl.getBoundingClientRect();
-  pop.style.top  = (rect.bottom + window.scrollY + 6) + 'px';
-  pop.style.left = Math.max(8, rect.left + window.scrollX - 60) + 'px';
-  // Close on outside click — store handler reference so confirm-ok can also remove
-  // it, preventing a stale listener if the pop is removed programmatically.
-  function _outsideClickHandler(e) {
-    if (!pop.contains(e.target) && e.target !== anchorEl) {
-      pop.remove();
-      document.removeEventListener('click', _outsideClickHandler);
-    }
-  }
-  document.getElementById('inline-confirm-ok').onclick = () => {
-    pop.remove();
-    document.removeEventListener('click', _outsideClickHandler);
-    onConfirm();
-  };
-  setTimeout(() => document.addEventListener('click', _outsideClickHandler), 0);
-}
-
-function showLoadingOverlay(show, msg='') {
-  let el = document.getElementById('loading-overlay');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'loading-overlay';
-    document.body.appendChild(el);
-  }
-  if (show) {
-    el.className = 'loading-overlay';
-    el.innerHTML = `<div class="loading-spinner"></div><span>${escHtml(msg||'Loading…')}</span>`;
-    el.style.display = 'flex';
-  } else {
-    el.style.display = 'none';
-  }
-}
-
-function showError(msg) {
-  const el = document.getElementById('sp-error');
-  if (el) { el.textContent = msg; el.classList.remove('hidden'); }
-}
-
-// ── LOGIN (Microsoft SSO) ────────────────────────────────────
-async function loginWithMicrosoft() {
-  // Clear any previous error before retrying
-  const errEl = document.getElementById('sp-error');
-  if (errEl) { errEl.textContent = ''; errEl.classList.add('hidden'); }
-  try {
-    // Use redirect flow — works in all browsers including Edge with strict tracking prevention
-    await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
-  } catch(e) {
-    showError("Microsoft sign-in failed: " + e.message);
-  }
-}
-
-async function afterMicrosoftLogin() {
-  const accounts = msalInstance.getAllAccounts();
-  if (!accounts.length) return;
-  const msAccount = accounts[0];
-
-  showLoadingOverlay(true);
-  try {
-    await loadAllData();
-
-    const email = msAccount.username?.toLowerCase() || '';
-    const user  = _users.find(u => (u.email||'').toLowerCase() === email);
-
-    if (!user) {
-      showError(`Your Microsoft account (${msAccount.username}) was not found in FT_Users. Ask your admin to add your email address to the FT_Users list.`);
-      showLoadingOverlay(false);
-      return;
-    }
-
-    // Log straight in — no PIN needed
-    currentUser = user;
-    sessionStorage.setItem('ft_session', user._spId || user.id);
-    launchApp();
-  } catch(e) {
-    showError('Could not load data: ' + e.message);
-  } finally {
-    showLoadingOverlay(false);
-  }
-}
-
-// PIN login removed — Microsoft login handles identity directly
-
-// Returns true if the current user is read-only (exec/stakeholder access).
-// Read-only users can view all views but cannot edit tasks, steps, or comments.
-function isReadOnly() { return currentUser?.isReadOnly === true; }
-
-// Returns the canonical SharePoint item ID for the current user.
-// Always use this instead of repeating currentUser._spId || currentUser.id throughout the code.
-function currentUserId() { return currentUser?._spId || currentUser?.id || ''; }
-
-function logout() {
-  currentUser = null;
-  _graphSiteId = null; // reset so next login resolves fresh
-  sessionStorage.removeItem('ft_session');
-  stopCommentPolling();
-  if (_pollTimer) clearInterval(_pollTimer);
-  if (typeof _stampTimer !== 'undefined') clearInterval(_stampTimer);
-  msalInstance.logoutRedirect().catch(()=>{});
-  document.getElementById('app-screen').classList.remove('active');
-  document.getElementById('login-screen').classList.add('active');
-}
-
-function initAdminYearSelects() {
-  const cur = new Date().getFullYear();
-  ['audit-year-select'].forEach(id => {
-    const el = document.getElementById(id); if (!el) return;
-    el.innerHTML = [-3,-2,-1,0,1].map(d=>`<option value="${cur+d}">${cur+d}</option>`).join('');
+  // Hide all views
+  document.querySelectorAll('.view').forEach(v => {
+    v.classList.remove('active');
+    v.style.display = 'none';
   });
-}
 
-function launchApp() {
-  document.getElementById('login-screen').classList.remove('active');
-  document.getElementById('app-screen').classList.add('active');
-  document.getElementById('sidebar-user-info').innerHTML = `
-    <div class="user-avatar">${initials(currentUser.name)}</div>
-    <div class="user-name">${escHtml(currentUser.name)}</div>
-    <div class="user-role">${escHtml(currentUser.role)}</div>`;
-  document.querySelectorAll('.admin-only').forEach(el =>
-    el.classList.toggle('hidden', !currentUser.isAdmin));
-
-  // Read-only users: hide editing nav items, land on Exec View
-  if (isReadOnly()) {
-    ['dashboard','mytasks','tasks','team','kanban'].forEach(v => {
-      const el = document.querySelector(`[data-view="${v}"]`);
-      if (el) el.classList.add('hidden');
-    });
+  // Show target view
+  const target = document.getElementById(`view-${viewName}`);
+  if (target) {
+    target.classList.add('active');
+    target.style.display = 'block';
   }
 
-  populateYearSelects();
-  setCurrentQuarter();
-  initCompactMode();
-  startPolling();
-  initAdminYearSelects();
-  renderSavedFilters();
-  if (isReadOnly()) {
-    // Land read-only users on Exec View
-    switchView('exec', document.querySelector('[data-view="exec"]'));
-  } else {
-    renderDashboard();
-  }
-  renderPriorityCard();
-  setTimeout(updateRefreshStamp, 100); // show stamp after first data load
-}
+  // Close side panel
+  closeTaskPanel();
 
-function setCurrentQuarter() {
-  // Use session pref if set (user changed filter this session), else working quarter
-  const pref = loadQuarterPref();
-  const wq   = workingQ(); // reads SharePoint first, then localStorage, then calendar
-  const q    = pref.q  || wq.q;
-  const yr   = pref.yr ? parseInt(pref.yr) : wq.yr;
-  const qf = document.getElementById('quarter-filter'); if(qf) qf.value = q;
-  const yf = document.getElementById('year-filter');    if(yf) yf.value = String(yr);
-  const lbl = document.getElementById('dashboard-quarter-label');
-  if(lbl) lbl.textContent = `${q} ${yr} · Financial Reporting`;
-}
-function populateYearSelects() {
-  const cur = new Date().getFullYear();
-  // Show 4 years back and 1 forward so historical quarters remain accessible
-  // as the team builds up multiple years of data. cur-3 through cur+1 = 5 options.
-  const years = [cur-3, cur-2, cur-1, cur, cur+1];
-  ['year-filter','template-year-select','rf-from-year','rf-to-year','kanban-year','report-year','team-year','exec-year','mytasks-year','all-year-filter'].forEach(id => {
-    const el = document.getElementById(id); if(!el) return;
-    el.innerHTML = years.map(y=>`<option value="${y}">${y}</option>`).join('');
-    // Do NOT set .value here — setCurrentQuarter and per-view defaults handle this
-    // so the working quarter from SharePoint always wins on first load
-  });
-}
-
-// ── MOBILE SIDEBAR ────────────────────────────────────────────
-function toggleSidebar() {
-  const sb  = document.querySelector('.sidebar');
-  const bd  = document.getElementById('sidebar-backdrop');
-  const open = sb?.classList.toggle('open');
-  if (bd) bd.classList.toggle('visible', open);
-}
-// Closes the mobile sidebar and removes the backdrop.
-function closeSidebar() {
-  document.querySelector('.sidebar')?.classList.remove('open');
-  document.getElementById('sidebar-backdrop')?.classList.remove('visible');
-}
-
-// ── VIEWS ─────────────────────────────────────────────────────
-function switchView(view, el) {
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  if (el) el.classList.add('active');
-  document.getElementById('view-'+view).classList.add('active');
-  closeSidebar(); // close on mobile nav
-  // Dismiss any active undo toast when navigating — stale undo actions
-  // from a previous view would be confusing if triggered from a different context.
-  // Exception: if executeUndo itself is navigating back, _undoSourceView will
-  // already be null (cleared by removeUndoToast) so this is a no-op.
-  if (_undoTimer) removeUndoToast();
-  if (view==='dashboard') renderDashboard();
-  if (view==='tasks')     { populateOwnerFilter(); renderAllTasks(); }
-  if (view==='calendar') {
-    // Default calendar to the month after the working quarter end on first open
-    const wq = loadWorkingQuarter();
-    if (wq?.q && wq?.yr) {
-      const afterQtr = { Q1:{m:3,yr:wq.yr}, Q2:{m:6,yr:wq.yr},
-                         Q3:{m:9,yr:wq.yr}, Q4:{m:0,yr:wq.yr+1} }[wq.q];
-      if (afterQtr && calYear === new Date().getFullYear() && calMonth === new Date().getMonth()) {
-        // Only auto-set if user hasn't manually navigated the calendar yet
-        calYear  = afterQtr.yr;
-        calMonth = afterQtr.m;
-      }
-    }
-    renderCalendar();
-  }
-  if (view==='team') {
-    const wq=workingQ();
-    const qEl=document.getElementById('team-quarter'); if(qEl) qEl.value=wq.q;
-    const yEl=document.getElementById('team-year');    if(yEl) yEl.value=wq.yr;
-    toggleTeamYearVisibility();
-    renderTeam();
-  }
-  if (view==='admin')     renderAdmin();
-  if (view==='mytasks') {
-    const wq=workingQ();
-    const qEl=document.getElementById('mytasks-quarter');
-    const yEl=document.getElementById('mytasks-year');
-    // Always default to working quarter — user can change it manually after
-    if (qEl && (qEl.value==='all' || !qEl.value)) qEl.value=wq.q;
-    if (yEl) yEl.value=wq.yr;
-    toggleMyTasksYearVisibility();
-    renderMyTasks();
-  }
-  if (view==='kanban')    { initKanbanSelects(); renderKanban(); }
-  if (view==='report')    { initReportSelects(); renderReport(); }
-  if (view==='exec') {
-    const wq=workingQ();
-    const qEl=document.getElementById('exec-quarter'); if(qEl) qEl.value=wq.q;
-    const yEl=document.getElementById('exec-year');    if(yEl) yEl.value=wq.yr;
-    renderExecView();
-  }
-}
-function sortTaskTable(col) {
-  if (_tableSort.col === col) {
-    _tableSort.dir *= -1; // toggle direction
-  } else {
-    _tableSort.col = col;
-    _tableSort.dir = 1;
-  }
-  // Update sort indicators — check both dashboard ('sort-ind-X')
-  // and All Tasks ('all-sort-ind-X') spans so arrows update in both views
-  ['name','owner','due','status'].forEach(c => {
-    ['sort-ind-' + c, 'all-sort-ind-' + c].forEach(id => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      if (c === col) el.textContent = _tableSort.dir === 1 ? '↑' : '↓';
-      else el.textContent = '⇅';
-    });
-  });
+  // Render the view
   renderCurrentView();
 }
 
-function setQuickFilter(filter, btn) {
-  // 'mine' is no longer a dashboard filter — redirect to My Tasks view
-  if (filter === 'mine') {
-    switchView('mytasks', document.querySelector('[data-view="mytasks"]'));
+function refreshCurrentView() {
+  renderCurrentView();
+  updateWDIndicator();
+}
+
+function renderCurrentView() {
+  switch (STATE.currentView) {
+    case 'my-tasks':       renderMyTasks();       break;
+    case 'all-tasks':      renderAllTasks();      break;
+    case 'review-comments':renderReviewComments();break;
+    case 'matrix':         renderMatrixView();    break;
+    case 'dashboard':      renderDashboard();     break;
+    case 'calendar':       renderCalendarView();  break;
+    case 'admin':          renderAdminView();     break;
+    case 'profile':        renderProfileView();   break;
+  }
+}
+
+// ============================================================
+// WD INDICATOR
+// ============================================================
+function updateWDIndicator() {
+  const pill = document.getElementById('wd-indicator');
+  if (!pill) return;
+  if (isViewingHistory()) {
+    // Show the historical quarter name instead of a live workday
+    pill.textContent = STATE.viewingQuarter;
+    pill.style.background = 'var(--amber)';
+  } else {
+    pill.textContent = getWDIndicatorText(STATE.activeQuarter);
+    pill.style.background = '';
+  }
+}
+
+// ============================================================
+// MY TASKS VIEW
+// ============================================================
+function filterMyAssignments() {
+  const email = STATE.currentUser?.Email;
+  if (!email) return [];
+  return STATE.assignments.filter(a =>
+    a.Preparer === email || a.Reviewer === email
+  );
+}
+
+// Renders a named task section: toggles visibility, updates count, and fills cards.
+function renderTaskSection({ sectionId, dividerId, countId, labelId, cardContainerId, tasks, email, isOverdue = false, isWaiting = false, labelText = null }) {
+  const section = document.getElementById(sectionId);
+  const divider = dividerId ? document.getElementById(dividerId) : null;
+  const visible = tasks.length > 0;
+
+  if (section) section.classList.toggle('hidden', !visible);
+  if (divider) divider.style.display = visible ? '' : 'none';
+
+  const countEl = countId ? document.getElementById(countId) : null;
+  if (countEl) countEl.textContent = tasks.length;
+
+  if (labelId && labelText) {
+    const labelEl = document.getElementById(labelId);
+    if (labelEl) labelEl.textContent = labelText;
+  }
+
+  const container = document.getElementById(cardContainerId);
+  if (container) container.innerHTML = tasks.map(t => renderTaskCard(t, email, isOverdue, isWaiting)).join('');
+}
+
+function renderMyTasks() {
+  const email = STATE.currentUser?.Email;
+  const quarter = STATE.activeQuarter;
+
+  const sub = document.getElementById('my-tasks-sub');
+  if (sub) sub.textContent = `${quarter || 'No active quarter'} · Your assigned tasks`;
+
+  if (!quarter) {
+    // Show the no-quarter placeholder directly without going through the view router.
+    // We do NOT set STATE.currentView here — no-quarter is not a routed view and the
+    // router has no case for it. Keeping STATE.currentView = 'my-tasks' means the next
+    // refreshCurrentView() call will re-run renderMyTasks(), which will re-check the
+    // quarter and show this placeholder again if still needed.
+    document.querySelectorAll('.view').forEach(v => { v.classList.remove('active'); v.style.display = 'none'; });
+    const noQ = document.getElementById('view-no-quarter');
+    if (noQ) { noQ.classList.add('active'); noQ.style.display = 'block'; }
     return;
   }
-  activeFilter = filter;
-  document.querySelectorAll('.qfilter').forEach(b => b.classList.remove('active'));
-  if (btn) btn.classList.add('active');
-  renderDashboard();
-}
-function setTypeFilter(val) { activeTypeFilter = val; renderDashboard(); }
 
-// ── DASHBOARD ─────────────────────────────────────────────────
-function renderDashboard() {
-  const q  = document.getElementById('quarter-filter')?.value || 'Q1';
-  const yr = parseInt(document.getElementById('year-filter')?.value || new Date().getFullYear());
-  saveQuarterPref(q, yr);
-  let tasks = getActiveTasks().filter(t => t.quarter===q && t.year===yr);
-  const hr  = new Date().getHours();
-  const greet = document.getElementById('dashboard-greeting');
-  if(greet) greet.textContent = `${hr<12?'Good morning':hr<17?'Good afternoon':'Good evening'}, ${currentUser.name.split(' ')[0]}`;
-  // Update quarter label whenever filter changes
-  const lbl = document.getElementById('dashboard-quarter-label');
-  if (lbl) lbl.textContent = `${q} ${yr} · Financial Reporting`;
-  const activeTasks = tasks.filter(t=>t.status!=='Not Applicable');
-  const total    = activeTasks.length;
-  const naCount  = tasks.filter(t=>t.status==='Not Applicable').length;
-  const complete = activeTasks.filter(t=>t.status==='Complete').length,
-        overdue  = activeTasks.filter(t=>deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length,
-        inprog   = activeTasks.filter(t=>t.status==='In Progress').length;
-  const sg = document.getElementById('stat-grid');
-  if(sg) sg.innerHTML = `
-    <div class="stat-card"><div class="stat-label">Total Deliverables</div>
-      <div class="stat-value">${total}</div><div class="stat-sub">${q} ${yr}</div></div>
-    <div class="stat-card complete"><div class="stat-label">Complete</div>
-      <div class="stat-value">${complete}</div>
-      <div class="stat-sub">${total?Math.round(complete/total*100):0}% of quarter</div></div>
-    <div class="stat-card progress"><div class="stat-label">In Progress</div>
-      <div class="stat-value">${inprog}</div><div class="stat-sub">tasks active</div></div>
-    <div class="stat-card overdue"><div class="stat-label">Overdue</div>
-      <div class="stat-value">${overdue}</div>
-      <div class="stat-sub">${overdue>0?'needs attention':'all on track'}</div></div>
-    ${naCount>0?`<div class="stat-card na"><div class="stat-label">Not Applicable</div>
-      <div class="stat-value">${naCount}</div><div class="stat-sub">excluded from stats</div></div>`:''}`;
-  // Show lock banner if this quarter is locked
-  const lockBanner = document.getElementById('lock-banner');
-  if (lockBanner) {
-    const locked = isQuarterLocked(q, yr);
-    lockBanner.classList.toggle('hidden', !locked);
-    if (locked) {
-      const lock = _locks.find(l => l.quarter===q && l.year===yr);
-      lockBanner.textContent = `🔒 ${q} ${yr} is locked (by ${lock?.lockedBy||'Admin'} on ${lock?.lockedAt||'—'}). Tasks are read-only.`;
-    }
+  const tasks = filterMyAssignments();
+  const wd          = getTodaysWorkday(quarter);
+  const tomorrowWD  = getTomorrowWorkday(quarter);
+  const todayWD     = typeof wd === 'number' ? wd : -1;
+
+  const overdue    = tasks.filter(t => isTaskOverdue(t) && t.Status !== 'Complete');
+  const waiting    = tasks.filter(t => !isTaskOverdue(t) && t.Status !== 'Complete' && isLocked(t, email));
+  const active     = tasks.filter(t => !isTaskOverdue(t) && t.Status !== 'Complete' && !isLocked(t, email));
+  const dueToday   = active.filter(t => getDueWD(t, email) === todayWD);
+  // Second condition (getDueWD !== todayWD) is always true when first is true since tomorrowWD !== todayWD.
+  const dueTomorrow = tomorrowWD !== null
+    ? active.filter(t => getDueWD(t, email) === tomorrowWD)
+    : [];
+  const upcoming   = active.filter(t =>
+    getDueWD(t, email) !== todayWD &&
+    (tomorrowWD === null || getDueWD(t, email) !== tomorrowWD)
+  );
+
+  renderTaskSection({ sectionId: 'my-tasks-overdue',   dividerId: 'div-overdue',   countId: 'overdue-count',   cardContainerId: 'overdue-cards',   tasks: overdue,      email, isOverdue: true });
+  renderTaskSection({ sectionId: 'my-tasks-today',     dividerId: 'div-today',     countId: null,              cardContainerId: 'today-cards',     tasks: dueToday,     email, labelId: 'today-section-label',    labelText: typeof wd === 'number' ? `DUE TODAY — WD${wd}` : 'DUE TODAY' });
+  renderTaskSection({ sectionId: 'my-tasks-tomorrow',  dividerId: 'div-tomorrow',  countId: 'tomorrow-count',  cardContainerId: 'tomorrow-cards',  tasks: dueTomorrow,  email, labelId: 'tomorrow-section-label', labelText: tomorrowWD !== null ? `DUE TOMORROW — WD${tomorrowWD}` : 'DUE TOMORROW' });
+  renderTaskSection({ sectionId: 'my-tasks-upcoming',  dividerId: 'div-upcoming',  countId: 'upcoming-count',  cardContainerId: 'upcoming-cards',  tasks: upcoming,     email });
+
+  // Waiting section (always visible, collapsed by default)
+  const waitingCountEl = document.getElementById('waiting-count');
+  if (waitingCountEl) waitingCountEl.textContent = waiting.length;
+  const waitingCards = document.getElementById('waiting-cards');
+  if (waitingCards) waitingCards.innerHTML = waiting.map(t => renderTaskCard(t, email, false, true)).join('');
+
+  attachCardEvents();
+}
+
+function isLocked(assignment, email) {
+  if (assignment.SignOffMode === 'Preparer Only') return false;
+  if (assignment.Reviewer === email && !assignment.PreparerSignOff) return true;
+  return false;
+}
+
+function getDueWD(assignment, email) {
+  if (assignment.Preparer === email && !assignment.PreparerSignOff) {
+    return Number(assignment.PreparerWorkday);
+  }
+  if (assignment.Reviewer === email && !assignment.ReviewerSignOff) {
+    return Number(assignment.ReviewerWorkday);
+  }
+  // Fallback: called only from renderMyTasks where tasks are pre-filtered to the
+  // current user's assignments, so this branch fires only for completed tasks.
+  // Returning PreparerWorkday is safe — completed tasks don't appear in active buckets.
+  return Number(assignment.PreparerWorkday);
+}
+
+function renderTaskCard(assignment, currentEmail, isOverdue = false, isWaiting = false) {
+  const overdueCls = isOverdue ? 'overdue' : '';
+  const waitingCls = isWaiting ? 'waiting' : '';
+  const isPreparer       = assignment.Preparer === currentEmail;
+  const isReviewer       = assignment.Reviewer === currentEmail;
+  const isFinalReviewer  = STATE.isFinalReviewer;
+  const isAdmin          = STATE.isAdmin;
+
+  // Rule 3: anyone can sign preparer step
+  // Rule 4: reviewer step restricted to assigned reviewer, admin, FinalReviewer
+  const canSignPreparer  = !assignment.PreparerSignOff;
+  const canSignReviewer  = !assignment.ReviewerSignOff && (isReviewer || isAdmin || isFinalReviewer);
+  const role = canSignPreparer ? 'preparer'
+    : canSignReviewer ? 'reviewer' : null;
+  const locked = isLocked(assignment, currentEmail);
+  const dueWD = getDueWD(assignment, currentEmail);
+  const dueDate = resolveWorkday(getReadQuarter(), dueWD);
+
+  // Check for urgent review comments
+  const hasUrgentRC = STATE.reviewComments.some(
+    rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId &&
+          rc.Priority === 'Urgent' && rc.Status === 'Open'
+  );
+  const rcCount = STATE.reviewComments.filter(
+    rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId
+  ).length;
+
+  const prepBadge = renderBadge(assignment.Preparer);
+  const revBadge = assignment.Reviewer ? renderBadge(assignment.Reviewer) : '';
+
+  let signoffBtn = '';
+  if (isViewingHistory()) {
+    // No sign-off actions available when browsing a historical quarter.
+    signoffBtn = '';
+  } else if (isWaiting || locked) {
+    signoffBtn = `<button class="btn-secondary btn-sm" disabled>🔒 Awaiting preparer sign-off</button>`;
+  } else if (role) {
+    const label = role === 'preparer' ? 'Sign Off as Preparer' : 'Sign Off as Reviewer';
+    signoffBtn = `<button class="btn-primary btn-sm" data-action="signoff" data-id="${assignment._id}" data-role="${role}">✓ ${label}</button>`;
   }
 
-  if (activeFilter==='overdue')   tasks=tasks.filter(t=>deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue');
-  if (activeFilter==='this-week') tasks=tasks.filter(t=>isThisWeek(t.dueDate,t.workdayNum,t.quarter,t.year));
-  if (activeTypeFilter!=='all')   tasks=tasks.filter(t=>t.type===activeTypeFilter);
-  renderDeadlineStrip(q, yr);
-  renderPriorityCard();
-
-  // If there are no tasks at all for any quarter (first-time setup),
-  // show an onboarding prompt instead of a generic empty table.
-  if (!getTasks().length && currentUser?.isAdmin) {
-    const tbody = document.getElementById('dashboard-task-body');
-    if (tbody) {
-      tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state" style="padding:40px 0">
-        <div class="empty-icon">📋</div>
-        <p style="font-size:15px;font-weight:500;margin-bottom:8px">No tasks yet — let's get set up</p>
-        <p style="font-size:13px;color:var(--text-faint);margin-bottom:20px">Import your task list from Excel, or add tasks one at a time.</p>
-        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-          <button class="btn-primary" onclick="switchView('admin',document.querySelector('[data-view=\'admin\']'))">
-            📥 Go to Import →
-          </button>
-          <button class="btn-secondary" onclick="openAddTask()">+ Add First Task</button>
-        </div>
-      </div></td></tr>`;
-      return;
-    }
-  }
-
-  renderTaskTable(tasks, 'dashboard-task-body', true);
-}
-
-// ── FEATURE 2 — EXTERNAL DEADLINE STRIP ──────────────────────
-function renderDeadlineStrip(q, yr) {
-  const el = document.getElementById('deadline-strip');
-  if (!el) return;
-  const qd = _quarterDates.find(d => d.quarter===q && d.year===yr);
-  if (!qd) { el.innerHTML = ''; el.style.display='none'; return; }
-  const today = new Date(); today.setHours(0,0,0,0);
-  function daysUntil(dateStr) {
-    if (!dateStr) return null;
-    const d = new Date(dateStr+'T00:00:00');
-    return Math.ceil((d-today)/ MS_PER_DAY);
-  }
-  function chip(label, dateStr, time) {
-    const days = daysUntil(dateStr);
-    if (days === null) return '';
-    const cls = days < 0 ? 'dl-past' : days <= 3 ? 'dl-urgent' : days <= 7 ? 'dl-soon' : 'dl-ok';
-    const txt = days < 0 ? `${Math.abs(days)}d ago` : days === 0 ? 'Today' : `${days}d`;
-    const timeStr = time ? ` · ${time}` : '';
-    return `<div class="dl-chip ${cls}"><span class="dl-label">${label}</span><span class="dl-days">${txt}${timeStr}</span></div>`;
-  }
-  const chips = [
-    chip('SEC Filing',   qd.secFilingDate, ''),
-    chip('Earnings Call',qd.earningsDate,  qd.earningsTime),
-  ].filter(Boolean).join('');
-  if (!chips) { el.style.display='none'; return; }
-  el.style.display='flex';
-  el.innerHTML = `<span style="font-size:11px;font-weight:600;color:var(--navy);margin-right:8px;white-space:nowrap">Key Dates</span>${chips}`;
-}
-
-// ── ALL TASKS ─────────────────────────────────────────────────
-function populateOwnerFilter() {
-  const sel = document.getElementById('all-owner-filter'); if(!sel) return;
-  sel.innerHTML = `<option value="all">All Owners</option>`+
-    getUsers().map(u=>`<option value="${u._spId||u.id}">${escHtml(u.name)}</option>`).join('');
-}
-function renderAllTasks() {
-  const search  = (document.getElementById('task-search')?.value||'').toLowerCase();
-  const status  = document.getElementById('all-status-filter')?.value||'all';
-  const type    = document.getElementById('all-type-filter')?.value||'all';
-  const owner   = document.getElementById('all-owner-filter')?.value||'all';
-  const quarter = document.getElementById('all-quarter-filter')?.value||'all';
-  const year    = parseInt(document.getElementById('all-year-filter')?.value||0);
-  let tasks=getActiveTasks();
-  if(search)         tasks=tasks.filter(t=>t.name.toLowerCase().includes(search)||(t.notes||t.description||'').toLowerCase().includes(search));
-  if(status!=='all') tasks=tasks.filter(t=>t.status===status);
-  if(type!=='all')   tasks=tasks.filter(t=>t.type===type);
-  if(owner!=='all')  tasks=tasks.filter(t=>t.ownerId===owner);
-  if(quarter!=='all') tasks=tasks.filter(t=>t.quarter===quarter && (!year||t.year===year));
-  renderTaskTable(tasks,'all-task-body',false);
-}
-
-// ── TASK TABLE ────────────────────────────────────────────────
-function renderTaskTable(tasks, tbodyId, hiddenQuarter) {
-  const tbody = document.getElementById(tbodyId); if(!tbody) return;
-  if (!tasks.length) {
-    tbody.innerHTML=`<tr><td colspan="${hiddenQuarter?'7':'8'}"><div class="empty-state">
-      <div class="empty-icon">📋</div>
-      <p>No tasks found. <a href="#" onclick="openAddTask();return false;">Add a new task</a>.</p>
-    </div></td></tr>`; return;
-  }
-  // Apply sort if set
-  if (_tableSort.col) {
-    const col = _tableSort.col, d = _tableSort.dir;
-    tasks = [...tasks].sort((a,b) => {
-      let av, bv;
-      if (col==='due')    { av=a.dueDate||''; bv=b.dueDate||''; }
-      else if(col==='status') { const o={'Not Started':0,'In Progress':1,'Ready for Review 1':2,'Ready for Review 2':3,'Complete':4,'Not Applicable':5}; av=o[a.status]??0; bv=o[b.status]??0; }
-      else if(col==='owner')  { av=(getUserById(a.ownerId)?.name||'').toLowerCase(); bv=(getUserById(b.ownerId)?.name||'').toLowerCase(); }
-      else if(col==='name')   { av=a.name.toLowerCase(); bv=b.name.toLowerCase(); }
-      else return 0;
-      return av<bv?-d:av>bv?d:0;
-    });
-  }
-  tbody.innerHTML = tasks.map(task => {
-    const owner   = getUserById(task.ownerId);
-    const ds      = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
-    const locked   = isQuarterLocked(task.quarter, task.year);
-    const canEdit  = !isReadOnly() && !locked && (currentUser.isAdmin || task.ownerId===currentUserId());
-    const taskComments   = _comments.filter(c=>c.taskId===task.id||c.taskId===task._spId);
-    const commentCount   = taskComments.length;
-    const unresolvedCount = taskComments.filter(c=>!c.isResolved).length;
-    const taskSteps    = getStepsForTask(task._spId);
-    const doneSteps    = taskSteps.filter(s=>s.status==='Complete').length;
-    const stepPct      = taskSteps.length ? Math.round(doneSteps/taskSteps.length*100) : null;
-    const qCol = hiddenQuarter ? '' :
-      `<td><span class="badge ${typeBadgeClass(task.type)}">${task.quarter} ${task.year}</span></td>`;
-    const stepBar = taskSteps.length ? `
-      <div class="step-mini-bar" onclick="openSteps('${task._spId}','${escHtml(task.name)}')" title="Steps: ${doneSteps}/${taskSteps.length} complete">
-        <div class="step-mini-bar-track"><div class="step-mini-fill" style="width:${stepPct}%"></div></div>
-        <span class="step-mini-label">${doneSteps}/${taskSteps.length}</span>
-      </div>` : `<span class="step-mini-add" onclick="openSteps('${task._spId}','${escHtml(task.name)}')">+ add steps</span>`;
-    const appBadge = task.applicability && task.applicability !== 'All Quarters'
-      ? `<span class="app-badge ${task.applicability.startsWith('10-K')?'app-badge-10k':'app-badge-10q'}">${task.applicability.startsWith('10-K')?'10-K':'10-Q'}</span>`
-      : '';
-    const taskTrail = renderSignOffTrail(task._spId, false);
-    const isNA = task.status === 'Not Applicable';
-    return `<tr style="${isNA?'opacity:0.5;':''}${unresolvedCount>0?'border-left:3px solid var(--amber);':''}">
-      <td style="width:32px;padding:8px 6px"><input type="checkbox" class="bulk-check" data-spid="${task._spId}" onchange="updateBulkBar()" style="cursor:pointer;width:15px;height:15px" /></td>
-      <td>
-        <div class="task-name"
-          onclick="openSteps('${task._spId}','${escHtml(task.name)}')"
-          style="cursor:pointer;" title="Click to open steps">
-          ${escHtml(task.name)}${appBadge}${task.skipNextRollforward
-            ? '<span class="skip-badge" title="Skipped on next rollforward">⊘ skip</span>'
-            : ''}
-        </div>
-        ${(task.notes||task.description)?`<div class="task-desc">${escHtml(task.notes||task.description)}</div>`:''}
-        ${stepBar}
-        ${taskTrail}
-      </td>
-      <td><span class="badge ${typeBadgeClass(task.type)}">${escHtml(task.type)}</span></td>
-      ${qCol}
-      <td><div class="owner-chip">
-        ${coloredAvatar(task.ownerId, owner?.name||'?')}
-        ${owner?escHtml(owner.name):'—'}
-      </div></td>
-      <td><div class="deadline-cell">
-        <span class="deadline-dot ${dotClass(ds)}"></span>
-        ${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}
-        ${daysLabel(task.dueDate, task.status, task.workdayNum, task.quarter, task.year)}
-      </div></td>
-      <td>
-        ${locked ? '<span style="font-size:11px;color:var(--text-faint)">🔒</span> ' : ''}
-        ${(() => {
-          const uid = currentUserId();
-          // If a task has steps, status is driven by step completion automatically —
-          // clicking the task badge directly is disabled to avoid manual override confusion.
-          const hasSteps = getStepsForTask(task._spId).length > 0;
-          const canInteract = !isReadOnly() && !hasSteps && !isQuarterLocked(task.quarter,task.year) && (
-            currentUser.isAdmin ||
-            task.ownerId===uid || task.reviewerId===uid || task.reviewer2Id===uid
-          );
-          return `<span class="status-badge ${statusBadgeClass(task.status)}"
-            onclick="${canInteract?`event.stopPropagation();openQuickStatus('${task._spId}','task',this)`:''}"
-            style="${canInteract?'cursor:pointer':''}"
-            title="${!locked?'Click to change status':''}"
-          >${escHtml(task.status)}</span>`;
-        })()}</td>
-      <td><div class="action-row">
-        <button class="icon-btn" title="Steps (${taskSteps.length})" onclick="openSteps('${task._spId}','${escHtml(task.name)}')">📋</button>
-        <button class="icon-btn ${unresolvedCount>0?'comment-btn-unresolved':''}"
-          title="Comments (${commentCount}${unresolvedCount>0?' — '+unresolvedCount+' unresolved':''})"
-          onclick="openComments('${task._spId}','${escHtml(task.name)}')">
-          💬${unresolvedCount>0
-            ? `<span class="unresolved-badge">${unresolvedCount}</span>`
-            : (commentCount>0 ? ` <sup style="font-size:9px">${commentCount}</sup>` : '')}
-        </button>
-
-        ${canEdit?`<button class="icon-btn" title="Edit" onclick="openEditTask('${task._spId}')">✏️</button>`:''}
-        ${currentUser.isAdmin?`<button class="icon-btn" title="Delete" onclick="deleteTask('${task._spId}',this)">🗑</button>`:''}
-        ${task.reassignRequested && currentUser.isAdmin
-          ? `<button class="icon-btn reassign-flag-btn" title="Reassignment requested${task.reassignNote?' — '+task.reassignNote:''}" onclick="clearReassignFlag('${task._spId}','task')">🔄</button>`
-          : (!currentUser.isAdmin && (task.ownerId===currentUser.id||task.ownerId===currentUser._spId||task.reviewerId===currentUser.id||task.reviewer2Id===currentUser.id))
-            ? `<button class="icon-btn" title="Request reassignment" onclick="openReassignRequest('${task._spId}','task','${escHtml(task.name)}')">🔄</button>`
-            : ''}
-      </div></td>
-    </tr>`;
-  }).join('');
-}
-
-// ── APPLICABILITY HELPERS ────────────────────────────────────
-function appliesToQuarter(applicability, quarter) {
-  if (!applicability || applicability === 'All Quarters') return true;
-  if (applicability === '10-K only (Q4)')     return quarter === 'Q4';
-  if (applicability === '10-Q only (Q1, Q2, Q3)') return quarter !== 'Q4';
-  return true;
-}
-
-// ── SHARED ROLLFORWARD CORE ─────────────────────────────────
-// Used by both rollForward() and runQuarterWizard()
-// carryNotes = { [spId]: bool } — if present, wizard carry-forward behaviour is active
-async function _copyTasksToQuarter(srcTasks, fromQ, fromY, toQ, toY, carryNotes) {
-  const qEnd = quarterEndDate(toQ, toY);
-  const srcEnd = quarterEndDate(fromQ, fromY);
-  const srcEndDate = new Date(srcEnd + 'T00:00:00');
-  let copied = 0;
-  const errors = [];                  // collect per-task errors rather than aborting early
-  const createdTaskIds = [];          // track every SP item ID created so we can roll back
-
-  for (const task of srcTasks) {
-    if (!appliesToQuarter(task.applicability, toQ)) continue;
-    if (task.skipNextRollforward) {
-      // Clear the skip flag on the source task regardless — it was consumed
-      updateListItem(LISTS.tasks, task._spId, { SkipNextRollforward: 'No' })
-        .then(() => { task.skipNextRollforward = false; })
-        .catch(e => console.warn('Could not clear SkipNextRollforward:', e.message));
-      continue;
-    }
-    // Case-insensitive duplicate check to catch minor name edits between quarters
-    const nameLower = task.name.trim().toLowerCase();
-    const exists = getTasks().some(t =>
-      t.name.trim().toLowerCase() === nameLower && t.quarter === toQ && t.year === toY
-    );
-    if (exists) continue;
-
-    try {
-      let taskWdNum = task.workdayNum || null;
-      if (!taskWdNum && task.dueDate) taskWdNum = dateToWorkday(task.dueDate, fromQ, fromY);
-      let newDueDate = taskWdNum ? workdayToDate(taskWdNum, toQ, toY) : null;
-      if (!newDueDate && task.dueDate) {
-        const taskDue = new Date((task.dueDate || srcEnd) + 'T00:00:00');
-        const offset  = Math.round((taskDue - srcEndDate) / MS_PER_DAY);
-        newDueDate    = nearestWorkingDay(addDays(qEnd, offset));
-        taskWdNum     = taskWdNum || dateToWorkday(newDueDate, toQ, toY);
-      }
-
-      // Carry-forward note handling (wizard only)
-      let taskNoteValue = '';
-      if (carryNotes) {
-        const rawNote = carryNotes[task._spId] ? (task.notes || task.description || '') : '';
-        taskNoteValue = rawNote ? `[↩ from ${fromQ} ${fromY}] ${rawNote}` : '';
-      }
-
-      const newTaskId = uid();
-      const created = await createListItem(LISTS.tasks, {
-        Title: task.name, TaskId: newTaskId,
-        TaskType: task.type, Quarter: toQ, Year: String(toY),
-        DueDate: newDueDate || '', Status: 'Not Started',
-        OwnerId: task.ownerId,
-        ReviewerId:  task.reviewerId  || '',
-        Reviewer2Id: task.reviewer2Id || '',
-        Description: taskNoteValue || task.description || '',
-        Notes:       taskNoteValue || task.notes || '',
-        Applicability: task.applicability || 'All Quarters',
-        WorkdayNum: taskWdNum ? String(taskWdNum) : '',
-        SkipNextRollforward: 'No',
-      });
-      const newTaskSpId = created.id; // createListItem now throws if missing — safe to access directly
-      createdTaskIds.push({ list: LISTS.tasks, id: newTaskSpId });
-
-      const srcSteps = getStepsForTask(task._spId);
-      for (const step of srcSteps) {
-        if (!appliesToQuarter(step.applicability, toQ)) continue;
-        let stepWdNum = step.workdayNum || null;
-        if (!stepWdNum && step.dueDate) stepWdNum = dateToWorkday(step.dueDate, fromQ, fromY);
-        let stepDue = stepWdNum ? workdayToDate(stepWdNum, toQ, toY) : null;
-        if (!stepDue && step.dueDate) {
-          const sd  = new Date((step.dueDate || srcEnd) + 'T00:00:00');
-          const off = Math.round((sd - srcEndDate) / MS_PER_DAY);
-          stepDue   = nearestWorkingDay(addDays(qEnd, off));
-          stepWdNum = stepWdNum || dateToWorkday(stepDue, toQ, toY);
-        }
-        let stepNoteValue = '';
-        if (carryNotes) {
-          const rawNote = carryNotes[step._spId] ? (step.notes || step.note || '') : '';
-          stepNoteValue = rawNote ? `[↩ from ${fromQ} ${fromY}] ${rawNote}` : '';
-        }
-        const createdStep = await createListItem(LISTS.steps, {
-          Title: step.name, StepId: uid(),
-          TaskId: String(newTaskSpId),
-          StepOrder: String(step.order),
-          Status: 'Not Started',
-          OwnerId: step.ownerId,
-          ReviewerId:  step.reviewerId  || '',
-          Reviewer2Id: step.reviewer2Id || '',
-          DueDate: stepDue || null,
-          Note:  stepNoteValue || step.note  || '',
-          Notes: stepNoteValue || step.notes || '',
-          Applicability: step.applicability || 'All Quarters',
-          WorkdayNum: stepWdNum ? String(stepWdNum) : '',
-          RequiresPrev: step.requiresPrev ? 'Yes' : 'No',
-        });
-        createdTaskIds.push({ list: LISTS.steps, id: createdStep.id });
-      }
-      copied++;
-    } catch(e) {
-      errors.push(`"${task.name}": ${e.message}`);
-    }
-  }
-
-  // If any tasks failed to copy, roll back everything created so far and surface a
-  // clear error. A partial quarter is worse than no quarter — the user can retry cleanly.
-  if (errors.length) {
-    console.warn(`Rollforward: ${errors.length} task(s) failed. Rolling back ${createdTaskIds.length} created records.`);
-    await Promise.allSettled(
-      createdTaskIds.map(({ list, id }) => deleteListItem(list, id).catch(() => {}))
-    );
-    throw new Error(
-      `${errors.length} task(s) could not be copied and the rollforward was cancelled. ` +
-      `No records were changed. Errors: ` +
-      errors.slice(0, 5).join(' | ') +
-      (errors.length > 5 ? ` …and ${errors.length - 5} more.` : '')
-    );
-  }
-
-  return copied;
-}
-// ─────────────────────────────────────────────────────────────
-// ── ROLLFORWARD ENGINE ────────────────────────────────────────
-async function rollForward() {
-  const fromQ   = document.getElementById('rf-from-quarter').value;
-  const fromY   = parseInt(document.getElementById('rf-from-year').value);
-  const toQ     = document.getElementById('rf-to-quarter').value;
-  const toY     = parseInt(document.getElementById('rf-to-year').value);
-
-  if (fromQ === toQ && fromY === toY) {
-    showToast('Source and target quarter cannot be the same.', 'warning'); return;
-  }
-  if (isQuarterLocked(toQ, toY)) {
-    showToast(`${toQ} ${toY} is already locked. Unlock it in Admin first.`, 'warning'); return;
-  }
-
-  const srcTasks = getTasks().filter(t => t.quarter === fromQ && t.year === fromY);
-  if (!srcTasks.length) {
-    showToast(`No tasks found in ${fromQ} ${fromY}.`, 'warning'); return;
-  }
-
-  // ── Step 1: Set close calendar for target quarter ────────────
-  const cal = await promptCloseCalendar(toQ, toY);
-  if (!cal) return; // user cancelled
-
-  showLoadingOverlay(true, `Rolling forward to ${toQ} ${toY}…`);
-  try {
-    // Lock only after a clean copy — _copyTasksToQuarter throws and rolls back on failure
-    const copied = await _copyTasksToQuarter(srcTasks, fromQ, fromY, toQ, toY, null);
-    await lockQuarter(fromQ, fromY);
-    await refreshData();
-    showToast(`Rolled forward: ${copied} task(s) copied to ${toQ} ${toY}. ${fromQ} ${fromY} locked.`, 'success', TOAST_DURATION_LONG);
-  } catch(e) {
-    showToast('Rollforward failed: ' + e.message, 'error');
-  } finally {
-    showLoadingOverlay(false);
-  }
-}
-
-async function lockQuarter(quarter, year) {
-  const already = isQuarterLocked(quarter, year);
-  if (already) return;
-  const entry = {
-    Title:    `${quarter} ${year}`,
-    LockId:   uid(),
-    Quarter:  quarter,
-    Year:     String(year),
-    LockedBy: currentUser.name,
-    LockedAt: nowLabel(),
-  };
-  const created = await createListItem(LISTS.locks, entry);
-  _locks.push(normaliseLock({ ...entry, id: created?.id || entry.LockId }));
-}
-
-async function unlockQuarter(lockSpId) {
-  showConfirm('Unlock this quarter? Team members will be able to edit tasks again.', async () => {
-    showLoadingOverlay(true, 'Unlocking quarter…');
-    try {
-      await deleteListItem(LISTS.locks, lockSpId);
-      _locks = _locks.filter(l => l._spId !== lockSpId);
-      await refreshData();
-      renderAdmin();
-      showToast('Quarter unlocked — team members can now edit tasks.', 'success');
-    } catch(e) { showToast('Unlock failed: ' + e.message, 'error'); }
-    finally { showLoadingOverlay(false); }
-  }, null, 'Unlock', false);
-}
-
-// ══════════════════════════════════════════════════════════════
-// ── FILE LINKS (SharePoint link attachments) ─────────────────
-// Team members paste SharePoint URLs to tie-outs or any other
-// file. Links are stored in FT_Attachments with a label,
-// url, who linked it, and when. No file upload needed.
-// ══════════════════════════════════════════════════════════════
-
-function getAttachmentsForStep(stepSpId) {
-  return _attachments
-    .filter(a => a.stepId === String(stepSpId))
-    .sort((a, b) => {
-      // Sort newest first — uid() embeds Date.now() so id comparison is chronological
-      const ai = (a.id||a._spId||'').toString();
-      const bi = (b.id||b._spId||'').toString();
-      return bi.localeCompare(ai);
-    });
-}
-
-// Infer a tidy display label from a SharePoint URL if none given
-function labelFromUrl(url) {
-  try {
-    const decoded = decodeURIComponent(url);
-    const parts   = decoded.split('/');
-    // Walk back to find first meaningful segment (skip empty, 'Forms', etc.)
-    for (let i = parts.length - 1; i >= 0; i--) {
-      const p = parts[i];
-      if (p && p !== 'Forms' && !p.startsWith('?') && p !== 'AllItems.aspx') return p;
-    }
-  } catch {}
-  return url;
-}
-
-function fileIcon(label) {
-  const ext = (label || '').split('.').pop().toLowerCase();
-  return { xlsx:'📊', xls:'📊', csv:'📊', pdf:'📄',
-           docx:'📝', doc:'📝', pptx:'📑', ppt:'📑',
-           zip:'🗜', msg:'📧' }[ext] || '🔗';
-}
-
-// Open the "Add link" modal for a step
-function openAddLink(stepSpId) {
-  document.getElementById('modal-title').textContent = 'Link SharePoint File';
-  document.getElementById('modal-body').innerHTML = `
-    <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
-      Paste the SharePoint link to any file — tie-out, workbook, PDF, or folder.
-      To copy a link in SharePoint, right-click the file → <strong>Copy link</strong>.
-    </p>
-    <div class="form-group">
-      <label>SharePoint URL</label>
-      <input type="url" id="link-url" placeholder="https://moodys.sharepoint.com/sites/finance_home_finrptg/…"
-        style="width:100%" oninput="previewLinkLabel()" />
-    </div>
-    <div class="form-group">
-      <label>Display label <span style="font-weight:400;color:var(--text-faint)">(optional — auto-filled from URL)</span></label>
-      <input type="text" id="link-label" placeholder="e.g. Q1 2025 Footnote 1 Tie Out" />
-    </div>
-    <div class="form-group">
-      <label>Version / note <span style="font-weight:400;color:var(--text-faint)">(optional — e.g. Draft v2, Final as of Apr 3)</span></label>
-      <input type="text" id="link-version" placeholder="e.g. Draft v2 as of Apr 3" />
-    </div>
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="saveLink('${stepSpId}')">Save Link</button>
-    </div>`;
-  openModal();
-  document.getElementById('link-url').focus();
-}
-
-function previewLinkLabel() {
-  const url   = document.getElementById('link-url')?.value?.trim();
-  const label = document.getElementById('link-label');
-  if (label && url && !label.value) {
-    label.placeholder = labelFromUrl(url);
-  }
-}
-
-async function saveLink(stepSpId) {
-  const url     = document.getElementById('link-url')?.value?.trim();
-  const label   = document.getElementById('link-label')?.value?.trim() || labelFromUrl(url);
-  const version = document.getElementById('link-version')?.value?.trim() || '';
-  if (!url) { showToast('Please paste a SharePoint URL.', 'warning'); return; }
-  if (!url.startsWith('http')) { showToast('Please enter a valid URL starting with https://', 'warning'); return; }
-
-  closeAllModals();
-  showLoadingOverlay(true);
-  try {
-    const attId = uid();
-    const now   = new Date().toLocaleString('en-US', {
-      month:'short', day:'numeric', year:'numeric',
-      hour:'numeric', minute:'2-digit', hour12:true,
-    });
-    const fields = {
-      Title:         label,
-      AttachmentId:  attId,
-      StepId:        String(stepSpId),
-      TaskId:        String(stepsTaskSpId),
-      Label:         label,
-      FileUrl:       url,
-      LinkedBy:      currentUser.name,
-      LinkedAt:      now,
-      VersionNote:   version,
-    };
-    const created = await createListItem(LISTS.attachments, fields);
-    _attachments.push(normaliseAttachment({ ...fields, id: created?.id || attId }));
-    renderStepsPanel();
-  } catch(e) { showToast('Could not save link: ' + e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
-
-async function deleteAttachment(attSpId, btnEl) {
-  showInlineConfirm(btnEl || document.body, 'Remove this link?', async () => {
-    try {
-      _attachments = _attachments.filter(a => a._spId !== attSpId); // optimistic
-      renderStepsPanel();
-      await deleteListItem(LISTS.attachments, attSpId);
-    } catch(e) {
-      showToast('Could not remove link: ' + e.message, 'error');
-      await refreshData();
-    }
-  }, 'Remove', true);
-}
-
-function renderAttachmentPanel(stepSpId) {
-  const atts    = getAttachmentsForStep(stepSpId);
-  const step    = _steps.find(s => s._spId === stepSpId);
-  const isOwner = currentUser.isAdmin
-    || step?.ownerId === currentUser.id
-    || step?.ownerId === currentUser._spId;
-
-  const attRows = atts.map(a => {
-    const display = a.label || labelFromUrl(a.url);
-    return `<div class="att-row">
-      <span class="att-icon">${fileIcon(display)}</span>
-      <div class="att-info">
-        <a href="${escHtml(a.url)}" target="_blank" rel="noopener" class="att-name"
-           title="${escHtml(a.url)}">${escHtml(display)}</a>
-        ${a.versionNote ? `<div class="att-version">${escHtml(a.versionNote)}</div>` : ''}
-        <div class="att-meta">Linked by ${escHtml(a.linkedBy)} · ${escHtml(a.linkedAt)}</div>
-      </div>
-      ${isOwner || currentUser.isAdmin
-        ? `<button class="icon-btn" style="width:24px;height:24px;font-size:11px"
-             title="Remove link" onclick="deleteAttachment('${a._spId}',this)">✕</button>`
-        : ''}
-    </div>`;
-  }).join('');
+  const commentBtn = `<button class="btn-icon" data-action="open-task" data-id="${assignment._id}">💬 ${rcCount}</button>`;
+  const linkBtn = assignment.HasDocumentLink && assignment.DocumentLink
+    ? `<a class="btn-icon" href="${assignment.DocumentLink}" target="_blank">🔗</a>`
+    : '';
 
   return `
-    <div class="att-panel">
-      <div class="att-panel-header">
-        <span class="att-panel-title">🔗 Links${atts.length ? ` (${atts.length})` : ''}</span>
-        ${isOwner
-          ? `<button class="att-upload-btn" onclick="openAddLink('${stepSpId}')">+ Add link</button>`
-          : ''}
+    <div class="task-card ${overdueCls} ${waitingCls}" data-action="open-task" data-id="${assignment._id}" tabindex="0" role="button" aria-label="${escapeHtml(assignment.Title || 'Task')}">
+      <div class="task-card-top">
+        <div class="task-card-title">${escapeHtml(assignment.Title || '')}</div>
+        ${isOverdue ? `<span class="overdue-badge">Overdue · WD${dueWD}${dueDate ? ' · ' + formatDateShort(dueDate) : ''}</span>` : ''}
+        ${hasUrgentRC ? `<span class="urgent-rc-badge">💬 Urgent comment</span>` : ''}
       </div>
-      ${atts.length
-        ? `<div class="att-list">${attRows}</div>`
-        : `<div class="att-empty">No links yet${isOwner ? ' — click "+ Add link" to attach a SharePoint file.' : '.'}</div>`
-      }
+      <div class="task-card-meta">
+        <span class="cat-tag">${escapeHtml(assignment.Category || '')}</span>
+        <span class="due-tag ${isOverdue ? 'overdue' : ''}">Due WD${dueWD}${dueDate ? ' · ' + formatDateShort(dueDate) : ''}</span>
+      </div>
+      <div class="task-card-people">
+        ${prepBadge}
+        ${revBadge ? `<span style="font-size:10px;color:var(--slate)">Reviewer:</span>${revBadge}` : '<span style="font-size:10px;color:var(--slate)">Preparer only</span>'}
+      </div>
+      <div class="task-card-actions">
+        ${signoffBtn}
+        ${commentBtn}
+        ${linkBtn}
+      </div>
     </div>`;
 }
 
-// ── SIGN-OFF LOG ─────────────────────────────────────────────
+// ============================================================
+// ALL TASKS VIEW
+// ============================================================
+// Renders the active filter chips bar above the All Tasks table.
+// Shows one chip per non-default filter with an × to remove it, plus
+// a "Clear all" link when more than one filter is active.
+function renderActiveFilterChips() {
+  const bar = document.getElementById('active-filters-bar');
+  if (!bar) return;
 
-function nowISO()  { return new Date().toISOString(); }
-function nowLabel() {
-  return new Date().toLocaleString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric',
-    hour: 'numeric', minute: '2-digit', hour12: true,
+  const f = STATE.filters;
+  const chips = [];
+
+  if (f.status !== 'all') {
+    const labels = { unsigned: 'Unsigned only', overdue: 'Overdue', complete: 'Complete' };
+    chips.push({ label: `Status: ${labels[f.status] || f.status}`, clear: () => { f.status = 'all'; saveFilters(); } });
+  }
+  if (f.category !== 'all') {
+    chips.push({ label: `Category: ${f.category}`, clear: () => { f.category = 'all'; saveFilters(); } });
+  }
+  if (f.assignee !== 'all') {
+    const u = getUserByEmail(f.assignee);
+    const name = u ? `${u.Emoji || ''} ${u.Title || f.assignee.split('@')[0]}`.trim() : f.assignee.split('@')[0];
+    chips.push({ label: `Assignee: ${name}`, clear: () => { f.assignee = 'all'; saveFilters(); } });
+  }
+  if (f.search) {
+    chips.push({ label: `Search: "${f.search}"`, clear: () => { f.search = ''; const el = document.getElementById('filter-search'); if (el) el.value = ''; } });
+  }
+
+  if (!chips.length) {
+    bar.classList.add('hidden');
+    bar.innerHTML = '';
+    return;
+  }
+
+  bar.classList.remove('hidden');
+  bar.innerHTML = chips.map((chip, i) => `
+    <span class="filter-chip">
+      ${escapeHtml(chip.label)}
+      <button class="filter-chip-remove" data-chip="${i}" aria-label="Remove filter: ${escapeHtml(chip.label)}">×</button>
+    </span>`).join('') +
+    (chips.length > 1 ? '<button class="filter-chip-clear-all" id="btn-clear-all-filters">Clear all</button>' : '');
+
+  // Wire chip remove buttons
+  bar.querySelectorAll('.filter-chip-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      chips[Number(btn.dataset.chip)].clear();
+      syncFilterUI();
+      renderAllTasks();
+    });
+  });
+
+  // Wire clear all
+  document.getElementById('btn-clear-all-filters')?.addEventListener('click', () => {
+    f.status = 'all'; f.category = 'all'; f.assignee = 'all'; f.search = '';
+    saveFilters();
+    syncFilterUI();
+    renderAllTasks();
   });
 }
 
-async function writeSignOff(refId, refType, refName, fromStatus, toStatus) {
-  const entry = {
-    SignOffId:     uid(),
-    RefId:         String(refId),
-    RefType:       refType,
-    RefName:       refName,
-    UserId:        currentUserId(),
-    UserName:      currentUser.name,
-    FromStatus:    fromStatus,
-    ToStatus:      toStatus,
-    Timestamp:     nowLabel(),
-    TimestampISO:  nowISO(),
-    Title:         `${currentUser.name} → ${toStatus}`,
+// Syncs the toolbar UI controls to match STATE.filters after a programmatic reset.
+function syncFilterUI() {
+  // Status buttons
+  document.querySelectorAll('[data-filter="status"]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.value === STATE.filters.status);
+  });
+  // Category select
+  const catSel = document.getElementById('filter-category');
+  if (catSel) catSel.value = STATE.filters.category;
+  // Assignee select
+  const asnSel = document.getElementById('filter-assignee');
+  if (asnSel) asnSel.value = STATE.filters.assignee;
+  // Search input
+  const searchEl = document.getElementById('filter-search');
+  if (searchEl) searchEl.value = STATE.filters.search || '';
+}
+
+function renderAllTasks() {
+  const quarter = getReadQuarter();
+  const sub = document.getElementById('all-tasks-sub');
+  if (sub) sub.textContent = `${quarter || '—'} · ${STATE.assignments.length} tasks · ${getCompletionPct()}% complete`;
+
+  populateCategoryFilter();
+  populateAssigneeFilter();
+  renderSortHeaders();
+  renderActiveFilterChips();
+
+  const filtered = getFilteredAssignments();
+  const tbody = document.getElementById('all-tasks-tbody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+  // Category group headers only make sense when sorting by category
+  const groupByCategory = STATE.filters.sort === 'category';
+  let lastCategory = null;
+
+  filtered.forEach(a => {
+    if (groupByCategory && a.Category !== lastCategory) {
+      const headerRow = tbody.insertRow();
+      headerRow.className = 'category-header';
+      headerRow.insertCell().colSpan = 8;
+      headerRow.cells[0].textContent = a.Category || '—';
+      lastCategory = a.Category;
+    }
+    const row = tbody.insertRow();
+    if (isTaskOverdue(a)) row.classList.add('overdue-row');
+    row.dataset.id = a._id;
+    row.addEventListener('click', () => openTaskPanel(a._id));
+    row.innerHTML = `
+      <td style="font-weight:500;font-size:12px">${escapeHtml(a.Title || '')}</td>
+      <td><span class="cat-tag">${escapeHtml(a.Category || '')}</span></td>
+      <td>${renderBadge(a.Preparer)}</td>
+      <td>${a.Reviewer ? renderBadge(a.Reviewer) : '<span style="font-size:10px;color:var(--slate)">Preparer only</span>'}</td>
+      <td style="font-size:11px;color:var(--slate)">${a.PreparerWorkday ? 'WD' + a.PreparerWorkday : '—'}</td>
+      <td style="font-size:11px;color:var(--slate)">${a.ReviewerWorkday ? 'WD' + a.ReviewerWorkday : '—'}</td>
+      <td>${renderStatusBadge(a)}</td>
+      <td style="font-size:10px;color:var(--slate)">${getTaskRCCount(a) || '—'}</td>`;
+  });
+}
+
+// Updates sort indicator arrows on the table header row.
+function renderSortHeaders() {
+  const headers = document.querySelectorAll('#all-tasks-thead th[data-sort]');
+  headers.forEach(th => {
+    const isActive = th.dataset.sort === STATE.filters.sort;
+    th.setAttribute('aria-sort', isActive ? (STATE.filters.sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
+    // Update the visible arrow character
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) arrow.textContent = isActive ? (STATE.filters.sortDir === 'asc' ? ' ▲' : ' ▼') : ' ⇅';
+    th.classList.toggle('sort-active', isActive);
+  });
+}
+
+function renderStatusBadge(assignment) {
+  const s = assignment.Status || 'Not Started';
+
+  // Overdue takes priority over all other states.
+  if (isTaskOverdue(assignment)) {
+    return `<span class="status-badge status-overdue">⚠ Overdue</span>`;
+  }
+
+  // Reviewer step locked — preparer has not signed off yet.
+  // Surfaces as Locked in RC cards so reviewers know they cannot act yet.
+  if (assignment.SignOffMode !== 'Preparer Only' &&
+      !assignment.PreparerSignOff &&
+      !assignment.ReviewerSignOff) {
+    return `<span class="status-badge status-notstarted">Locked</span>`;
+  }
+
+  const map = {
+    'Complete':    ['status-complete',   '✓ Complete'],
+    'Prepared':    ['status-prepared',   '→ Ready for review'],
+    'In Progress': ['status-progress',   'In progress'],
+    'Not Started': ['status-notstarted', 'Not started'],
   };
-  // Add to local cache immediately so it renders inline without waiting
-  _signOffs.push(normaliseSignOff({ ...entry, id: entry.SignOffId }));
-  // Persist to SharePoint in background (non-blocking)
-  createListItem(LISTS.signOffs, entry).catch(e =>
-    console.warn('Sign-off write failed:', e)
-  );
+  const [cls, label] = map[s] || map['Not Started'];
+  return `<span class="status-badge ${cls}">${label}</span>`;
 }
 
-function getSignOffsFor(refId) {
-  return _signOffs
-    .filter(s => s.refId === String(refId))
-    .sort((a, b) => { const at=a.tsIso||a.ts||''; const bt=b.tsIso||b.ts||''; return bt>at?1:bt<at?-1:0; });
+// Status severity order used when sorting by status or overdue-first.
+const STATUS_ORDER = { 'Overdue': 0, 'In Progress': 1, 'Not Started': 2, 'Prepared': 3, 'Complete': 4 };
+
+function getEffectiveStatus(a) {
+  return isTaskOverdue(a) ? 'Overdue' : (a.Status || 'Not Started');
 }
 
-// Renders the inline sign-off trail (most recent first, max 5 shown)
-function renderSignOffTrail(refId, showAll) {
-  const entries = getSignOffsFor(refId);
-  if (!entries.length) return '';
-  const visible  = showAll ? entries : entries.slice(0, 3);
-  const overflow = entries.length - visible.length;
-  const rows = visible.map(e => {
-    const icon = {
-      'Complete':           '✅',
-      'Ready for Review 1': '🔍',
-      'Ready for Review 2': '🔎',
-      'In Progress':        '▶️',
-      'Not Started':        '⏸',
-      'Not Applicable':     '⊘',
-    }[e.toStatus] || '•';
-    return `<div class="signoff-entry">
-      <span class="signoff-icon">${icon}</span>
-      <span class="signoff-status">${escHtml(e.toStatus)}</span>
-      <span class="signoff-by">${escHtml(e.userName)}</span>
-      <span class="signoff-time">${escHtml(e.ts)}</span>
-    </div>`;
-  }).join('');
-  const more = overflow > 0
-    ? `<span class="signoff-more" onclick="toggleSignOffHistory('${refId}', this)">+ ${overflow} earlier entries</span>`
+function getFilteredAssignments() {
+  const f = STATE.filters;
+
+  const filtered = STATE.assignments.filter(a => {
+    if (f.status === 'unsigned' && a.Status === 'Complete') return false;
+    if (f.status === 'overdue' && !isTaskOverdue(a)) return false;
+    if (f.status === 'complete' && a.Status !== 'Complete') return false;
+    if (f.category !== 'all' && a.Category !== f.category) return false;
+    if (f.assignee !== 'all' && a.Preparer !== f.assignee && a.Reviewer !== f.assignee) return false;
+    if (f.search && !a.Title?.toLowerCase().includes(f.search.toLowerCase())) return false;
+    return true;
+  });
+
+  const dir = f.sortDir === 'desc' ? -1 : 1;
+
+  filtered.sort((a, b) => {
+    let cmp = 0;
+    switch (f.sort) {
+      case 'overdue':
+        // Primary: overdue severity (Overdue first, Complete last)
+        // Secondary: prep workday ascending so soonest-due overdue tasks are first
+        cmp = (STATUS_ORDER[getEffectiveStatus(a)] ?? 99) - (STATUS_ORDER[getEffectiveStatus(b)] ?? 99);
+        if (cmp === 0) cmp = (Number(a.PreparerWorkday) || 0) - (Number(b.PreparerWorkday) || 0);
+        break;
+      case 'category':
+        cmp = (a.Category || '').localeCompare(b.Category || '');
+        if (cmp === 0) cmp = (Number(a.PreparerWorkday) || 0) - (Number(b.PreparerWorkday) || 0);
+        break;
+      case 'prepWD':
+        cmp = (Number(a.PreparerWorkday) || 0) - (Number(b.PreparerWorkday) || 0);
+        break;
+      case 'revWD':
+        cmp = (Number(a.ReviewerWorkday) || 0) - (Number(b.ReviewerWorkday) || 0);
+        break;
+      case 'status':
+        cmp = (STATUS_ORDER[getEffectiveStatus(a)] ?? 99) - (STATUS_ORDER[getEffectiveStatus(b)] ?? 99);
+        break;
+      case 'task':
+        cmp = (a.Title || '').localeCompare(b.Title || '');
+        break;
+      default:
+        cmp = (a.Category || '').localeCompare(b.Category || '');
+    }
+    return cmp * dir;
+  });
+
+  return filtered;
+}
+
+function getCompletionPct() {
+  if (!STATE.assignments.length) return 0;
+  const complete = STATE.assignments.filter(a => a.Status === 'Complete').length;
+  return Math.round((complete / STATE.assignments.length) * 100);
+}
+
+function getTaskRCCount(assignment) {
+  return STATE.reviewComments.filter(rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId).length || 0;
+}
+
+function populateCategoryFilter() {
+  const sel = document.getElementById('filter-category');
+  if (!sel) return;
+  const current = sel.value;
+  const cats = [...new Set(STATE.assignments.map(a => a.Category).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="all">All categories</option>' +
+    cats.map(c => `<option value="${escapeHtml(c)}" ${c === current ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('');
+  // Attach listener only once
+  if (!sel.dataset.listenerAttached) {
+    sel.dataset.listenerAttached = 'true';
+    sel.addEventListener('change', () => {
+      STATE.filters.category = sel.value;
+      saveFilters();
+      renderAllTasks();
+    });
+  }
+}
+
+function populateAssigneeFilter() {
+  const sel = document.getElementById('filter-assignee');
+  if (!sel) return;
+  const current = sel.value;
+  const emails = [...new Set(
+    STATE.assignments.flatMap(a => [a.Preparer, a.Reviewer].filter(Boolean))
+  )];
+  sel.innerHTML = '<option value="all">All team members</option>' +
+    emails.map(e => {
+      const u = getUserByEmail(e);
+      const name = u ? `${u.Emoji || ''} ${u.Title || e.split('@')[0]}` : e.split('@')[0];
+      return `<option value="${escapeHtml(e)}" ${e === current ? 'selected' : ''}>${escapeHtml(name)}</option>`;
+    }).join('');
+  if (!sel.dataset.listenerAttached) {
+    sel.dataset.listenerAttached = 'true';
+    sel.addEventListener('change', () => {
+      STATE.filters.assignee = sel.value;
+      saveFilters();
+      renderAllTasks();
+    });
+  }
+}
+
+// ============================================================
+// TASK DETAIL SIDE PANEL
+// ============================================================
+function openTaskPanel(assignmentId) {
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
+  STATE.taskDetailId = assignmentId;
+
+  document.getElementById('panel-title').textContent = assignment.Title || '—';
+  document.getElementById('panel-meta').textContent =
+    `${assignment.Category || ''} · Due WD${assignment.PreparerWorkday} · ${resolveWorkday(getReadQuarter(), assignment.PreparerWorkday) ? formatDateShort(resolveWorkday(getReadQuarter(), assignment.PreparerWorkday)) : ''}`;
+
+  // Assignment section
+  const email = STATE.currentUser?.Email;
+  const prepBadge = renderBadge(assignment.Preparer);
+  const revBadge = assignment.Reviewer ? renderBadge(assignment.Reviewer) : '—';
+  const docLink = assignment.HasDocumentLink && assignment.DocumentLink
+    ? `<a class="panel-doc-link" href="${escapeHtml(assignment.DocumentLink)}" target="_blank">🔗 Open document</a>`
     : '';
-  return `<div class="signoff-trail" id="trail-${refId}">${rows}${more}</div>`;
-}
+  const canReassign = STATE.isAdmin && !isViewingHistory();
+  document.getElementById('panel-assignment').innerHTML = `
+    <div class="panel-meta-row"><span class="panel-meta-label">Preparer</span>${prepBadge}${canReassign ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="reassign" data-id="${assignment._id}" data-role="preparer">Reassign</button>` : ''}</div>
+    <div class="panel-meta-row"><span class="panel-meta-label">Reviewer</span>${revBadge}${canReassign && assignment.Reviewer ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="reassign" data-id="${assignment._id}" data-role="reviewer">Reassign</button>` : ''}</div>
+    <div class="panel-meta-row"><span class="panel-meta-label">Sign-off mode</span><span style="font-size:11px">${assignment.SignOffMode || '—'}</span></div>
+    ${docLink ? `<div class="panel-meta-row" style="border-bottom:none"><span class="panel-meta-label">Document</span>${docLink}</div>` : ''}`;
 
-function toggleSignOffHistory(refId, el) {
-  const trail = document.getElementById('trail-' + refId);
-  if (!trail) return;
-  trail.outerHTML = renderSignOffTrail(refId, true);
-}
+  // Status chain
+  renderPanelStatusChain(assignment, email);
 
-// ── STATUS CYCLE ──────────────────────────────────────────────
-const STATUS_ORDER = ['Not Started','In Progress','Ready for Review 1','Ready for Review 2','Complete','Not Applicable'];
-// N/A is a manual override — never in the cycle
-// Cycle is dynamic based on reviewer assignments — see getStatusCycle()
-// STATUS_CYCLE_FULL was redundant with STATUS_ORDER.filter(s=>s!=='Not Applicable') — removed
+  // Action
+  renderPanelAction(assignment, email);
 
-// Derives and syncs task status from its steps when a step status changes.
-// Called automatically after every cycleStepStatus write.
-// Rules:
-//   All steps Not Started           → task = Not Started
-//   All steps Complete or N/A       → task = Complete
-//   Any step In Progress or Review  → task = In Progress
-//   Mix of Complete + Not Started   → task = In Progress
-async function syncTaskStatusFromSteps(taskSpId) {
-  const task  = _tasks.find(t => t._spId === taskSpId);
-  if (!task) return;
-
-  const steps = getStepsForTask(taskSpId).filter(s => s.status !== 'Not Applicable');
-  if (!steps.length) return; // no active steps — don't override task status
-
-  const allComplete   = steps.every(s => s.status === 'Complete');
-  const allNotStarted = steps.every(s => s.status === 'Not Started');
-  const derived = allComplete   ? 'Complete'
-                : allNotStarted ? 'Not Started'
-                :                 'In Progress';
-
-  if (task.status === derived) return; // already correct — no write needed
-
-  const prev = task.status;
-  task.status = derived;
-  renderCurrentView();
-
-  try {
-    await updateListItem(LISTS.tasks, taskSpId, { Status: derived });
-    await writeSignOff(taskSpId, 'task', task.name, prev, derived);
-  } catch(e) {
-    console.warn('Could not sync task status from steps:', e.message);
-    task.status = prev; // revert on failure
-    renderCurrentView();
-  }
-}
-
-// Returns the applicable status cycle for a task or step object
-// Skips Review 1 / Review 2 if no reviewer is assigned
-function getStatusCycle(item) {
-  const cycle = ['Not Started','In Progress'];
-  if (item.reviewerId)  cycle.push('Ready for Review 1');
-  if (item.reviewer2Id) cycle.push('Ready for Review 2');
-  cycle.push('Complete');
-  return cycle;
-}
-
-// ── FEATURE 4 — EMAIL NOTIFICATION ──────────────────────────
-// Notifications are disabled. notifyReviewer() is a no-op stub kept
-// so callers don't need to be updated — re-enable by implementing this function.
-async function notifyReviewer(item, itemType, newStatus) { /* disabled */ }
-
-// Tracks task spIds currently being written to prevent concurrent undo/redo races.
-const _statusWriteInFlight = new Set();
-
-async function cycleStatus(spId) {
-  const task = _tasks.find(t => t._spId === spId); if(!task) return;
-  if (isQuarterLocked(task.quarter, task.year)) {
-    showToast(`${task.quarter} ${task.year} is locked — unlock it in Admin to make changes.`, 'warning'); return;
-  }
-  // Debounce: ignore rapid double-clicks while a write is in flight for this task
-  if (_statusWriteInFlight.has(spId)) return;
-
-  const prev = task.status;
-  const cycle = getStatusCycle(task);
-  const next = cycle[(cycle.indexOf(prev)+1) % cycle.length];
-  task.status = next;
-  renderCurrentView();
-  showUndoToast(`Status changed to "${next}"`, async () => {
-    if (_statusWriteInFlight.has(spId)) return; // forward write still in flight — skip
-    task.status = prev;
-    renderCurrentView();
-    _statusWriteInFlight.add(spId);
-    try {
-      await updateListItem(LISTS.tasks, spId, { Status: prev });
-      await writeSignOff(spId, 'task', task.name, next, prev);
-    } finally { _statusWriteInFlight.delete(spId); }
-  });
-  _statusWriteInFlight.add(spId);
-  try {
-    await updateListItem(LISTS.tasks, spId, { Status: next });
-    await writeSignOff(spId, 'task', task.name, prev, next);
-    if (next === 'Ready for Review 1' || next === 'Ready for Review 2') await notifyReviewer(task, 'task', next);
-  } catch(e) {
-    console.error("Status update failed:", e);
-    showToast('Status update failed — changes were not saved: ' + e.message, 'error');
-    await refreshData();
-  } finally { _statusWriteInFlight.delete(spId); }
-}
-
-// ── STEPS PANEL ──────────────────────────────────────────────
-let stepsTaskSpId      = null;
-let editingStepId      = null;
-let _stepsPanelDirty   = false; // track if any changes made
-
-function openSteps(taskSpId, taskName) {
-  stepsTaskSpId = taskSpId;
-  document.getElementById('steps-task-title').textContent = taskName;
-  renderStepsPanel();
-  document.getElementById('steps-overlay').classList.remove('hidden');
-}
-
-// Closes the steps panel. Triggers a full data refresh if any steps were modified.
-function closeStepsPanel() {
-  document.getElementById('steps-overlay').classList.add('hidden');
-  stepsTaskSpId = null;
-  if (_stepsPanelDirty) { _stepsPanelDirty = false; refreshData(); }
-  else { renderCurrentView(); } // just re-render without full reload
-}
-
-function renderStepsPanel() {
-  const steps = getStepsForTask(stepsTaskSpId);
-  const list  = document.getElementById('steps-list');
-  if (!list) return;
-  // Show/hide Add Step button based on lock state
-  const parentTask   = _tasks.find(t => t._spId === stepsTaskSpId);
-  const isLocked     = parentTask ? isQuarterLocked(parentTask.quarter, parentTask.year) : false;
-  const footerEl     = document.getElementById('steps-panel-footer');
-  if (footerEl) {
-    footerEl.innerHTML = (!isLocked || currentUser.isAdmin) && !isReadOnly()
-      ? '<button class="btn-primary small" onclick="openAddStep()">+ Add Step</button>'
-      : `<span style="font-size:11px;color:var(--text-faint)">${isReadOnly() ? '👁 Read-only access' : '🔒 Quarter locked — steps are read-only'}</span>`;
-  }
-
-  if (!steps.length) {
-    list.innerHTML = `<div class="empty-state" style="padding:24px 0">
-      <div class="empty-icon">📝</div>
-      <p>No steps yet. Add the first step below.</p>
-    </div>`;
-    return;
-  }
-
-  const activeSteps = steps.filter(s => s.status !== 'Not Applicable');
-  const total = activeSteps.length;
-  const done  = activeSteps.filter(s => s.status === 'Complete').length;
-  const pct   = total ? Math.round(done/total*100) : 0;
-
-  // ── Progress header + individual step rows ──────────────────
-  list.innerHTML = `
-    <div class="steps-progress-header">
-      <span class="steps-progress-label">${done} of ${total} complete</span>
-      <span class="steps-progress-pct">${pct}%</span>
-    </div>
-    <div class="progress-bar-wrap" style="margin-bottom:16px">
-      <div class="progress-bar-fill" style="width:${pct}%;background:var(--blue)"></div>
-    </div>
-    ${steps.map((step, idx) => {
-      const owner    = getUserById(step.ownerId);
-      const reviewer  = step.reviewerId  ? getUserById(step.reviewerId)  : null;
-      const reviewer2 = step.reviewer2Id ? getUserById(step.reviewer2Id) : null;
-      const ds      = step.dueDate ? deadlineStatus(step.dueDate, step.status, step.workdayNum, parentTask?.quarter||task?.quarter, parentTask?.year||task?.year) : 'ok';
-      const isOwner = !isReadOnly() && (currentUser.isAdmin || step.ownerId === currentUserId());
-      const isDone  = step.status === 'Complete';
-      const stepTrail    = renderSignOffTrail(step._spId, false);
-      const stepAtts     = renderAttachmentPanel(step._spId);
-      const stepComments = _comments.filter(c => c.stepId === step._spId);
-      const stepCommentCount = stepComments.length;
-      return `<div class="step-row ${isDone ? 'step-done' : ''}"
-        draggable="true"
-        ondragstart="stepDragStart(event,'${step._spId}')"
-        ondragend="stepDragEnd(event)"
-        ondragover="stepDragOver(event,'${step._spId}')"
-        ondrop="stepDrop(event,'${step._spId}')">
-        <div class="step-number step-drag-handle" title="Drag to reorder">⠿ ${idx+1}</div>
-        <div class="step-body">
-          <div class="step-name ${isDone ? 'step-name-done' : ''}">${escHtml(step.name)}</div>
-          <div class="step-meta">
-            <span class="role-label">Preparer:</span>
-            ${owner ? `<span class="owner-chip">${coloredAvatar(step.ownerId,owner.name,22)}${escHtml(owner.name)}</span>` : '<span class="text-muted">Unassigned</span>'}
-            ${reviewer
-              ? `<span class="role-label" style="margin-left:8px">Reviewer 1:</span>
-                 <span class="owner-chip reviewer-chip">${coloredAvatar(step.reviewerId,reviewer.name,22)}${escHtml(reviewer.name)}</span>`
-              : ''}
-            ${reviewer2
-              ? `<span class="role-label" style="margin-left:8px">Reviewer 2:</span>
-                 <span class="owner-chip reviewer2-chip">${coloredAvatar(step.reviewer2Id,reviewer2.name,22)}${escHtml(reviewer2.name)}</span>`
-              : ''}
-            ${step.dueDate || step.workdayNum
-              ? `<span class="deadline-cell">
-                   <span class="deadline-dot ${dotClass(ds)}"></span>
-                   ${formatWorkdayDate(step.workdayNum, step.dueDate, parentTask?.quarter, parentTask?.year)}
-                 </span>`
-              : ''}
-            ${(() => {
-              const noteText = step.notes || step.note;
-              if (!noteText) return '';
-              if (noteText.startsWith('[↩')) {
-                const label   = noteText.split(']')[0] + ']';
-                const content = noteText.split('] ').slice(1).join('] ');
-                return `<div class="step-notes-display">
-                  <span class="note-carryforward-label">${escHtml(label)}</span>
-                  ${escHtml(content)}
-                </div>`;
-              }
-              return `<div class="step-notes-display">${escHtml(noteText)}</div>`;
-            })()}
+  // Review comments preview
+  const rcs = STATE.reviewComments.filter(rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId);
+  const rcPreview = document.getElementById('panel-rc-preview');
+  if (rcPreview) {
+    if (rcs.length) {
+      rcPreview.innerHTML = rcs.slice(0,2).map(rc => `
+        <div class="rc-card ${rc.Priority === 'Urgent' ? 'urgent' : ''}" style="cursor:default">
+          <div class="rc-meta">
+            ${renderBadge(rc.CreatedBy)}
+            <span class="rc-meta-text">${formatDateShort(rc.CreatedDate) || '—'}</span>
+            <span class="${rc.Priority === 'Urgent' ? 'badge-urgent' : 'badge-normal'}">${rc.Priority}</span>
           </div>
-          ${stepTrail}
-          ${stepAtts}
-          <div class="step-comments-section">
-            <button class="step-comment-toggle" onclick="toggleStepComments('${step._spId}')">
-              💬 ${stepCommentCount > 0 ? `${stepCommentCount} comment${stepCommentCount>1?'s':''}` : 'Add comment'}
-            </button>
-            <div id="step-comments-${step._spId}" class="step-comments-panel hidden">
-              ${stepComments.map(c => {
-                const a = getUserById(c.authorId);
-                return `<div class="comment-item">
-                  <span class="comment-author">${escHtml(a ? a.name : 'Former team member')}</span>
-                  <span class="comment-time">${escHtml(c.time)}</span>
-                  <div class="comment-text">${escHtml(c.text)}</div>
-                </div>`;
-              }).join('')}
-              <div class="step-comment-input">
-                <input type="text"
-                  id="step-comment-input-${step._spId}"
-                  placeholder="Add a comment…"
-                  style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px"
-                  onkeydown="if(event.key==='Enter'&&!event.shiftKey)addStepComment('${step._spId}')" />
-                <button class="btn-primary" style="margin-top:6px;font-size:12px;padding:5px 12px" onclick="addStepComment('${step._spId}')">Post</button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="step-actions">
-          ${(() => {
-            const blocker    = getBlockingPredecessor(step);
-            const isGated    = !!blocker && !isDone;
-            const gateLabel  = isGated ? `🔒 Needs: ${escHtml(blocker.name)}` : '';
-            const badgeTitle = isGated ? `Gated — "${blocker.name}" must be Complete first` : '';
-            if (!isOwner) {
-              return `<span class="status-badge ${statusBadgeClass(step.status)}" style="font-size:11px">${escHtml(step.status)}</span>`;
-            }
-            return `
-              <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
-                <span class="status-badge ${statusBadgeClass(step.status)} ${isGated?'step-gated':''}"
-                  style="cursor:pointer;font-size:11px" title="${badgeTitle}"
-                  onclick="event.stopPropagation();openQuickStatus('${step._spId}','step',this)">
-                  ${isGated ? '🔒 ' : ''}${escHtml(step.status)}
-                </span>
-                ${isGated ? `<span class="gate-label">${gateLabel}</span>` : ''}
-              </div>
-              <button class="icon-btn" onclick="openEditStep('${step._spId}')">✏️</button>
-              ${isGated && currentUser.isAdmin ? `<button class="icon-btn" title="Admin: force unlock (bypasses gate)" onclick="forceUnlockStep('${step._spId}')">🔓</button>` : ''}`;
-          })()}
-          ${step.reassignRequested && currentUser.isAdmin
-            ? `<button class="icon-btn reassign-flag-btn" title="Reassignment requested${step.reassignNote?' — '+step.reassignNote:''}" onclick="clearReassignFlag('${step._spId}','step')">🔄</button>`
-            : (!currentUser.isAdmin && (step.ownerId===currentUser.id||step.ownerId===currentUser._spId||step.reviewerId===currentUser.id||step.reviewer2Id===currentUser.id))
-              ? `<button class="icon-btn" title="Request reassignment" onclick="openReassignRequest('${step._spId}','step','${escHtml(step.name)}')">🔄</button>`
-              : ''}
-          ${currentUser.isAdmin ? `<button class="icon-btn" onclick="deleteStep('${step._spId}',this)">🗑</button>` : ''}
-        </div>
-      </div>`;
-    }).join('')}`;
-}
-
-// ── STEP GATE HELPER ─────────────────────────────────────────
-// Returns the predecessor step (same task, order = this.order - 1) if
-// this step has requiresPrev = true and that predecessor is not Complete.
-// Returns null if the gate is clear or doesn't apply.
-function getBlockingPredecessor(step) {
-  if (!step.requiresPrev) return null;
-  const siblings = getStepsForTask(step.taskId)
-    .sort((a,b) => (a.order||0) - (b.order||0));
-  const idx = siblings.findIndex(s => s._spId === step._spId);
-  if (idx <= 0) return null;                        // first step — no predecessor
-  const prev = siblings[idx - 1];
-  if (prev.status === 'Complete') return null;       // gate is clear
-  return prev;                                       // gate is blocked
-}
-
-async function cycleStepStatus(stepSpId) {
-  const step = _steps.find(s => s._spId === stepSpId); if(!step) return;
-  const prev = step.status;
-  const cycle = getStatusCycle(step);
-  const next = cycle[(cycle.indexOf(prev)+1) % cycle.length];
-
-  try {
-    // Only check gate when advancing forward (not cycling back to Not Started)
-    const movingForward = STATUS_ORDER.indexOf(next) > STATUS_ORDER.indexOf(prev);
-    if (movingForward) {
-      const blocker = getBlockingPredecessor(step);
-      if (blocker) {
-        await new Promise((resolve, reject) => {
-          showConfirm(
-            `"${blocker.name}" (step ${blocker.order}) is not yet complete. This step requires the previous step to be finished first. Proceed anyway?`,
-            resolve, reject, 'Proceed', true
-          );
-        }).catch(() => { throw new Error('cancelled'); });
-      }
-    }
-
-    step.status = next;
-    _stepsPanelDirty = true;
-    renderStepsPanel();
-    showUndoToast(`Step status changed to "${next}"`, async () => {
-      step.status = prev;
-      renderStepsPanel();
-      await updateListItem(LISTS.steps, stepSpId, { Status: prev });
-      await writeSignOff(stepSpId, 'step', step.name, next, prev);
-      if (step.taskId) await syncTaskStatusFromSteps(step.taskId);
-    });
-    await updateListItem(LISTS.steps, stepSpId, { Status: next });
-    await writeSignOff(stepSpId, 'step', step.name, prev, next);
-    if (next === 'Ready for Review 1' || next === 'Ready for Review 2') await notifyReviewer(step, 'step', next);
-    // Auto-sync parent task status based on all step statuses
-    if (step.taskId) await syncTaskStatusFromSteps(step.taskId);
-  } catch(e) {
-    if(e.message==='cancelled'){step.status=prev;_stepsPanelDirty=false;renderStepsPanel();return;}
-    console.error("Step status update failed:", e); await refreshData();
-  }
-}
-
-// Admin force-unlock: mark the blocking predecessor Complete, then advance this step
-async function forceUnlockStep(stepSpId) {
-  const step    = _steps.find(s => s._spId === stepSpId); if(!step) return;
-  const blocker = getBlockingPredecessor(step);
-  if (!blocker) { cycleStepStatus(stepSpId); return; }
-  showConfirm(
-    `Force unlock? This will mark "${blocker.name}" as Complete (bypassing the gate) and then advance "${step.name}". A sign-off entry will be created for both changes.`,
-    async () => {
-      const blockerPrev = blocker.status;
-      blocker.status = 'Complete';
-      await writeSignOff(blocker._spId, 'step', blocker.name, blockerPrev, 'Complete');
-      await updateListItem(LISTS.steps, blocker._spId, { Status: 'Complete' });
-      await cycleStepStatus(stepSpId);
-      if (step.taskId) await syncTaskStatusFromSteps(step.taskId);
-    },
-    null, 'Force Unlock', true
-  );
-}
-
-function openAddStep() {
-  editingStepId = null;
-  showStepModal(null);
-}
-
-function openEditStep(stepSpId) {
-  editingStepId = stepSpId;
-  showStepModal(_steps.find(s => s._spId === stepSpId));
-}
-
-function showStepModal(step) {
-  const steps     = getStepsForTask(stepsTaskSpId);
-  const _uid = u => u._spId||u.id;
-  const ownerOpts = getAssignableUsers().map(u =>
-    `<option value="${_uid(u)}" ${step?.ownerId===_uid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  const srOpts  = `<option value="">— None —</option>` + getAssignableUsers().map(u=>`<option value="${_uid(u)}" ${step?.reviewerId===_uid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  const sr2Opts = `<option value="">— None —</option>` + getAssignableUsers().map(u=>`<option value="${_uid(u)}" ${step?.reviewer2Id===_uid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  document.getElementById('modal-title').textContent = step ? 'Edit Step' : 'Add Step';
-  document.getElementById('modal-body').innerHTML = `
-    <div class="form-group"><label>Step Name</label>
-      <input type="text" id="sf-name" value="${escHtml(step?.name||'')}" placeholder="e.g. Rollforward" /></div>
-    <div class="form-group"><label>Order</label>
-      <input type="number" id="sf-order" value="${step?.order ?? steps.length+1}" min="1" /></div>
-    <div class="form-group"><label>Preparer (Owner)</label>
-      <select id="sf-owner"><option value="">— Unassigned —</option>${ownerOpts}</select></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="form-group"><label>Reviewer 1 <span style="font-weight:400;color:var(--text-faint)">(optional)</span></label>
-        <select id="sf-reviewer">${srOpts}</select></div>
-      <div class="form-group"><label>Reviewer 2 <span style="font-weight:400;color:var(--text-faint)">(optional)</span></label>
-        <select id="sf-reviewer2">${sr2Opts}</select></div>
-    </div>
-    <div class="form-group"><label>Due Date</label>
-      <div style="display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:end">
-        <div>
-          <label style="font-size:11px;color:var(--text-faint);display:block;margin-bottom:4px">Workday #</label>
-          <input type="number" id="sf-workday"
-            value="${step?.workdayNum||''}" min="1" max="60" placeholder="WD #"
-            style="width:100%;padding:10px 8px;border:1.5px solid var(--border);border-radius:var(--radius);font-family:inherit;font-size:14px"
-            oninput="(()=>{const pt=_tasks.find(t=>t._spId===stepsTaskSpId);if(pt)resolveWdToDate('sf-workday','sf-due',pt.quarter,pt.year)})()" />
-        </div>
-        <input type="date" id="sf-due" value="${step?.dueDate||''}" />
-      </div>
-    </div>
-    <div class="form-group"><label>Status</label>
-      <select id="sf-status">${STATUS_ORDER.map(s=>`<option ${step?.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
-    <div class="form-group"><label>Notes <span style="font-weight:400;color:var(--text-faint)">(optional — carries forward to next quarter if selected during rollforward)</span></label>
-      <textarea id="sf-notes" rows="3"
-        placeholder="e.g. Use tab 'FN1 RF' in the Master SS. Check rate changed to 4.8% per Q3 auditor note."
-        style="width:100%;resize:vertical">${escHtml(step?.notes||step?.note||'')}</textarea></div>
-    <div class="form-group"><label>Applicability</label>
-      <select id="sf-applicability">
-        <option value="All Quarters" ${(!step?.applicability||step?.applicability==='All Quarters')?'selected':''}>All Quarters</option>
-        <option value="10-K only (Q4)" ${step?.applicability==='10-K only (Q4)'?'selected':''}>10-K only (Q4)</option>
-        <option value="10-Q only (Q1, Q2, Q3)" ${step?.applicability==='10-Q only (Q1, Q2, Q3)'?'selected':''}>10-Q only (Q1, Q2, Q3)</option>
-      </select></div>
-    <div class="form-group">
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
-        <input type="checkbox" id="sf-requires-prev" ${step?.requiresPrev?'checked':''} style="width:16px;height:16px;cursor:pointer" />
-        <span>Requires previous step to be Complete before this step can advance</span>
-      </label>
-      <p style="font-size:11px;color:var(--text-faint);margin-top:4px;margin-left:26px">
-        When checked, a warning appears if someone tries to advance this step before
-        the one above it is finished. Admins can force-override.
-      </p>
-    </div>
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="saveStep()">Save Step</button>
-    </div>`;
-  openModal();
-}
-
-async function saveStep() {
-  const name          = document.getElementById('sf-name').value.trim();
-  const order         = parseInt(document.getElementById('sf-order').value) || 1;
-  const ownerId       = document.getElementById('sf-owner').value;
-  const dueDate       = document.getElementById('sf-due').value;
-  const status        = document.getElementById('sf-status').value;
-  const notes         = document.getElementById('sf-notes')?.value.trim() || '';
-  const applicability = document.getElementById('sf-applicability').value;
-  const workdayNum    = parseInt(document.getElementById('sf-workday')?.value) || null;
-  const requiresPrev  = document.getElementById('sf-requires-prev')?.checked || false;
-  const reviewerId   = document.getElementById('sf-reviewer')?.value  || '';
-  const reviewer2Id  = document.getElementById('sf-reviewer2')?.value || '';
-  if (!name) { showToast('Please enter a step name.', 'warning'); return; }
-  // If workday set and a calendar exists for this task's quarter, resolve date
-  let resolvedDue = dueDate;
-  if (workdayNum && stepsTaskSpId) {
-    const parentTask = _tasks.find(t => t._spId === stepsTaskSpId);
-    if (parentTask) {
-      const wd = workdayToDate(workdayNum, parentTask.quarter, parentTask.year);
-      if (wd) resolvedDue = wd;
-    }
-  }
-  closeAllModals();
-  showLoadingOverlay(true);
-  try {
-    const fields = {
-      Title: name, StepOrder: String(order), OwnerId: ownerId,
-      ReviewerId: reviewerId, Reviewer2Id: reviewer2Id,
-      DueDate: resolvedDue || null, Status: status,
-      Note: notes, Notes: notes,
-      TaskId: stepsTaskSpId, Applicability: applicability,
-      WorkdayNum: workdayNum ? String(workdayNum) : '',
-      RequiresPrev: requiresPrev ? 'Yes' : 'No',
-    };
-    if (editingStepId) {
-      const oldStep = _steps.find(s=>s._spId===editingStepId);
-      if (oldStep && oldStep.dueDate !== (resolvedDue||null)) {
-        await recordDueDateChange(editingStepId, 'step', name, oldStep.dueDate, resolvedDue||null);
-      }
-      await updateListItem(LISTS.steps, editingStepId, fields);
-      const idx = _steps.findIndex(s => s._spId === editingStepId);
-      if (idx >= 0) Object.assign(_steps[idx], { name, order, ownerId, reviewerId, reviewer2Id, dueDate: resolvedDue, status, note: notes, notes, applicability, workdayNum, requiresPrev });
+          <div class="rc-comment-text">"${escapeHtml((rc.CommentText || '').substring(0, 120))}${rc.CommentText?.length > 120 ? '...' : ''}"</div>
+        </div>`).join('');
     } else {
-      fields.StepId = uid();
-      const created = await createListItem(LISTS.steps, fields);
-      _steps.push(normaliseStep({ ...fields, id: created?.id || fields.StepId }));
+      rcPreview.innerHTML = '<p style="font-size:11px;color:var(--slate)">No review comments on this task.</p>';
     }
-    renderStepsPanel();
-  } catch(e) { showToast('Could not save step: '+e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
+  }
 
-async function deleteStep(stepSpId, btnEl) {
-  showInlineConfirm(btnEl || document.body, 'Delete this step?', async () => {
-    _steps = _steps.filter(s => s._spId !== stepSpId); // optimistic
-    renderStepsPanel();
-    try {
-      await deleteListItem(LISTS.steps, stepSpId);
-      _stepsPanelDirty = true;
-    } catch(e) {
-      showToast('Could not delete step: '+e.message, 'error');
-      await refreshData(); renderStepsPanel();
+  // Audit trail (simplified — from assignments data)
+  const auditEl = document.getElementById('panel-audit');
+  if (auditEl) {
+    const entries = [];
+    if (assignment.PreparerSignOff) {
+      entries.push({ action: `${renderBadge(assignment.PreparerSignOffBy || assignment.Preparer)} signed off as preparer`, date: assignment.PreparerSignOffDate });
     }
-  }, 'Delete', true);
-}
-
-// ── STEP TEMPLATES — manage default steps per task template ───
-let editingStepTemplateId  = null;
-let stepsTemplateId        = null;
-
-function openStepTemplates(templateSpId, templateName) {
-  stepsTemplateId   = templateSpId;
-  document.getElementById('modal-title').textContent = `Steps for "${templateName}"`;
-  renderStepTemplatesModal();
-  openModal();
-}
-
-function renderStepTemplatesModal() {
-  const tpSteps = getStepTemplatesForTemplate(stepsTemplateId);
-  const ownerOpts = () => getAssignableUsers().map(u =>
-    `<option value="${u._spId||u.id}">${escHtml(u.name)}</option>`).join('');
-
-  document.getElementById('modal-body').innerHTML = `
-    <div id="step-tpl-list">
-      ${tpSteps.length === 0
-        ? '<p class="text-muted" style="font-size:13px;margin-bottom:12px">No default steps yet.</p>'
-        : tpSteps.map((st,i) => {
-            const owner = getUserById(st.defaultOwnerId);
-            return `<div class="step-tpl-row">
-              <span class="step-number">${i+1}</span>
-              <div class="step-body">
-                <div class="step-name">
-                  ${escHtml(st.name)}
-                  ${st.requiresPrev
-                    ? '<span title="Requires previous step" style="font-size:10px;background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 5px">🔒 gated</span>'
-                    : ''}
-                </div>
-                <div class="step-meta">
-                  ${owner?`<span class="owner-chip"><span class="mini-avatar">${initials(owner.name)}</span>${escHtml(owner.name)}</span>`:''}
-                  <span class="text-muted">${st.dueDaysFromQtrEnd} days after qtr end</span>
-                </div>
-              </div>
-              <div class="step-actions">
-                <button class="icon-btn" onclick="openEditStepTemplate('${st._spId}')">✏️</button>
-                <button class="icon-btn" onclick="deleteStepTemplate('${st._spId}',this)">🗑</button>
-              </div>
-            </div>`;
-          }).join('')
-      }
-    </div>
-    <div style="border-top:1px solid var(--bg-secondary);margin-top:12px;padding-top:14px">
-      <p style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Add default step</p>
-      <div class="form-group"><label>Step Name</label>
-        <input type="text" id="stf-name" placeholder="e.g. Rollforward" /></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div class="form-group"><label>Order</label>
-          <input type="number" id="stf-order" value="${tpSteps.length+1}" min="1" /></div>
-        <div class="form-group"><label>Days After Qtr End</label>
-          <input type="number" id="stf-days" value="5" min="0" max="120" /></div>
-      </div>
-      <div class="form-group"><label>Default Owner</label>
-        <select id="stf-owner"><option value="">— Unassigned —</option>${ownerOpts()}</select></div>
-      <div class="form-group">
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
-          <input type="checkbox" id="stf-requires-prev" style="width:16px;height:16px;cursor:pointer" />
-          <span>Requires previous step to be Complete before advancing</span>
-        </label>
-      </div>
-      <div class="modal-footer">
-        <button class="btn-secondary" onclick="closeAllModals()">Done</button>
-        <button class="btn-primary" onclick="saveStepTemplate()">Add Step</button>
-      </div>
-    </div>`;
-}
-
-function openEditStepTemplate(spId) {
-  const st = _stepTemplates.find(s => s._spId === spId); if (!st) return;
-  editingStepTemplateId = spId;
-  const nameEl  = document.getElementById('stf-name');
-  const orderEl = document.getElementById('stf-order');
-  const daysEl  = document.getElementById('stf-days');
-  const ownerEl = document.getElementById('stf-owner');
-  const reqEl   = document.getElementById('stf-requires-prev');
-  if (nameEl)  nameEl.value  = st.name;
-  if (orderEl) orderEl.value = st.order;
-  if (daysEl)  daysEl.value  = st.dueDaysFromQtrEnd;
-  if (ownerEl) ownerEl.value = st.defaultOwnerId || '';
-  if (reqEl)   reqEl.checked = st.requiresPrev || false;
-  const btn = document.querySelector('#modal-body .btn-primary[onclick="saveStepTemplate()"]');
-  if (btn) btn.textContent = 'Save Changes';
-  nameEl?.focus();
-}
-
-async function saveStepTemplate() {
-  const name       = document.getElementById('stf-name').value.trim();
-  const order      = parseInt(document.getElementById('stf-order').value) || 1;
-  const days       = parseInt(document.getElementById('stf-days').value) || 0;
-  const ownerId    = document.getElementById('stf-owner').value;
-  const reqPrev    = document.getElementById('stf-requires-prev')?.checked || false;
-  if (!name) { showToast('Please enter a step name.', 'warning'); return; }
-  const fields = {
-    Title: name, StepOrder: String(order),
-    DueDaysFromQtrEnd: String(days),
-    DefaultOwnerId: ownerId,
-    RequiresPrev: reqPrev ? 'Yes' : 'No',
-  };
-  showLoadingOverlay(true);
-  try {
-    if (editingStepTemplateId) {
-      await updateListItem(LISTS.stepTemplates, editingStepTemplateId, fields);
-      const idx = _stepTemplates.findIndex(s => s._spId === editingStepTemplateId);
-      if (idx >= 0) Object.assign(_stepTemplates[idx], { name, order, dueDaysFromQtrEnd: days, defaultOwnerId: ownerId, requiresPrev: reqPrev });
-      editingStepTemplateId = null;
+    if (assignment.ReviewerSignOff) {
+      entries.push({ action: `${renderBadge(assignment.ReviewerSignOffBy || assignment.Reviewer)} signed off as reviewer`, date: assignment.ReviewerSignOffDate });
+    }
+    if (!entries.length) {
+      auditEl.innerHTML = '<p style="font-size:11px;color:var(--slate)">No activity yet.</p>';
     } else {
-      const id = uid();
-      const created = await createListItem(LISTS.stepTemplates, { ...fields, StepTemplateId: id, TemplateId: stepsTemplateId });
-      _stepTemplates.push(normaliseStepTemplate({ ...fields, StepTemplateId: id, TemplateId: stepsTemplateId, id: created?.id || id }));
-    }
-    renderStepTemplatesModal();
-  } catch(e) { showToast('Could not save step template: '+e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
-
-async function deleteStepTemplate(spId, btnEl) {
-  showInlineConfirm(btnEl || document.body, 'Delete this default step?', async () => {
-    showLoadingOverlay(true, 'Deleting…');
-    try {
-      await deleteListItem(LISTS.stepTemplates, spId);
-      _stepTemplates = _stepTemplates.filter(s => s._spId !== spId);
-      renderStepTemplatesModal();
-      showToast('Default step deleted.', 'success');
-    } catch(e) { showToast('Could not delete step template: '+e.message, 'error'); }
-    finally { showLoadingOverlay(false); }
-  }, 'Delete', true);
-}
-
-// ── CALENDAR ─────────────────────────────────────────────────
-function changeCalMonth(dir) {
-  calMonth+=dir;
-  if(calMonth>11){calMonth=0;calYear++;}
-  if(calMonth<0) {calMonth=11;calYear--;}
-  renderCalendar();
-}
-function jumpCalToToday() {
-  const now = new Date();
-  calYear  = now.getFullYear();
-  calMonth = now.getMonth();
-  renderCalendar();
-}
-// Smart click handler for calendar task chips.
-// Tasks with steps → open steps panel.
-// Tasks without steps → open quick status picker so user can advance status.
-function calendarTaskClick(taskSpId, taskName) {
-  const steps = getStepsForTask(taskSpId);
-  if (steps.length > 0) {
-    openSteps(taskSpId, taskName);
-  } else {
-    openQuickStatus(taskSpId, 'task');
-  }
-}
-
-function renderCalendar() {
-  const grid=document.getElementById('calendar-grid'); if(!grid) return;
-  const MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
-  const lbl=document.getElementById('cal-month-label'); if(lbl) lbl.textContent=`${MONTHS[calMonth]} ${calYear}`;
-  const firstDay=new Date(calYear,calMonth,1).getDay();
-  const daysInMonth=new Date(calYear,calMonth+1,0).getDate();
-  const today=new Date(); today.setHours(0,0,0,0);
-  let html=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="cal-header">${d}</div>`).join('');
-  for(let i=0;i<firstDay;i++){
-    const pd=new Date(calYear,calMonth,-firstDay+i+1);
-    html+=`<div class="cal-day other-month"><div class="cal-day-num">${pd.getDate()}</div></div>`;
-  }
-  for(let d=1;d<=daysInMonth;d++){
-    const thisDate=new Date(calYear,calMonth,d); thisDate.setHours(0,0,0,0);
-    const dateStr=thisDate.toISOString().slice(0,10);
-    const isToday=thisDate.getTime()===today.getTime();
-    const dayTasks=getActiveTasks().filter(t=>{
-      const effectiveDate = t.dueDate || (t.workdayNum ? workdayToDate(t.workdayNum, t.quarter, t.year) : null);
-      return effectiveDate === dateStr;
-    });
-    let chips=dayTasks.slice(0,3).map(t=>
-      `<span class="cal-task-chip" style="background:${calChipBg(t.type)};color:${calChipFg(t.type)}"
-        onclick="calendarTaskClick('${t._spId}','${escHtml(t.name)}')"
-        title="${getStepsForTask(t._spId).length > 0 ? 'Click to view steps' : 'Click to update status'} — ${escHtml(t.name)}">${escHtml(t.name)}</span>`).join('');
-    if(dayTasks.length>3) chips+=`<span style="font-size:10px;color:var(--text-faint)">+${dayTasks.length-3} more</span>`;
-    html+=`<div class="cal-day${isToday?' today':''}"><div class="cal-day-num">${d}</div>${chips}</div>`;
-  }
-  grid.innerHTML=html;
-}
-
-// ── TEAM ──────────────────────────────────────────────────────
-
-// ── FEATURE 3 — STEP COMMENTS ────────────────────────────────
-function toggleStepComments(stepSpId) {
-  const panel = document.getElementById(`step-comments-${stepSpId}`);
-  if (panel) panel.classList.toggle('hidden');
-}
-
-async function addStepComment(stepSpId) {
-  if (isReadOnly()) { showToast('Read-only access — you cannot post comments.', 'warning'); return; }
-  const input = document.getElementById(`step-comment-input-${stepSpId}`);
-  if (!input) return;
-  const text = input.value.trim();
-  if (!text) return;
-  if (text.length > COMMENT_MAX_LENGTH) {
-    showToast('Comment is too long — please keep it under 2,000 characters.', 'warning'); return;
-  }
-  const step  = _steps.find(s => s._spId === stepSpId); if (!step) return;
-  const task  = _tasks.find(t => t._spId === step.taskId);
-  const now   = new Date();
-  const label = now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) + ', ' +
-                now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-  try {
-    const fields = {
-      Title:        `${currentUser.name} → step comment`,
-      CommentId:    uid(),
-      TaskId:       task?._spId || '',
-      StepId:       stepSpId,
-      AuthorId:     currentUserId(),
-      CommentText:  text,
-      CommentTime:  label,
-      Timestamp:    String(Date.now()),
-      TimestampISO: new Date().toISOString(),
-      IsResolved:   'No',
-    };
-    const created = await createListItem(LISTS.comments, fields);
-    _comments.push(normaliseComment({ ...fields, id: created?.id || fields.CommentId }));
-    input.value = '';
-    renderStepsPanel();
-  } catch(e) { showToast('Could not post comment: ' + e.message, 'error'); }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── REASSIGN REQUEST ─────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function openReassignRequest(spId, type, itemName) {
-  document.getElementById('modal-title').textContent = '🔄 Request Reassignment';
-  document.getElementById('modal-body').innerHTML = `
-    <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
-      This will notify all admins that you are requesting reassignment of:<br>
-      <b style="color:var(--navy)">${escHtml(itemName)}</b>
-    </p>
-    <div class="form-group">
-      <label>Reason <span style="font-weight:400;color:var(--text-faint)">(optional — helps the admin understand the situation)</span></label>
-      <textarea id="reassign-note-input" rows="3" placeholder="e.g. Out sick this week, travelling for client meetings, overloaded with footnotes…" style="width:100%;resize:vertical"></textarea>
-    </div>
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="submitReassignRequest('${spId}','${type}','${escHtml(itemName)}')">Send Request to Admin</button>
-    </div>`;
-  openModal();
-}
-
-async function submitReassignRequest(spId, type, itemName) {
-  const note    = document.getElementById('reassign-note-input')?.value.trim() || '';
-  const list    = type==='task' ? LISTS.tasks : LISTS.steps;
-  const arr     = type==='task' ? _tasks : _steps;
-  const item    = arr.find(i=>i._spId===spId); if(!item) return;
-  closeAllModals();
-  showLoadingOverlay(true);
-  try {
-    // Set flag on the item
-    await updateListItem(list, spId, { ReassignRequested: 'Yes', ReassignNote: note });
-    item.reassignRequested = true; item.reassignNote = note;
-
-    // Notifications disabled — reassign flag is set but no email is sent
-    renderCurrentView();
-    if (document.getElementById('steps-overlay') && !document.getElementById('steps-overlay').classList.contains('hidden')) renderStepsPanel();
-    showToast('Reassignment request sent to all admins.', 'success');
-  } catch(e) { showToast('Could not send reassignment request: '+e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
-
-async function clearReassignFlag(spId, type) {
-  const list = type==='task' ? LISTS.tasks : LISTS.steps;
-  const arr  = type==='task' ? _tasks : _steps;
-  const item = arr.find(i=>i._spId===spId); if(!item) return;
-  try {
-    await updateListItem(list, spId, { ReassignRequested: 'No', ReassignNote: '' });
-    item.reassignRequested = false; item.reassignNote = '';
-    renderCurrentView();
-    if (document.getElementById('steps-overlay') && !document.getElementById('steps-overlay').classList.contains('hidden')) renderStepsPanel();
-  } catch(e) { showToast('Could not clear flag: '+e.message, 'error'); }
-}
-
-function toggleTeamYearVisibility() {
-  const q   = document.getElementById('team-quarter')?.value;
-  const yEl = document.getElementById('team-year');
-  if (yEl) yEl.style.display = q ? '' : 'none';
-}
-function toggleMyTasksYearVisibility() {
-  const q   = document.getElementById('mytasks-quarter')?.value;
-  const yEl = document.getElementById('mytasks-year');
-  if (yEl) yEl.style.display = (q && q !== 'all') ? '' : 'none';
-}
-function renderTeam() {
-  const q   = document.getElementById('team-quarter')?.value;
-  const yr  = parseInt(document.getElementById('team-year')?.value || 0);
-  const grid=document.getElementById('team-grid'); if(!grid) return;
-  grid.innerHTML=getUsers().filter(u => !u.isReadOnly).map(user=>{
-    const userId=user._spId||user.id;
-    let allTasks = getActiveTasks().filter(t=>
-      t.ownerId===userId || t.reviewerId===userId || t.reviewer2Id===userId
-    );
-    if (q) allTasks = allTasks.filter(t => t.quarter===q && (!yr || t.year===yr));
-    const activeMyTasks=allTasks.filter(t=>t.status!=='Not Applicable');
-    const complete=activeMyTasks.filter(t=>t.status==='Complete').length;
-    const overdue=activeMyTasks.filter(t=>deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
-    const inReview=activeMyTasks.filter(t=>t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
-    const pct=activeMyTasks.length?Math.round(complete/activeMyTasks.length*100):0;
-    const taskList=allTasks.slice(0,4).map(t=>{
-      const ds=deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year);
-      return `<div class="team-task-item" onclick="openSteps('${t._spId}','${escHtml(t.name)}')" style="cursor:pointer" title="View steps — ${escHtml(t.name)}">
-        <span class="team-task-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(t.name)}</span>
-        <span class="deadline-dot ${dotClass(ds)}" style="width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0"></span>
-      </div>`;
-    }).join('')||'<div class="text-muted" style="font-size:12px;padding:6px 0">No tasks assigned</div>';
-    return `<div class="team-card">
-      <div class="team-card-header">
-        <div class="team-avatar">${initials(user.name)}</div>
-        <div><div class="team-name">${escHtml(user.name)}</div><div class="team-role">${escHtml(user.role)}</div></div>
-      </div>
-      <div class="team-stats">
-        <div class="team-stat"><div class="team-stat-val">${activeMyTasks.length}</div><div class="team-stat-label">Total</div></div>
-        <div class="team-stat"><div class="team-stat-val">${complete}</div><div class="team-stat-label">Done</div></div>
-        <div class="team-stat"><div class="team-stat-val" style="color:var(--purple-600)">${inReview}</div><div class="team-stat-label">For Review</div></div>
-        <div class="team-stat"><div class="team-stat-val" style="color:var(--deadline-overdue)">${overdue}</div><div class="team-stat-label">Overdue</div></div>
-      </div>
-      <div class="progress-bar-wrap" style="margin-bottom:14px">
-        <div class="progress-bar-fill" style="width:${pct}%"></div>
-      </div>
-      <div class="team-task-list">${taskList}</div>
-    </div>`;
-  }).join('');
-}
-
-// ── FEATURE 2 — QUARTER DATES ADMIN ──────────────────────────
-function renderQuarterDatesPanel() {
-  const el = document.getElementById('admin-quarter-dates-list');
-  if (!el) return;
-  if (!_quarterDates.length) {
-    el.innerHTML = `<p class="text-muted" style="font-size:13px;padding:12px 22px">
-      No key dates set yet. Click + Add Quarter to add SEC filing dates,
-      earnings call times, and other key deadlines.
-    </p>`;
-    return;
-  }
-  el.innerHTML = _quarterDates
-    .sort((a,b) => { const ak=`${b.year}${b.quarter}`,bk=`${a.year}${a.quarter}`; return ak>bk?1:ak<bk?-1:0; })
-    .map(qd => `<div class="admin-user-row">
-      <div class="admin-user-info">
-        <div class="user-name-sm">${escHtml(qd.quarter)} ${qd.year}</div>
-        <div class="user-role-sm">
-          ${qd.secFilingDate    ? `SEC: ${formatDate(qd.secFilingDate)} · ` : ''}
-          ${qd.earningsDate     ? `Earnings: ${formatDate(qd.earningsDate)}${qd.earningsTime?' '+qd.earningsTime:''} · ` : ''}
-
-        </div>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="icon-btn" onclick="openEditQuarterDate('${qd._spId}')">✏️</button>
-        <button class="icon-btn" onclick="deleteQuarterDate('${qd._spId}',this)">🗑</button>
-      </div>
-    </div>`).join('');
-}
-
-function openAddQuarterDate()        { showQuarterDateModal(null); }
-function openEditQuarterDate(spId)   { showQuarterDateModal(_quarterDates.find(q=>q._spId===spId)); }
-
-function showQuarterDateModal(qd) {
-  const cur = new Date().getFullYear();
-  const yrOpts = [cur-3,cur-2,cur-1,cur,cur+1].map(y=>`<option value="${y}" ${qd?.year===y?'selected':''}>${y}</option>`).join('');
-  document.getElementById('modal-title').textContent = qd ? 'Edit Quarter Dates' : 'Add Quarter Dates';
-  document.getElementById('modal-body').innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="form-group"><label>Quarter</label>
-        <select id="qd-quarter">${['Q1','Q2','Q3','Q4'].map(q=>`<option ${qd?.quarter===q?'selected':''}>${q}</option>`).join('')}</select></div>
-      <div class="form-group"><label>Year</label>
-        <select id="qd-year">${yrOpts}</select></div>
-    </div>
-    <div class="form-group"><label>SEC Filing Date</label>
-      <input type="date" id="qd-sec" value="${qd?.secFilingDate||''}" /></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="form-group"><label>Earnings Call Date</label>
-        <input type="date" id="qd-earn-date" value="${qd?.earningsDate||''}" /></div>
-      <div class="form-group"><label>Earnings Call Time <span style="font-weight:400;color:var(--text-faint)">(optional)</span></label>
-        <input type="text" id="qd-earn-time" value="${escHtml(qd?.earningsTime||'')}" placeholder="e.g. 8:30 AM ET" /></div>
-    </div>
-
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="saveQuarterDate('${qd?._spId||''}')">Save</button>
-    </div>`;
-  openModal();
-}
-
-async function saveQuarterDate(spId) {
-  const fields = {
-    Title:            document.getElementById('qd-quarter').value + ' ' + document.getElementById('qd-year').value,
-    Quarter:          document.getElementById('qd-quarter').value,
-    Year:             document.getElementById('qd-year').value,
-    SECFilingDate:    document.getElementById('qd-sec').value       || null,
-    EarningsCallDate: document.getElementById('qd-earn-date').value || null,
-    EarningsCallTime: document.getElementById('qd-earn-time').value || '',
-
-  };
-  closeAllModals(); showLoadingOverlay(true);
-  try {
-    if (spId) {
-      await updateListItem(LISTS.quarterDates, spId, fields);
-      const idx = _quarterDates.findIndex(q=>q._spId===spId);
-      if (idx>=0) _quarterDates[idx] = normaliseQuarterDate({...fields, id: spId});
-    } else {
-      const created = await createListItem(LISTS.quarterDates, fields);
-      _quarterDates.push(normaliseQuarterDate({...fields, id: created?.id||uid()}));
-    }
-    renderQuarterDatesPanel();
-    renderCurrentView();
-  } catch(e) { showToast('Could not save quarter dates: '+e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
-
-async function deleteQuarterDate(spId, btnEl) {
-  showInlineConfirm(btnEl || document.body, 'Delete these key dates?', async () => {
-    try {
-      await deleteListItem(LISTS.quarterDates, spId);
-      _quarterDates = _quarterDates.filter(q=>q._spId!==spId);
-      renderQuarterDatesPanel();
-      renderCurrentView();
-      showToast('Key dates deleted.', 'success');
-    } catch(e) { showToast('Could not delete: '+e.message, 'error'); }
-  }, 'Delete', true);
-}
-
-// ── INLINE QUICK NOTE ────────────────────────────────────────
-
-
-
-
-// ── ADMIN ─────────────────────────────────────────────────────
-function renderAdmin() {
-  if(!currentUser?.isAdmin) return;
-  // ── Reassignment request banner ──────────────────────────
-  const pendingTasks = _tasks.filter(t=>t.reassignRequested);
-  const pendingSteps = _steps.filter(s=>s.reassignRequested);
-  const pendingTotal = pendingTasks.length + pendingSteps.length;
-  // Render working quarter picker at top of admin
-  renderWorkingQuarterPicker();
-  const reassignBanner = document.getElementById('admin-reassign-banner');
-  if (reassignBanner) {
-    if (pendingTotal > 0) {
-      reassignBanner.style.display = 'block';
-      reassignBanner.innerHTML = `
-      <div style="background:#FEF3C7;border:1px solid #FDE68A;border-radius:8px;
-                  padding:12px 16px;margin-bottom:16px;display:flex;
-                  align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-        <span style="font-size:13px;color:#92400E">
-          🔄 <b>${pendingTotal} reassignment request${pendingTotal!==1?'s':''} pending</b>
-          — ${[...pendingTasks.map(t => t.name), ...pendingSteps.map(s => s.name)]
-              .slice(0, 3).map(n => '<i>' + escHtml(n) + '</i>').join(', ')}
-          ${pendingTotal > 3 ? ' and ' + (pendingTotal - 3) + ' more' : ''}
-        </span>
-        <button class="btn-secondary" style="font-size:12px;padding:5px 12px" onclick="switchView('tasks',document.querySelector('[data-view=\'tasks\']'))">View in All Tasks →</button>
-      </div>`;
-    } else {
-      reassignBanner.style.display = 'none';
-      reassignBanner.innerHTML = '';
-    }
-  }
-  renderCustomHolidays();
-  renderCloseCalendarsPanel();
-  renderQuarterDatesPanel();
-
-  // Locked quarters panel
-  const lkEl = document.getElementById('admin-locks-list');
-  if (lkEl) {
-    if (!_locks.length) {
-      lkEl.innerHTML = '<p class="text-muted" style="font-size:13px;padding:12px 22px">No quarters locked yet.</p>';
-    } else {
-      lkEl.innerHTML = _locks
-        .sort((a,b) => { const ak=`${b.year}${b.quarter}`,bk=`${a.year}${a.quarter}`; return ak>bk?1:ak<bk?-1:0; })
-        .map(l => `<div class="admin-user-row">
-          <div class="admin-user-info">
-            <div class="user-name-sm">🔒 ${escHtml(l.quarter)} ${l.year}</div>
-            <div class="user-role-sm">Locked by ${escHtml(l.lockedBy)} · ${escHtml(l.lockedAt)}</div>
-          </div>
-          <button class="btn-secondary" style="font-size:12px;padding:5px 12px" onclick="unlockQuarter('${l._spId}')">Unlock</button>
+      auditEl.innerHTML = entries.map(e => `
+        <div class="audit-entry">
+          <div class="audit-action">${e.action}</div>
+          <div class="audit-meta">${formatDateET(e.date)}</div>
         </div>`).join('');
     }
   }
 
-  const uEl=document.getElementById('admin-user-list');
-  if(uEl) uEl.innerHTML=getUsers().map(u=>`
-    <div class="admin-user-row">
-      <div class="admin-user-info">
-        <div class="user-name-sm">${escHtml(u.name)}</div>
-        <div class="user-role-sm">${escHtml(u.role)}</div>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span class="${u.isAdmin?'admin-badge-admin':u.isReadOnly?'admin-badge-readonly':'admin-badge-member'}">${u.isAdmin?'Admin':u.isReadOnly?'Read-Only':'Member'}</span>
-        <button class="icon-btn" onclick="openEditUser('${u._spId}')">✏️</button>
-        ${u._spId!==currentUser._spId?`<button class="icon-btn" onclick="deleteUser('${u._spId}',this)">🗑</button>`:''}
-      </div>
-    </div>`).join('');
-  const tEl=document.getElementById('admin-template-list');
-  if(tEl) tEl.innerHTML=getTemplates().map(tp=>{
-    const stpCount = getStepTemplatesForTemplate(tp._spId||tp.id).length;
-    return `<div class="template-row">
+  // Show panel
+  document.getElementById('task-panel').classList.remove('hidden');
+  document.getElementById('panel-overlay').classList.remove('hidden');
+}
+
+function renderPanelStatusChain(assignment, email) {
+  const chain = document.getElementById('panel-status-chain');
+  if (!chain) return;
+  const isPrepOnly = assignment.SignOffMode === 'Preparer Only';
+  const prepDone = assignment.PreparerSignOff;
+  const revDone = assignment.ReviewerSignOff;
+
+  chain.innerHTML = `
+    <div class="status-step ${prepDone ? 'complete' : ''}">
+      <div class="status-step-dot ${prepDone ? 'dot-complete' : 'dot-pending'}"></div>
       <div>
-        <div class="template-name">${escHtml(tp.name)}</div>
-        <div class="template-type">${escHtml(tp.type)} · Due ${tp.dueDaysFromQtrEnd} days after quarter end · ${stpCount} default step${stpCount!==1?'s':''}</div>
+        <div class="status-step-text">Preparer sign-off</div>
+        <div class="status-step-sub">${prepDone ? renderBadge(assignment.PreparerSignOffBy || assignment.Preparer) + ' · ' + formatDateET(assignment.PreparerSignOffDate) : renderBadge(assignment.Preparer) + ' · Pending'}</div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn-secondary" style="font-size:11px;padding:5px 10px" onclick="openStepTemplates('${tp._spId||tp.id}','${escHtml(tp.name)}')">📋 Steps</button>
-        <button class="icon-btn" onclick="openEditTemplate('${tp._spId}')">✏️</button>
-        <button class="icon-btn" onclick="deleteTemplate('${tp._spId}',this)">🗑</button>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-// Creates tasks for the selected quarter based on saved quarterly templates.
-async function applyTemplate() {
-  const quarter = document.getElementById('template-quarter-select').value;
-  const year    = parseInt(document.getElementById('template-year-select').value);
-  if (isQuarterLocked(quarter, year)) {
-    showToast(`${quarter} ${year} is locked — unlock it in Admin before applying templates.`, 'warning'); return;
-  }
-  if (!getTemplates().length) {
-    showToast('No templates defined yet. Add templates in the Quarterly Templates section above.', 'warning'); return;
-  }
-  const qEnd    = quarterEndDate(quarter, year);
-  let added = 0;
-  showLoadingOverlay(true, `Applying templates to ${quarter} ${year}…`);
-  try {
-  for (const tp of getTemplates()) {
-    const exists = getTasks().some(t => t.name===tp.name && t.quarter===quarter && t.year===year);
-    if (!exists) {
-      const taskId   = uid();
-      const created  = await createListItem(LISTS.tasks, {
-        Title: tp.name, TaskId: taskId, TaskType: tp.type,
-        Quarter: quarter, Year: String(year),
-        DueDate: addDays(qEnd, tp.dueDaysFromQtrEnd),
-        Status: 'Not Started', OwnerId: tp.defaultOwnerId, Notes: '', Description: '',
-        Applicability: 'All Quarters', WorkdayNum: '', SkipNextRollforward: 'No',
-      });
-      const taskSpId = created?.id || taskId;
-      // Auto-create steps from step templates
-      const stpls = getStepTemplatesForTemplate(tp._spId || tp.id);
-      for (const stpl of stpls) {
-        await createListItem(LISTS.steps, {
-          Title: stpl.name, StepId: uid(),
-          TaskId: String(taskSpId),
-          StepOrder: String(stpl.order),
-          Status: 'Not Started',
-          OwnerId: stpl.defaultOwnerId || '',
-          DueDate: stpl.dueDaysFromQtrEnd ? nearestWorkingDay(addDays(qEnd, stpl.dueDaysFromQtrEnd)) : '',
-          RequiresPrev: stpl.requiresPrev ? 'Yes' : 'No',
-          Applicability: 'All Quarters',
-          WorkdayNum: stpl.workdayNum ? String(stpl.workdayNum) : '',
-          Note: '', Notes: '',
-        });
-      }
-      added++;
-    }
-  }
-    await refreshData();
-    showToast(`Applied template: ${added} task${added!==1?'s':''} added to ${quarter} ${year}.`, 'success');
-  } catch(e) { showToast('Template apply failed: ' + e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
-
-// ── TASK MODAL ────────────────────────────────────────────────
-// Opens the Add Task modal pre-filled with the currently viewed quarter.
-function openAddTask() {
-  if (isReadOnly()) { showToast('Read-only access — you cannot add tasks.', 'warning'); return; }
-  editingTaskId = null;
-  // Pre-select the currently viewed quarter/year when adding a new task
-  const q  = document.getElementById('quarter-filter')?.value;
-  const yr = parseInt(document.getElementById('year-filter')?.value || 0);
-  showTaskModal(null, q, yr);
-}
-function openEditTask(spId)   { editingTaskId=spId;   showTaskModal(_tasks.find(t=>t._spId===spId)); }
-function showTaskModal(task, defaultQ, defaultY) {
-  document.getElementById('modal-title').textContent=task?'Edit Task':'Add New Task';
-  const _tuid = u => u._spId||u.id;
-  const ownerOpts=getAssignableUsers().map(u=>`<option value="${_tuid(u)}" ${task?.ownerId===_tuid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  const reviewerOpts = `<option value="">— None —</option>` + getAssignableUsers().map(u=>`<option value="${_tuid(u)}" ${task?.reviewerId===_tuid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  const reviewer2Opts = `<option value="">— None —</option>` + getAssignableUsers().map(u=>`<option value="${_tuid(u)}" ${task?.reviewer2Id===_tuid(u)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  const cur=new Date().getFullYear();
-  const effQ = task?.quarter || defaultQ;
-  const effY = task?.year    || defaultY || cur;
-  const yearOpts=[cur-3,cur-2,cur-1,cur,cur+1].map(y=>`<option value="${y}" ${effY===y?'selected':''}>${y}</option>`).join('');
-  document.getElementById('modal-body').innerHTML=`
-    <div class="form-group"><label>Deliverable Name</label>
-      <input type="text" id="tf-name" value="${escHtml(task?.name||'')}" placeholder="e.g. 10-Q Filing" /></div>
-    <div class="form-group"><label>Type</label>
-      <select id="tf-type">
-        ${['Close','Financial Report','Master SS','Ops Book','Other','Press Release','Post-Filing','Pre-Filing']
-          .map(t => `<option ${task?.type===t?'selected':''}>${t}</option>`).join('')}
-      </select></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="form-group"><label>Quarter</label>
-        <select id="tf-quarter">${['Q1','Q2','Q3','Q4'].map(q=>`<option ${effQ===q?'selected':''}>${q}</option>`).join('')}</select></div>
-      <div class="form-group"><label>Year</label>
-        <select id="tf-year">${yearOpts}</select></div>
     </div>
-    <div class="form-group"><label>Due Date</label>
-      <div style="display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:end">
-        <div>
-          <label style="font-size:11px;color:var(--text-faint);display:block;margin-bottom:4px">Workday #</label>
-          <input type="number" id="tf-workday"
-            value="${task?.workdayNum||''}" min="1" max="60" placeholder="WD #"
-            style="width:100%;padding:10px 8px;border:1.5px solid var(--border);border-radius:var(--radius);font-family:inherit;font-size:14px"
-            oninput="resolveWdToDate('tf-workday','tf-due',document.getElementById('tf-quarter')?.value,document.getElementById('tf-year')?.value)" />
-        </div>
-        <input type="date" id="tf-due" value="${task?.dueDate||''}" />
-      </div>
-      <p style="font-size:11px;color:var(--text-faint);margin-top:4px">Enter a workday number to auto-fill the date, or set the date directly.</p>
-    </div>
-    <div class="form-group"><label>Preparer (Owner)</label>
-      <select id="tf-owner">${ownerOpts}</select></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="form-group"><label>Reviewer 1 <span style="font-weight:400;color:var(--text-faint)">(optional)</span></label>
-        <select id="tf-reviewer">${reviewerOpts}</select></div>
-      <div class="form-group"><label>Reviewer 2 <span style="font-weight:400;color:var(--text-faint)">(optional)</span></label>
-        <select id="tf-reviewer2">${reviewer2Opts}</select></div>
-    </div>
-    <div class="form-group"><label>Status</label>
-      <select id="tf-status">${STATUS_ORDER.map(s=>`<option ${task?.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
-    <div class="form-group" style="display:flex;align-items:center;gap:10px">
-      <input type="checkbox" id="tf-skip" ${task?.skipNextRollforward?'checked':''} style="width:16px;height:16px;cursor:pointer" />
-      <label for="tf-skip" style="margin:0;cursor:pointer">Skip this task on the next rollforward <span style="font-weight:400;color:var(--text-faint)">(auto-clears after one quarter)</span></label>
-    </div>
-    <div class="form-group"><label>Applicability</label>
-      <select id="tf-applicability">
-        <option value="All Quarters" ${(!task?.applicability||task?.applicability==='All Quarters')?'selected':''}>All Quarters</option>
-        <option value="10-K only (Q4)" ${task?.applicability==='10-K only (Q4)'?'selected':''}>10-K only (Q4)</option>
-        <option value="10-Q only (Q1, Q2, Q3)" ${task?.applicability==='10-Q only (Q1, Q2, Q3)'?'selected':''}>10-Q only (Q1, Q2, Q3)</option>
-      </select></div>
-    <div class="form-group"><label>Notes <span style="font-weight:400;color:var(--text-faint)">(optional — can carry forward during rollforward)</span></label>
-      <textarea id="tf-desc" rows="3"
-        placeholder="e.g. Key instructions, prior quarter context, things to watch out for…"
-        style="resize:vertical">${escHtml(task?.notes||task?.description||'')}</textarea></div>
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="saveTask()">Save Task</button>
-    </div>`;
-  openModal();
-}
-async function saveTask() {
-  const name=document.getElementById('tf-name').value.trim();
-  const quarter = document.getElementById('tf-quarter').value;
-  const year    = parseInt(document.getElementById('tf-year').value);
-  // Prevent saving to a locked quarter (non-admins)
-  if (!currentUser.isAdmin) {
-    if (editingTaskId) {
-      const existing = _tasks.find(t=>t._spId===editingTaskId);
-      if (existing && isQuarterLocked(existing.quarter, existing.year)) {
-        showToast(`${existing.quarter} ${existing.year} is locked — unlock it in Admin to make changes.`, 'warning');
-        closeAllModals(); return;
-      }
-    } else {
-      // Creating a new task — check the selected quarter/year
-      const q  = document.getElementById('tf-quarter')?.value;
-      const yr = parseInt(document.getElementById('tf-year')?.value || 0);
-      if (q && yr && isQuarterLocked(q, yr)) {
-        showToast(`${q} ${yr} is locked — unlock it in Admin before adding tasks.`, 'warning');
-        closeAllModals(); return;
-      }
-    }
-  }
-  const wdNum   = parseInt(document.getElementById('tf-workday')?.value) || null;
-  let   dueDate = document.getElementById('tf-due').value;
-  // If workday set and calendar exists, resolve to real date
-  if (wdNum) {
-    const resolved = workdayToDate(wdNum, quarter, year);
-    if (resolved) dueDate = resolved;
-  }
-  if(!name){showToast('Please fill in the task name.','warning');return;}
-  if(!dueDate){
-    if(wdNum) showToast(`WD${wdNum} could not resolve to a date — set the close calendar for ${quarter} ${year} in Admin first, then retry.`,'warning');
-    else showToast('Please enter a due date or workday number.','warning');
-    return;
-  }
-  const fields={
-    Title:       name,
-    TaskType:    document.getElementById('tf-type').value,
-    Quarter:     quarter,
-    Year:        String(year),
-    DueDate:     dueDate,
-    OwnerId:     document.getElementById('tf-owner').value,
-    ReviewerId:  document.getElementById('tf-reviewer')?.value  || '',
-    Reviewer2Id: document.getElementById('tf-reviewer2')?.value || '',
-    Status:      document.getElementById('tf-status').value,
-    Notes:       document.getElementById('tf-desc').value.trim(),
-    Description: document.getElementById('tf-desc').value.trim(), // kept in sync with Notes for SP compat
-    Applicability: document.getElementById('tf-applicability')?.value || 'All Quarters',
-    WorkdayNum:  wdNum ? String(wdNum) : '',
-    SkipNextRollforward: document.getElementById('tf-skip')?.checked ? 'Yes' : 'No',
-  };
-  closeAllModals();
-  showLoadingOverlay(true);
-  try {
-    if(editingTaskId) {
-      const old = _tasks.find(t=>t._spId===editingTaskId);
-      if (old && old.dueDate !== dueDate) {
-        await recordDueDateChange(editingTaskId, 'task', name, old.dueDate, dueDate);
-      }
-      await updateListItem(LISTS.tasks, editingTaskId, fields);
-    } else {
-      fields.TaskId = uid();
-      await createListItem(LISTS.tasks, fields);
-    }
-    await refreshData();
-  } catch(e) { showToast('Could not save task: '+e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
-// Confirms then deletes a task and all its child records (steps, comments, sign-offs, attachments).
-async function deleteTask(spId, btnEl) {
-  const childSteps = _steps.filter(s => s.taskId === spId);
-  const childCount = childSteps.length;
-  const msg = childCount
-    ? `Delete this task and its ${childCount} step${childCount!==1?'s':''}? This cannot be undone.`
-    : 'Delete this task? This cannot be undone.';
-  showInlineConfirm(btnEl || document.body, msg, async () => {
-    const task = _tasks.find(t=>t._spId===spId);
-    // Optimistic removal from all caches
-    _tasks       = _tasks.filter(t=>t._spId!==spId);
-    _steps       = _steps.filter(s=>s.taskId!==spId);
-    _comments    = _comments.filter(c=>c.taskId!==spId&&c.taskId!==task?.id);
-    _signOffs    = _signOffs.filter(s=>s.refId!==spId);
-    _attachments = _attachments.filter(a=>a.taskId!==spId);
-    renderCurrentView();
-    try {
-      // Delete task row first, then cascade all child records in background.
-      // Sign-offs are deleted for both the task itself AND each child step —
-      // previously only step sign-offs were cleaned from SharePoint.
-      await deleteListItem(LISTS.tasks, spId);
-
-      // Task-level sign-offs (refType='task' or 'due_date_change' on this task)
-      const taskSignOffs = _signOffs.filter(so => so.refId === spId);
-      taskSignOffs.forEach(so => deleteListItem(LISTS.signOffs, so._spId).catch(()=>{}));
-
-      // Task-level comments
-      const taskComments = _comments.filter(c => c.taskId === spId && !c.stepId);
-      taskComments.forEach(c => deleteListItem(LISTS.comments, c._spId).catch(()=>{}));
-
-      // Child steps and all their children
-      for (const s of childSteps) {
-        deleteListItem(LISTS.steps, s._spId).catch(()=>{});
-        _comments.filter(c=>c.stepId===s._spId).forEach(c =>
-          deleteListItem(LISTS.comments, c._spId).catch(()=>{})
-        );
-        _signOffs.filter(so=>so.refId===s._spId).forEach(so =>
-          deleteListItem(LISTS.signOffs, so._spId).catch(()=>{})
-        );
-        _attachments.filter(a=>a.stepId===s._spId).forEach(a =>
-          deleteListItem(LISTS.attachments, a._spId).catch(()=>{})
-        );
-      }
-    } catch(e) {
-      showToast('Could not delete task: '+e.message, 'error');
-      if(task) _tasks.push(task); renderCurrentView();
-    }
-  }, 'Delete', true);
-}
-
-// ── COMMENTS ─────────────────────────────────────────────────
-// Opens the comment modal for a task and starts comment polling.
-function openComments(taskSpId, taskName) {
-  commentingTaskId = taskSpId;
-  document.getElementById('comment-task-title').textContent = taskName || 'Comments';
-  document.getElementById('comment-input').value = '';
-  renderCommentList();
-  startCommentPolling();
-  document.getElementById('comment-overlay').classList.remove('hidden');
-}
-function renderCommentList() {
-  const list=document.getElementById('comment-list'); if(!list) return;
-  const taskComments=_comments
-    .filter(c=>c.taskId===commentingTaskId)
-    .sort((a,b)=>{ const at=a.tsIso||String(a.ts||""); const bt=b.tsIso||String(b.ts||""); return at<bt?-1:at>bt?1:0; });
-  if(!taskComments.length){
-    list.innerHTML='<div class="text-muted" style="font-size:13px;padding:8px 0">No comments yet.</div>';
-    return;
-  }
-  const unresolved = taskComments.filter(c=>!c.isResolved);
-  const resolved   = taskComments.filter(c=>c.isResolved);
-  const renderComment = (c, dimmed) => {
-    const authorName = c.authorId ? (getUserById(c.authorId)?.name || 'Former team member') : 'Unknown';
-    return `<div class="comment-item ${dimmed?'comment-resolved':''}">
-      <div class="comment-header">
-        <span class="comment-author">${escHtml(authorName)}</span>
-        <span class="comment-time">${escHtml(c.time)}</span>
-        ${c.isResolved
-          ? '<span class="comment-resolved-label">✓ Resolved</span>'
-          : `<button class="comment-resolve-btn" onclick="resolveComment('${c._spId}')">✓ Resolve</button>`}
-      </div>
-      <div class="comment-text" style="${dimmed?'opacity:0.5':''}"> ${escHtml(c.text)}</div>
-    </div>`;
-  };
-  list.innerHTML =
-    unresolved.map(c=>renderComment(c,false)).join('') +
-    (resolved.length ? `
-      <details style="margin-top:8px">
-        <summary style="font-size:11px;color:var(--text-faint);cursor:pointer;padding:4px 0">
-          ${resolved.length} resolved comment${resolved.length!==1?'s':''}
-        </summary>
-        ${resolved.map(c=>renderComment(c,true)).join('')}
-      </details>` : '');
-  list.scrollTop=list.scrollHeight;
-}
-
-async function resolveComment(commentSpId) {
-  const comment = _comments.find(c=>c._spId===commentSpId); if(!comment) return;
-  try {
-    await updateListItem(LISTS.comments, commentSpId, { IsResolved: 'Yes' });
-    comment.isResolved = true;
-    renderCommentList();
-    renderCurrentView(); // refresh unresolved badges on task rows
-  } catch(e) { showToast('Could not resolve comment: '+e.message, 'error'); }
-}
-// Posts a new comment on the currently open task. Called from the comment modal.
-async function addComment() {
-  if (isReadOnly()) { showToast('Read-only access — you cannot post comments.', 'warning'); return; }
-  const input=document.getElementById('comment-input');
-  const text=input.value.trim(); if(!text||!commentingTaskId) return;
-  if (text.length > COMMENT_MAX_LENGTH) {
-    showToast('Comment is too long — please keep it under 2,000 characters.', 'warning'); return;
-  }
-  input.value='';
-  const now=new Date();
-  const commentId = uid();
-  const commentFields = {
-    Title:       text.slice(0,50),
-    CommentId:   commentId,
-    TaskId:      commentingTaskId,
-    AuthorId:    currentUserId(),
-    CommentText: text,
-    CommentTime: now.toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}),
-    Timestamp:   String(now.getTime()),
-    TimestampISO: now.toISOString(),
-    IsResolved:  'No',
-  };
-  try {
-    const created = await createListItem(LISTS.comments, commentFields);
-    _comments.push(normaliseComment({...commentFields, id: created?.id||commentId}));
-    renderCommentList();
-    renderCurrentView(); // update unresolved badges
-  } catch(e) { showToast('Could not save comment: '+e.message, 'error'); }
-}
-function closeCommentModal() {
-  stopCommentPolling();
-  document.getElementById('comment-overlay').classList.add('hidden');
-  commentingTaskId=null;
-  renderCurrentView(); // badges already up to date — no need to re-fetch all 10 lists
-}
-
-// ── USER MODAL ────────────────────────────────────────────────
-function openAddUser()        { showUserModal(null); }
-function openEditUser(spId)   { showUserModal(_users.find(u=>u._spId===spId)); }
-function showUserModal(user) {
-  document.getElementById('modal-title').textContent=user?'Edit Team Member':'Add Team Member';
-  document.getElementById('modal-body').innerHTML=`
-    <div class="form-group"><label>Full Name</label>
-      <input type="text" id="uf-name" value="${escHtml(user?.name||'')}" /></div>
-    <div class="form-group"><label>Role / Title</label>
-      <input type="text" id="uf-role" value="${escHtml(user?.role||'')}" /></div>
-    <div class="form-group"><label>Work Email (for auto-login matching)</label>
-      <input type="email" id="uf-email" value="${escHtml(user?.email||'')}" placeholder="name@company.com" /></div>
-
-    <div class="form-group"><label>Access Level</label>
-      <select id="uf-admin">
-        <option value="false" ${!user?.isAdmin?'selected':''}>Member</option>
-        <option value="true"  ${user?.isAdmin ?'selected':''}>Admin</option>
-      </select></div>
-    <div class="form-group"><label>Read-Only Access <span style="font-weight:400;color:var(--text-faint)">(exec/stakeholder — can view but not edit)</span></label>
-      <select id="uf-readonly">
-        <option value="false" ${!user?.isReadOnly?'selected':''}>No</option>
-        <option value="true"  ${user?.isReadOnly ?'selected':''}>Yes</option>
-      </select></div>
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="saveUser('${user?._spId||''}')">Save</button>
-    </div>`;
-  openModal();
-}
-async function saveUser(existingSpId) {
-  const name=document.getElementById('uf-name').value.trim();
-  const role=document.getElementById('uf-role').value.trim();
-  const email=document.getElementById('uf-email').value.trim();
-  const isAdmin    = document.getElementById('uf-admin').value==='true';
-  const isReadOnly = document.getElementById('uf-readonly').value==='true';
-  if(!name){showToast('Please fill in the name field.','warning');return;}
-  closeAllModals(); showLoadingOverlay(true);
-  try {
-    const fields={ Title:name, FullName:name, JobRole:role, Email:email, IsAdmin:isAdmin?'Yes':'No', IsReadOnly:isReadOnly?'Yes':'No' };
-    if(existingSpId) { await updateListItem(LISTS.users, existingSpId, fields); }
-    else             { fields.UserId=uid(); await createListItem(LISTS.users, fields); }
-    await refreshData();
-  } catch(e) { showToast('Could not save user: '+e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
-async function deleteUser(spId, btnEl) {
-  showInlineConfirm(btnEl || document.body, 'Remove this team member?', async () => {
-    showLoadingOverlay(true, 'Removing…');
-    try { await deleteListItem(LISTS.users, spId); await refreshData(); showToast('Team member removed.', 'success'); }
-    catch(e) { showToast('Could not remove user: '+e.message, 'error'); }
-    finally { showLoadingOverlay(false); }
-  }, 'Remove', true);
-}
-
-// ── TEMPLATE MODAL ────────────────────────────────────────────
-function openAddTemplate()       { showTemplateModal(null); }
-function openEditTemplate(spId)  { showTemplateModal(_templates.find(t=>t._spId===spId)); }
-function showTemplateModal(tp) {
-  const ownerOpts=getAssignableUsers().map(u=>`<option value="${u._spId||u.id}" ${tp?.defaultOwnerId===(u._spId||u.id)?'selected':''}>${escHtml(u.name)}</option>`).join('');
-  document.getElementById('modal-title').textContent=tp?'Edit Template':'Add Template Task';
-  document.getElementById('modal-body').innerHTML=`
-    <div class="form-group"><label>Task Name</label>
-      <input type="text" id="tpl-name" value="${escHtml(tp?.name||'')}" /></div>
-    <div class="form-group"><label>Type</label>
-      <select id="tpl-type">
-        ${['Close','Financial Report','Master SS','Ops Book','Other','Press Release','Post-Filing','Pre-Filing']
-          .map(t => `<option ${tp?.type===t ? 'selected' : ''}>${t}</option>`).join('')}
-      </select></div>
-    <div class="form-group"><label>Days After Quarter End</label>
-      <input type="number" id="tpl-days" value="${tp?.dueDaysFromQtrEnd||30}" min="1" max="120" /></div>
-    <div class="form-group"><label>Default Owner</label>
-      <select id="tpl-owner">${ownerOpts}</select></div>
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="saveTemplate('${tp?._spId||''}')">Save Template</button>
-    </div>`;
-  openModal();
-}
-async function saveTemplate(existingSpId) {
-  const name=document.getElementById('tpl-name').value.trim();
-  const type=document.getElementById('tpl-type').value;
-  const days=parseInt(document.getElementById('tpl-days').value);
-  const ownerId=document.getElementById('tpl-owner').value;
-  if(!name||isNaN(days)){showToast('Please fill in all fields.', 'warning'); return;}
-  closeAllModals(); showLoadingOverlay(true);
-  try {
-    const fields={ Title:name, TaskType:type, DueDaysFromQtrEnd:String(days), DefaultOwnerId:ownerId };
-    if(existingSpId) { await updateListItem(LISTS.templates, existingSpId, fields); }
-    else             { fields.TemplateId=uid(); await createListItem(LISTS.templates, fields); }
-    await refreshData();
-  } catch(e) { showToast('Could not save template: '+e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
-async function deleteTemplate(spId, btnEl) {
-  showInlineConfirm(btnEl || document.body, 'Delete this template?', async () => {
-    showLoadingOverlay(true, 'Deleting…');
-    try { await deleteListItem(LISTS.templates, spId); await refreshData(); showToast('Template deleted.', 'success'); }
-    catch(e) { showToast('Could not delete template: '+e.message, 'error'); }
-    finally { showLoadingOverlay(false); }
-  }, 'Delete', true);
-}
-
-// ── MODAL HELPERS ─────────────────────────────────────────────
-function openModal()      { document.getElementById('modal-overlay').classList.remove('hidden'); }
-// Closes all modal overlays. Called from modal close buttons and keyboard Escape.
-function closeAllModals() { document.getElementById('modal-overlay').classList.add('hidden'); editingTaskId=null; editingStepId=null; editingStepTemplateId=null; }
-function closeModal(e) {
-  if(e.target===document.getElementById('modal-overlay'))   closeAllModals();
-  if(e.target===document.getElementById('comment-overlay')) closeCommentModal();
-}
-function renderCurrentView() {
-  const active=document.querySelector('.view.active'); if(!active) return;
-  const id=active.id.replace('view-','');
-  if(id==='dashboard') renderDashboard();
-  if(id==='tasks')     renderAllTasks();
-  if(id==='calendar')  renderCalendar();
-  if(id==='team')      renderTeam();
-  if(id==='admin')     renderAdmin();
-  if(id==='mytasks')   renderMyTasks();
-  if(id==='kanban')    renderKanban();
-  if(id==='report')    renderReport();
-  if(id==='exec')      renderExecView();
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 11 — VERSION ────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-const APP_VERSION = 'v2.0';
-
-// ── NAMED CONSTANTS ───────────────────────────────────────────
-const MS_PER_DAY          = 86400000; // milliseconds in one day
-const TOAST_DURATION      = 4000;     // default toast display time (ms)
-const TOAST_DURATION_LONG = 6000;     // longer toast for important confirmations (ms)
-const UNDO_DURATION       = 10000;    // undo toast window (ms)
-const COMMENT_MAX_LENGTH  = 2000;     // maximum comment character count
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 1 — PRIORITY CARD ───────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function renderPriorityCard() {
-  const card = document.getElementById('priority-card');
-  const body = document.getElementById('priority-card-body');
-  if (!card || !body || !currentUser) return;
-
-  const uid = currentUserId();
-  const today   = new Date(); today.setHours(0,0,0,0);
-  const in3days = new Date(today); in3days.setDate(in3days.getDate()+3);
-
-  // Overdue tasks or tasks due within 3 days assigned to current user
-  const urgentTasks = getActiveTasks().filter(t => {
-    if (t.status === 'Complete' || t.status === 'Not Applicable') return false;
-    const isAssigned = t.ownerId===uid || t.reviewerId===uid || t.reviewer2Id===uid;
-    if (!isAssigned) return false;
-    if (!t.dueDate) return false;
-    const due = new Date(t.dueDate+'T00:00:00');
-    return due <= in3days;
-  }).sort((a,b) => (a.dueDate||'').localeCompare(b.dueDate||''));
-
-  // Steps where user is next in chain and they're unblocked
-  const urgentSteps = _steps.filter(s => {
-    if (s.status === 'Complete' || s.status === 'Not Applicable') return false;
-    const isAssigned = s.ownerId===currentUserId || s.reviewerId===currentUserId || s.reviewer2Id===currentUserId;
-    if (!isAssigned) return false;
-    const parentTask = _tasks.find(t => t._spId === s.taskId);
-    if (parentTask && isQuarterLocked(parentTask.quarter, parentTask.year)) return false;
-    if (getBlockingPredecessor(s)) return false; // still gated
-    if (!s.dueDate) return false;
-    const due = new Date(s.dueDate+'T00:00:00');
-    return due <= in3days;
-  }).sort((a,b) => (a.dueDate||'').localeCompare(b.dueDate||''));
-
-  const total = urgentTasks.length + urgentSteps.length;
-  if (!total) { card.classList.add('hidden'); return; }
-  card.classList.remove('hidden');
-
-  const taskRows = urgentTasks.map(t => {
-    const ds  = deadlineStatus(t.dueDate, t.status, t.workdayNum, t.quarter, t.year);
-    const isOverdue = ds === 'overdue';
-    return `<div class="priority-item ${isOverdue?'priority-overdue':'priority-soon'}">
-      <div class="priority-item-info">
-        <span class="priority-item-name">${escHtml(t.name)}</span>
-        <span class="priority-item-meta">${escHtml(t.type)} · ${isOverdue?'<span style="color:#ef4444;font-weight:600">OVERDUE</span>':'Due '+formatDate(t.dueDate)}</span>
-      </div>
-      <span class="status-badge ${statusBadgeClass(t.status)}" style="cursor:pointer;font-size:11px"
-        onclick="event.stopPropagation();openQuickStatus('${t._spId}','task',this)">${escHtml(t.status)}</span>
-    </div>`;
-  }).join('');
-
-  const stepRows = urgentSteps.map(s => {
-    const task = getTasks().find(t=>t._spId===s.taskId);
-    const ds   = deadlineStatus(s.dueDate, s.status);
-    const isOverdue = ds === 'overdue';
-    return `<div class="priority-item ${isOverdue?'priority-overdue':'priority-soon'}">
-      <div class="priority-item-info">
-        <span class="priority-item-name">${escHtml(s.name)}</span>
-        <span class="priority-item-meta">Step · ${escHtml(task?.name||'')} · ${isOverdue?'<span style="color:#ef4444;font-weight:600">OVERDUE</span>':'Due '+formatDate(s.dueDate)}</span>
-      </div>
-      <span class="status-badge ${statusBadgeClass(s.status)}" style="cursor:pointer;font-size:11px"
-        onclick="event.stopPropagation();openQuickStatus('${s._spId}','step',this)">${escHtml(s.status)}</span>
-    </div>`;
-  }).join('');
-
-  body.innerHTML = taskRows + stepRows;
-}
-
-function togglePriorityCard() {
-  const body = document.getElementById('priority-card-body');
-  const btn  = document.getElementById('priority-toggle-btn');
-  if (!body) return;
-  const hidden = body.style.display === 'none';
-  body.style.display = hidden ? '' : 'none';
-  if (btn) btn.textContent = hidden ? '▾ Hide' : '▸ Show';
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 2 — QUICK STATUS ACTION ────────────────────────
-// ═══════════════════════════════════════════════════════════════
-// Replaces the status badge with an inline <select> dropdown in place.
-// When a status is chosen (or focus is lost), the badge is restored.
-function openQuickStatus(spId, type, badgeEl) {
-  const item = type==='task' ? _tasks.find(t=>t._spId===spId) : _steps.find(s=>s._spId===spId);
-  if (!item || !badgeEl) return;
-
-  const cycle = getStatusCycle(item).concat(['Not Applicable']);
-
-  // Build a <select> and swap it in place of the badge
-  const sel = document.createElement('select');
-  sel.className = 'status-inline-select ' + statusBadgeClass(item.status);
-  sel.innerHTML = cycle.map(s =>
-    `<option value="${escHtml(s)}" ${s===item.status?'selected':''}>${escHtml(s)}</option>`
-  ).join('');
-
-  // Replace badge with select
-  badgeEl.replaceWith(sel);
-  sel.focus();
-
-  function restore(newStatus) {
-    // Rebuild the badge and put it back
-    const span = document.createElement('span');
-    span.className = `status-badge ${statusBadgeClass(newStatus)}`;
-    span.setAttribute('onclick', `event.stopPropagation();openQuickStatus('${spId}','${type}',this)`);
-    span.style.cursor = 'pointer';
-    span.title = 'Click to change status';
-    span.textContent = newStatus;
-    sel.replaceWith(span);
-  }
-
-  sel.addEventListener('change', async () => {
-    const newStatus = sel.value;
-    restore(newStatus);
-    if (newStatus !== item.status) {
-      await quickSetStatus(spId, type, newStatus);
-    }
-  });
-
-  sel.addEventListener('blur', () => {
-    restore(item.status); // restore without changing if focus lost without selection
-  });
-
-  sel.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { e.stopPropagation(); restore(item.status); }
-  });
-}
-
-async function quickSetStatus(spId, type, newStatus) {
-  const list = type==='task' ? LISTS.tasks : LISTS.steps;
-  const arr  = type==='task' ? _tasks : _steps;
-  const item = arr.find(i=>i._spId===spId); if(!item) return;
-  const prev = item.status;
-  if (prev===newStatus) return;
-  item.status = newStatus;
-  try {
-    await updateListItem(list, spId, { Status: newStatus });
-    await writeSignOff(spId, type, item.name, prev, newStatus);
-    if (newStatus==='Ready for Review 1'||newStatus==='Ready for Review 2') await notifyReviewer(item, type, newStatus);
-    renderCurrentView();
-    if (document.getElementById('steps-overlay') && !document.getElementById('steps-overlay').classList.contains('hidden')) renderStepsPanel();
-  } catch(e) { item.status=prev; showToast('Could not update status: '+e.message, 'error'); }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 5 — CLOSE CHECKLIST MODE ───────────────────────
-// ═══════════════════════════════════════════════════════════════
-// Switches to full-screen checklist mode showing all incomplete tasks for the current quarter.
-function enterChecklistMode() {
-  const q  = document.getElementById('quarter-filter')?.value || 'Q1';
-  const yr = parseInt(document.getElementById('year-filter')?.value || new Date().getFullYear());
-  const tasks = getActiveTasks()
-    .filter(t => t.quarter===q && t.year===yr && t.status!=='Complete' && t.status!=='Not Applicable')
-    .sort((a,b) => (a.dueDate||'').localeCompare(b.dueDate||''));
-
-  const sub = document.getElementById('checklist-subtitle');
-  if (sub) sub.textContent = `${q} ${yr} · ${tasks.length} items remaining`;
-
-  const body = document.getElementById('checklist-body');
-  if (!body) return;
-  if (!tasks.length) {
-    body.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,.6);padding:60px 0;font-size:16px">🎉 All tasks complete for this quarter!</div>';
-  } else {
-    body.innerHTML = tasks.map(t => {
-      const ds    = deadlineStatus(t.dueDate, t.status, t.workdayNum, t.quarter, t.year);
-      const cycle = getStatusCycle(t);
-      const next  = cycle[(cycle.indexOf(t.status)+1)%cycle.length];
-      const locked = isQuarterLocked(t.quarter, t.year);
-      const canEdit = !locked && (currentUser.isAdmin || t.ownerId===currentUser.id || t.ownerId===currentUser._spId);
-      return `<div class="checklist-item">
-        <div class="checklist-item-left">
-          <span class="status-badge ${statusBadgeClass(t.status)}" style="font-size:12px">${escHtml(t.status)}</span>
-          <div>
-            <div style="color:#fff;font-size:14px;font-weight:500">${escHtml(t.name)}</div>
-            <div style="color:rgba(255,255,255,.4);font-size:12px;margin-top:2px">
-              ${escHtml(t.type)} · ${ds==='overdue'?'<span style="color:#f87171">OVERDUE</span>':formatDate(t.dueDate)}
-            </div>
-          </div>
-        </div>
-        ${canEdit ? `<button class="checklist-advance-btn" onclick="checklistAdvance('${t._spId}')">→ ${escHtml(next)}</button>` : ''}
-      </div>`;
-    }).join('');
-  }
-  document.getElementById('checklist-overlay').classList.remove('hidden');
-}
-
-async function checklistAdvance(spId) {
-  const task = _tasks.find(t=>t._spId===spId); if(!task) return;
-  const cycle = getStatusCycle(task);
-  const next  = cycle[(cycle.indexOf(task.status)+1)%cycle.length];
-  const prev  = task.status;
-  task.status = next;
-  try {
-    await updateListItem(LISTS.tasks, spId, { Status: next });
-    await writeSignOff(spId, 'task', task.name, prev, next);
-    if (next==='Ready for Review 1'||next==='Ready for Review 2') await notifyReviewer(task,'task',next);
-    enterChecklistMode(); // re-render
-  } catch(e) { task.status=prev; showToast('Could not update: '+e.message, 'error'); }
-}
-
-function exitChecklistMode() {
-  document.getElementById('checklist-overlay').classList.add('hidden');
-  renderCurrentView();
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 6 — SETUP WIZARD ────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function checkSetupRequired() {
-  const c = CONFIG;
-  const missing = [];
-  if (!c.clientId || c.clientId.startsWith('REPLACE')) missing.push('clientId');
-  if (!c.tenantId || c.tenantId.startsWith('REPLACE')) missing.push('tenantId');
-  if (!c.siteUrl  || c.siteUrl.startsWith('REPLACE'))  missing.push('siteUrl');
-  return missing;
-}
-
-function showSetupWizardIfNeeded() {
-  const missing = checkSetupRequired();
-  if (!missing.length) return;
-  const wizardEl = document.getElementById('setup-wizard');
-  if (!wizardEl) return;
-
-  const fields = [
-    { key:'clientId', label:'Azure AD Client ID',       hint:'From portal.azure.com → App registrations → Overview',                 val: CONFIG.clientId },
-    { key:'tenantId', label:'Azure AD Tenant ID',        hint:'From portal.azure.com → App registrations → Overview',                 val: CONFIG.tenantId },
-    { key:'siteUrl',  label:'SharePoint Site URL',       hint:'e.g. https://moodys.sharepoint.com/sites/FinancialReporting',          val: CONFIG.siteUrl  },
-  ];
-
-  document.getElementById('wizard-steps').innerHTML = fields.map(f => {
-    const isMissing = missing.some(m => m === f.key);
-    return `<div class="wizard-field ${isMissing?'wizard-field-missing':''}">
-      <label class="wizard-label">${escHtml(f.label)} ${isMissing?'<span style="color:#ef4444">*</span>':''}</label>
-      <div class="wizard-hint">${escHtml(f.hint)}</div>
-      <input type="text" class="wizard-input" data-key="${f.key}"
-        value="${escHtml((!f.val||f.val.startsWith('REPLACE'))?'':f.val)}"
-        placeholder="${f.key==='siteUrl'?'https://moodys.sharepoint.com/sites/...':'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'}" />
-    </div>`;
-  }).join('');
-
-  wizardEl.classList.remove('hidden');
-}
-
-function saveWizardConfig() {
-  const inputs = document.querySelectorAll('.wizard-input');
-  inputs.forEach(inp => {
-    const key = inp.dataset.key;
-    const val = inp.value.trim();
-    if (!val) return;
-    if (key === 'clientId') CONFIG.clientId = val;
-    else if (key === 'tenantId') CONFIG.tenantId = val;
-    else if (key === 'siteUrl')  CONFIG.siteUrl  = val;
-  });
-  // Reset cached site ID so it is re-resolved with the new URL
-  _graphSiteId = null;
-  const stillMissing = checkSetupRequired();
-  if (stillMissing.length) {
-    showToast('Please fill in all required fields: ' + stillMissing.join(', '), 'warning');
-    return;
-  }
-  document.getElementById('setup-wizard').classList.add('hidden');
-  showToast('Configuration saved for this session. To make it permanent, update the CONFIG block in app.js.', 'success', TOAST_DURATION_LONG + 1000);
-  loadAllData().then(() => renderCurrentView());
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 7 — HEALTH CHECK ────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-// Tests Graph token, SharePoint site connection, and each list. Renders results in Admin panel.
-async function runHealthCheck() {
-  const el = document.getElementById('health-check-results');
-  if (!el) return;
-  el.innerHTML = '<p style="font-size:13px;color:var(--text-faint)">Running checks…</p>';
-
-  const results = [];
-
-  // 1. Config present
-  const cfgOk = CONFIG.clientId && !CONFIG.clientId.startsWith('REPLACE')
-             && CONFIG.tenantId && !CONFIG.tenantId.startsWith('REPLACE')
-             && CONFIG.siteUrl  && !CONFIG.siteUrl.startsWith('REPLACE');
-  results.push({ name: 'CONFIG values', status: cfgOk ? 'ok' : 'error',
-    msg: cfgOk ? 'clientId, tenantId, siteUrl all set' : 'One or more CONFIG values are still placeholders' });
-
-  // 2. Graph token
-  let tokenOk = false;
-  try {
-    await getGraphToken();
-    tokenOk = true;
-    results.push({ name: 'Graph token (User.Read + Sites.ReadWrite.All)', status: 'ok', msg: 'Token acquired successfully' });
-  } catch(e) {
-    results.push({ name: 'Graph token', status: 'error', msg: e.message.slice(0, 100) });
-  }
-
-  // 3. SharePoint site reachable
-  let siteOk = false;
-  if (tokenOk && cfgOk) {
-    try {
-      _graphSiteId = null; // force fresh resolution
-      await getGraphSiteId();
-      siteOk = true;
-      results.push({ name: 'SharePoint site', status: 'ok', msg: `Resolved: ${CONFIG.siteUrl}` });
-    } catch(e) {
-      results.push({ name: 'SharePoint site', status: 'error', msg: e.message.slice(0, 100) });
-    }
-  }
-
-
-  // 5. Each SharePoint list accessible
-  if (siteOk) {
-    const listChecks = [
-      LISTS.tasks, LISTS.users, LISTS.steps, LISTS.comments,
-      LISTS.signOffs, LISTS.locks, LISTS.attachments, LISTS.quarterDates,
-    ];
-    for (const listName of listChecks) {
-      try {
-        await getListItems(listName);
-        results.push({ name: `List: ${listName}`, status: 'ok', msg: 'Accessible' });
-      } catch(e) {
-        results.push({ name: `List: ${listName}`, status: 'error', msg: 'Not found or inaccessible — check list name in SharePoint' });
-      }
-    }
-  }
-
-  el.innerHTML = results.map(r => `
-    <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:0.5px solid var(--border)">
-      <span style="font-size:14px">${r.status==='ok'?'✅':r.status==='skip'?'⚪':'❌'}</span>
+    ${!isPrepOnly ? `
+    <div class="status-step ${revDone ? 'complete' : !prepDone ? 'locked' : ''}">
+      <div class="status-step-dot ${revDone ? 'dot-complete' : !prepDone ? 'dot-locked' : 'dot-pending'}"></div>
       <div>
-        <div style="font-size:12px;font-weight:500;color:var(--text)">${escHtml(r.name)}</div>
-        <div style="font-size:11px;color:${r.status==='ok'?'var(--green-600)':r.status==='skip'?'var(--text-faint)':'var(--red-500)'}">${escHtml(r.msg)}</div>
+        <div class="status-step-text">Reviewer sign-off</div>
+        <div class="status-step-sub">${!prepDone ? '🔒 Locked until preparer signs' : revDone ? renderBadge(assignment.ReviewerSignOffBy || assignment.Reviewer) + ' · ' + formatDateET(assignment.ReviewerSignOffDate) : renderBadge(assignment.Reviewer) + ' · Pending'}</div>
       </div>
-    </div>`).join('');
+    </div>` : ''}`;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 9 — EXCEL DATA IMPORT ───────────────────────────
-// ═══════════════════════════════════════════════════════════════
-async function handleImportFile(input) {
-  const file = input.files[0]; if (!file) return;
-  const preview = document.getElementById('import-preview');
-  if (!preview) return;
-  preview.innerHTML = '<p style="font-size:13px;color:var(--text-faint)">Reading file…</p>';
+function renderPanelAction(assignment, email) {
+  const actionDiv = document.getElementById('panel-action');
+  if (!actionDiv) return;
 
-  try {
-    const XLSX = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/xlsx.mjs');
-    const buf  = await file.arrayBuffer();
-    const wb   = XLSX.read(buf, { type: 'array' });
+  if (isViewingHistory()) {
+    actionDiv.innerHTML = '<p style="font-size:11px;color:var(--slate)">Read-only — historical quarter.</p>';
+    return;
+  }
 
-    const readSheet = (name) => {
-      const ws = wb.Sheets[name];
-      if (!ws) return [];
-      // Template rows: 1=title banner, 2=subtitle, 3=column headers, 4=tooltip row, 5+=data
-      // range:2 tells the parser to treat row 3 (0-indexed=2) as the header row
-      const all = XLSX.utils.sheet_to_json(ws, { defval: '', range: 2 });
-      // Row 4 (tooltip) becomes the first parsed entry — drop it by checking for known tip text
-      // Also drop completely empty rows (blank filler rows at the bottom of the template)
-      return all.filter((r, i) => {
-        if (i === 0) {
-          const t = String(r.Title || r.FullName || '');
-          // Drop tooltip row: empty title OR matches known tooltip phrases
-          // Deliberately NOT using t.length > 50 — that would drop long but valid task names
-          const isTooltip = t === ''
-            || /e\.g\.|e\.g |^full name$|^full name,|^full name displayed|^deliverable name|^step name|^team member$|^team member,|^team member who/i.test(t);
-          return !isTooltip;
-        }
-        return Object.values(r).some(v => String(v).trim() !== '');
-      });
-    };
+  const isPrepOnly       = assignment.SignOffMode === 'Preparer Only';
+  const prepDone         = assignment.PreparerSignOff;
+  const revDone          = assignment.ReviewerSignOff;
+  const isPreparer       = assignment.Preparer === email;
+  const isReviewer       = assignment.Reviewer === email;
+  const isAdmin          = STATE.isAdmin;
+  const isFinalReviewer  = STATE.isFinalReviewer;
 
-    const users  = readSheet('FT_Users');
-    const tasks  = readSheet('FT_Tasks');
-    const steps  = readSheet('FT_Steps');
+  // RULE 3: Preparer steps — any team member can sign off (always shown).
+  // RULE 4: Reviewer steps — restricted to assigned reviewer, admin, FinalReviewer.
+  //         Everyone else sees an "on behalf" override button that logs the actual signer.
+  const canSignPreparer  = true;  // open to all
+  const canSignReviewer  = isReviewer || isAdmin || isFinalReviewer;
 
-    // Build preview HTML
-    preview.innerHTML = `
-      <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:14px">
-        <div style="background:var(--bg-secondary);padding:10px 14px;font-size:12px;font-weight:600;color:var(--text-muted)">
-          Import Preview
+  // Reversals stay restricted — only assigned person or admin can reverse.
+  const canReversePreparer = isPreparer || isAdmin;
+  const canReverseReviewer = isReviewer || isAdmin || isFinalReviewer;
+
+  const et = formatDateET(new Date().toISOString());
+  let html = '';
+
+  if (!prepDone) {
+    const onBehalf = !isPreparer;
+    html = `
+      <div class="confirm-box">
+        <div class="confirm-text">Sign off preparer step?${onBehalf ? ` <span style="font-size:10px;color:var(--amber);font-weight:500">On behalf of ${renderBadge(assignment.Preparer)}</span>` : ''}</div>
+        <div class="confirm-sub">Recorded as ${renderBadge(email)} · ${et}</div>
+        <div class="confirm-btns">
+          <button class="btn-primary btn-sm" data-action="signoff" data-id="${assignment._id}" data-role="preparer">✓ ${onBehalf ? 'Sign Off on Behalf' : 'Sign Off as Preparer'}</button>
         </div>
-        <div style="padding:12px 14px;font-size:13px">
-          <div style="display:flex;gap:20px;margin-bottom:10px">
-            <span>👤 <b>${users.length}</b> users</span>
-            <span>📋 <b>${tasks.length}</b> tasks</span>
-            <span>📝 <b>${steps.length}</b> steps</span>
+      </div>`;
+  } else if (!isPrepOnly && !revDone) {
+    if (canSignReviewer) {
+      const onBehalf = !isReviewer;
+      html = `
+        <div class="confirm-box">
+          <div class="confirm-text">Sign off reviewer step?${onBehalf ? ` <span style="font-size:10px;color:var(--amber);font-weight:500">On behalf of ${renderBadge(assignment.Reviewer)}</span>` : ''}</div>
+          <div class="confirm-sub">Recorded as ${renderBadge(email)} · ${et}</div>
+          <div class="confirm-btns">
+            <button class="btn-primary btn-sm" data-action="signoff" data-id="${assignment._id}" data-role="reviewer">✓ ${onBehalf ? 'Sign Off on Behalf' : 'Sign Off as Reviewer'}</button>
           </div>
-          ${users.length ? `<p style="color:var(--gray-500);font-size:12px">First user: ${escHtml(String(users[0].Title||users[0].FullName||''))}</p>` : ''}
-          ${tasks.length ? `<p style="color:var(--gray-500);font-size:12px">First task: ${escHtml(String(tasks[0].Title||''))}</p>` : ''}
-        </div>
-      </div>
-      <p style="font-size:12px;color:var(--red-500);margin-bottom:10px">⚠ This will ADD new rows to your SharePoint lists. Existing rows will not be changed.</p>
-      <button class="btn-primary" id="import-run-btn">Import ${users.length+tasks.length+steps.length} rows →</button>
-    `;
-    // Bind parsed data via closure rather than injecting JSON into onclick attribute
-    const btn = document.getElementById('import-run-btn');
-    if (btn) btn.addEventListener('click', () => runImport(users, tasks, steps));
-  } catch(e) {
-    preview.innerHTML = `<p style="color:var(--red-500);font-size:13px">Could not read file: ${escHtml(e.message)}. Make sure you are uploading the Financial Reporting Tracker Import Template.</p>`;
-  }
-}
-
-async function runImport(users, tasks, steps) {
-  const preview = document.getElementById('import-preview');
-  if (!preview) return;
-  showLoadingOverlay(true);
-  let imported = 0, errors = 0;
-
-  // Writes in batches of 8 concurrent Graph POSTs — reduces import time from
-  // ~2 minutes (sequential) to ~15 seconds for a typical 400-row dataset.
-  // Batch size of 8 keeps well under Graph's 10k req/10min throttle limit.
-  async function writeBatch(listName, fieldsList) {
-    const BATCH = 8;
-    for (let i = 0; i < fieldsList.length; i += BATCH) {
-      const chunk = fieldsList.slice(i, i + BATCH);
-      const results = await Promise.allSettled(
-        chunk.map(fields => createListItem(listName, fields))
-      );
-      results.forEach(r => {
-        if (r.status === 'fulfilled') imported++;
-        else errors++;
-      });
-    }
-  }
-
-  try {
-    const userFields = users.map(u => ({
-      Title: String(u.Title||u.FullName||''), FullName: String(u.FullName||u.Title||''),
-      JobRole: String(u.JobRole||''), Email: String(u.Email||''),
-      IsAdmin: String(u.IsAdmin||'No'), IsReadOnly: String(u.IsReadOnly||'No'), UserId: String(u.UserId||uid()),
-    }));
-    const taskFields = tasks.map(t => ({
-      Title: String(t.Title||''), TaskId: String(t.TaskId||uid()),
-      TaskType: String(t.TaskType||'Other'), Quarter: String(t.Quarter||'Q1'),
-      Year: String(t.Year||new Date().getFullYear()), Status: String(t.Status||'Not Started'),
-      OwnerId: String(t.OwnerId||''), DueDate: t.DueDate||null,
-      Applicability: String(t.Applicability||'All Quarters'),
-      WorkdayNum: t.WorkdayNum ? String(t.WorkdayNum) : '',
-      Description: String(t.Description||''), ReviewerId: String(t.ReviewerId||''),
-      Reviewer2Id: String(t.Reviewer2Id||''), SkipNextRollforward: 'No',
-    }));
-    const stepFields = steps.map(s => ({
-      Title: String(s.Title||''), StepId: String(s.StepId||uid()),
-      TaskId: String(s.TaskId||''), StepOrder: String(s.StepOrder||1),
-      Status: String(s.Status||'Not Started'), OwnerId: String(s.OwnerId||''),
-      DueDate: s.DueDate||null,
-      Applicability: String(s.Applicability||'All Quarters'),
-      WorkdayNum: s.WorkdayNum ? String(s.WorkdayNum) : '',
-      Note: String(s.Note||''), RequiresPrev: String(s.RequiresPrev||'No'),
-      ReviewerId: String(s.ReviewerId||''), Reviewer2Id: String(s.Reviewer2Id||''),
-    }));
-
-    // Users first (tasks reference them), tasks second (steps reference them), steps last
-    await writeBatch(LISTS.users, userFields);
-    await writeBatch(LISTS.tasks, taskFields);
-    await writeBatch(LISTS.steps, stepFields);
-
-    await refreshData();
-    preview.innerHTML = `
-      <div style="background:#D1FAE5;border:1px solid #6EE7B7;border-radius:8px;padding:12px 16px;font-size:13px;color:#065F46">
-        ✅ Import complete — ${imported} rows added${errors
-          ? `, <span style="color:#B45309">${errors} errors skipped (check browser console for details)</span>`
-          : ''}.
-      </div>`;
-  } catch(e) {
-    preview.innerHTML = `<p style="color:var(--red-500);font-size:13px">Import failed: ${escHtml(e.message)}</p>`;
-  } finally { showLoadingOverlay(false); }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 10 — NEW QUARTER WIZARD ─────────────────────────
-// ═══════════════════════════════════════════════════════════════
-let _qwizState = {};
-
-function openQuarterWizard() {
-  _qwizState = { step: 1 };
-  const cur = new Date();
-  const curQ = ['Q1','Q2','Q3','Q4'][Math.floor(cur.getMonth()/3)];
-  const curY = cur.getFullYear();
-  // Default: roll from current quarter to next
-  const nextIdx = ['Q1','Q2','Q3','Q4'].indexOf(curQ);
-  const nextQ   = ['Q2','Q3','Q4','Q1'][nextIdx];
-  const nextY   = nextQ==='Q1' ? curY+1 : curY;
-  _qwizState.fromQ = curQ; _qwizState.fromY = curY;
-  _qwizState.toQ   = nextQ; _qwizState.toY   = nextY;
-  renderQuarterWizardStep();
-  document.getElementById('quarter-wizard').classList.remove('hidden');
-}
-
-function renderQuarterWizardStep() {
-  const body  = document.getElementById('qwiz-body');
-  const title = document.getElementById('qwiz-title');
-  if (!body) return;
-  const { step } = _qwizState;
-
-  if (step === 1) {
-    title.textContent = '🔄 Step 1 of 4 — Choose Quarters';
-    const curY = new Date().getFullYear();
-    body.innerHTML = `
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px">Select the quarter you are rolling <b>from</b> and the new quarter you are rolling <b>into</b>.</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
-        <div>
-          <h4 style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--navy)">From (source quarter)</h4>
-          <div class="form-group"><label>Quarter</label>
-            <select id="qwiz-from-q" class="filter-select" style="width:100%">
-              ${['Q1','Q2','Q3','Q4'].map(q=>`<option value="${q}" ${_qwizState.fromQ===q?'selected':''}>${q}</option>`).join('')}
-            </select></div>
-          <div class="form-group"><label>Year</label>
-            <select id="qwiz-from-y" class="filter-select" style="width:100%">
-              ${[-1,0,1].map(d=>`<option value="${curY+d}" ${_qwizState.fromY===curY+d?'selected':''}>${curY+d}</option>`).join('')}
-            </select></div>
-        </div>
-        <div>
-          <h4 style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--navy)">To (new quarter)</h4>
-          <div class="form-group"><label>Quarter</label>
-            <select id="qwiz-to-q" class="filter-select" style="width:100%">
-              ${['Q1','Q2','Q3','Q4'].map(q=>`<option value="${q}" ${_qwizState.toQ===q?'selected':''}>${q}</option>`).join('')}
-            </select></div>
-          <div class="form-group"><label>Year</label>
-            <select id="qwiz-to-y" class="filter-select" style="width:100%">
-              ${[-1,0,1,2].map(d=>`<option value="${curY+d}" ${_qwizState.toY===curY+d?'selected':''}>${curY+d}</option>`).join('')}
-            </select></div>
-        </div>
-      </div>
-      <div style="display:flex;justify-content:flex-end">
-        <button class="btn-primary" onclick="qwizNext1()">Next → Review Tasks</button>
-      </div>`;
-
-  } else if (step === 2) {
-    title.textContent = `🔄 Step 2 of 4 — Review Tasks & Notes`;
-    const tasks = getTasks().filter(t =>
-      t.quarter===_qwizState.fromQ && t.year===_qwizState.fromY &&
-      !t.skipNextRollforward &&
-      appliesToQuarter(t.applicability, _qwizState.toQ)
-    );
-    _qwizState.selectedTaskIds    = tasks.map(t=>t._spId);
-    _qwizState.carryForwardNotes  = {}; // { taskSpId: true/false, stepSpId: true/false }
-
-    // Pre-populate carry-forward: checked = true for any task/step that has notes
-    tasks.forEach(t => {
-      if (t.notes||t.description) _qwizState.carryForwardNotes[t._spId] = true;
-      getStepsForTask(t._spId).forEach(s => {
-        if (s.notes||s.note) _qwizState.carryForwardNotes[s._spId] = true;
-      });
-    });
-
-    body.innerHTML = `
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:4px">
-        <b>${tasks.length}</b> tasks will be copied to ${_qwizState.toQ} ${_qwizState.toY}.
-        Deselect tasks to skip them. For tasks and steps with notes, choose whether to carry the note forward.
-      </p>
-      <p style="font-size:11px;color:var(--text-faint);margin-bottom:14px">Notes carry forward with a label showing which quarter they came from.</p>
-      <div style="max-height:400px;overflow-y:auto;border:0.5px solid var(--border);border-radius:8px;margin-bottom:16px">
-        ${tasks.length ? tasks.map(t => {
-          const taskNote   = t.notes || t.description || '';
-          const taskSteps  = getStepsForTask(t._spId).filter(s => appliesToQuarter(s.applicability, _qwizState.toQ));
-          const stepsWithNotes = taskSteps.filter(s => s.notes || s.note);
-          return `
-          <div style="border-bottom:0.5px solid var(--border)">
-            <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 14px;background:var(--bg-secondary)">
-              <input type="checkbox" value="${t._spId}" checked
-                onchange="qwizToggleTask('${t._spId}',this.checked)"
-                style="width:15px;height:15px;margin-top:2px;flex-shrink:0" />
-              <div style="flex:1;min-width:0">
-                <div style="font-size:13px;font-weight:600">${escHtml(t.name)}</div>
-                <div style="font-size:11px;color:var(--text-faint)">${escHtml(t.type)} · ${escHtml(t.status)}</div>
-                ${taskNote ? `
-                <div style="margin-top:6px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:12px;color:var(--text-muted)">
-                  <span style="font-weight:600;color:var(--navy);font-size:10px;text-transform:uppercase;letter-spacing:.04em">Task note: </span>${escHtml(taskNote)}
-                  <label style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer;font-size:11px;color:var(--text-muted)">
-                    <input type="checkbox" ${_qwizState.carryForwardNotes[t._spId]?'checked':''}
-                      onchange="_qwizState.carryForwardNotes['${t._spId}']=this.checked"
-                      style="width:13px;height:13px" />
-                    Carry this note forward to ${_qwizState.toQ} ${_qwizState.toY}
-                  </label>
-                </div>` : ''}
-              </div>
-            </div>
-            ${taskSteps.map((s,si) => `
-            <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 14px 8px 36px;border-top:0.5px solid #F0F2F7">
-              <div style="font-size:11px;color:var(--text-faint);min-width:16px;margin-top:2px">${s.order}.</div>
-              <div style="flex:1;min-width:0">
-                <div style="font-size:12px;font-weight:500">${escHtml(s.name)}</div>
-                ${(s.notes||s.note) ? `
-                <div style="margin-top:5px;background:#F9FAFB;border:1px solid var(--border);border-radius:5px;padding:6px 9px;font-size:11px;color:var(--text-muted)">
-                  ${escHtml(s.notes||s.note)}
-                  <label style="display:flex;align-items:center;gap:6px;margin-top:5px;cursor:pointer;font-size:11px;color:var(--text-muted)">
-                    <input type="checkbox" ${_qwizState.carryForwardNotes[s._spId]?'checked':''}
-                      onchange="_qwizState.carryForwardNotes['${s._spId}']=this.checked"
-                      style="width:13px;height:13px" />
-                    Carry this note forward
-                  </label>
-                </div>` : ''}
-              </div>
-            </div>`).join('')}
-          </div>`;
-        }).join('') : '<p style="padding:20px;text-align:center;color:var(--text-faint);font-size:13px">No tasks found in source quarter.</p>'}
-      </div>
-      <div style="display:flex;justify-content:space-between">
-        <button class="btn-secondary" onclick="_qwizState.step=1;renderQuarterWizardStep()">← Back</button>
-        <button class="btn-primary" onclick="qwizValidateAndNextStep()">Next → Set Close Calendar</button>
-      </div>`;
-
-  } else if (step === 3) {
-    title.textContent = `🔄 Step 3 of 4 — Set Close Calendar`;
-    const existing = loadCloseCalendar(_qwizState.toQ, _qwizState.toY);
-    body.innerHTML = `
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
-        Set Workday 1 for ${_qwizState.toQ} ${_qwizState.toY} — the first working day of your close process. This drives all workday-based due dates.
-      </p>
-      <div class="form-group" style="max-width:280px">
-        <label>Workday 1 date</label>
-        <input type="date" id="qwiz-wd1" value="${existing?.wd1Date||''}" />
-      </div>
-      <div id="qwiz-cal-preview" style="margin-top:16px"></div>
-      <div style="display:flex;justify-content:space-between;margin-top:16px">
-        <button class="btn-secondary" onclick="_qwizState.step=2;renderQuarterWizardStep()">← Back</button>
-        <button class="btn-primary" onclick="qwizNext3()">Next → Set Key Dates</button>
-      </div>`;
-
-    // Attach input listener now that innerHTML is set (inline <script> tags don't execute)
-    const wd1Input = document.getElementById('qwiz-wd1');
-    if (wd1Input) {
-      wd1Input.addEventListener('input', function() {
-        renderEditableCalGrid('qwiz-cal-preview', this.value, 20, true);
-      });
-      if (wd1Input.value) renderEditableCalGrid('qwiz-cal-preview', wd1Input.value, 20, true);
-    }
-
-  } else if (step === 4) {
-    title.textContent = `🔄 Step 4 of 4 — Key Dates & Confirm`;
-    const existing = _quarterDates.find(d=>d.quarter===_qwizState.toQ&&d.year===_qwizState.toY);
-    body.innerHTML = `
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
-        Optional — set external key dates for ${_qwizState.toQ} ${_qwizState.toY}.
-        These show as a countdown strip on the dashboard.
-      </p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
-        <div class="form-group"><label>SEC Filing Date</label><input type="date" id="qwiz-sec" value="${existing?.secFilingDate||''}" /></div>
-        <div class="form-group"><label>Earnings Call Date</label><input type="date" id="qwiz-earn" value="${existing?.earningsDate||''}" /></div>
-        <div class="form-group"><label>Earnings Call Time</label><input type="text" id="qwiz-earntime" value="${escHtml(existing?.earningsTime||'')}" placeholder="e.g. 8:30 AM ET" /></div>
-
-      </div>
-      <div style="background:var(--bg-secondary);border-radius:8px;padding:14px;margin-bottom:16px;font-size:13px">
-        <b>Summary:</b> Copying ${_qwizState.selectedTaskIds?.length||0} tasks from ${_qwizState.fromQ} ${_qwizState.fromY} → ${_qwizState.toQ} ${_qwizState.toY}
-      </div>
-      <div style="background:#FEF3C7;border:1px solid #FDE68A;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#92400E">
-        🔒 <b>Note:</b> ${_qwizState.fromQ} ${_qwizState.fromY} will be <b>locked</b> after rollforward — team members will no longer be able to edit those tasks. You can unlock it in Admin if needed.
-      </div>
-      <div style="display:flex;justify-content:space-between">
-        <button class="btn-secondary" onclick="_qwizState.step=3;renderQuarterWizardStep()">← Back</button>
-        <button class="btn-primary" onclick="runQuarterWizard()">🚀 Run Rollforward</button>
-      </div>`;
-  }
-}
-
-function qwizNext1() {
-  _qwizState.fromQ = document.getElementById('qwiz-from-q').value;
-  _qwizState.fromY = parseInt(document.getElementById('qwiz-from-y').value);
-  _qwizState.toQ   = document.getElementById('qwiz-to-q').value;
-  _qwizState.toY   = parseInt(document.getElementById('qwiz-to-y').value);
-  if (_qwizState.fromQ===_qwizState.toQ && _qwizState.fromY===_qwizState.toY) {
-    showToast('From and To quarters cannot be the same.', 'warning'); return;
-  }
-  if (isQuarterLocked(_qwizState.toQ, _qwizState.toY)) {
-    showToast(`${_qwizState.toQ} ${_qwizState.toY} is already locked. Unlock it in Admin before rolling forward into it.`, 'warning'); return;
-  }
-  const srcTasks = getTasks().filter(t => t.quarter===_qwizState.fromQ && t.year===_qwizState.fromY);
-  if (!srcTasks.length) {
-    showToast(`No tasks found in ${_qwizState.fromQ} ${_qwizState.fromY}. Nothing to roll forward.`, 'warning'); return;
-  }
-  _qwizState.step = 2;
-  renderQuarterWizardStep();
-}
-
-function qwizToggleTask(spId, checked) {
-  if (checked) {
-    if (!_qwizState.selectedTaskIds.includes(spId)) _qwizState.selectedTaskIds.push(spId);
-  } else {
-    _qwizState.selectedTaskIds = _qwizState.selectedTaskIds.filter(id=>id!==spId);
-  }
-}
-
-// Validates step 2 of the quarter wizard before advancing to step 3.
-// Extracted from inline onclick to keep the template readable.
-function qwizValidateAndNextStep() {
-  if (!_qwizState.selectedTaskIds?.length) {
-    showToast('No tasks selected — select at least one task to roll forward.', 'warning');
-    return;
-  }
-  _qwizState.step = 3;
-  renderQuarterWizardStep();
-}
-
-function qwizNext3() {
-  const wd1 = document.getElementById('qwiz-wd1')?.value;
-  if (!wd1) { showToast('Please set Workday 1 before continuing.', 'warning'); return; }
-  // Store WD1 in wizard state but do NOT save to localStorage yet.
-  // The calendar is saved inside runQuarterWizard() so that hitting
-  // Back from step 4 or closing the wizard does not leave a saved
-  // calendar for a quarter whose rollforward was never confirmed.
-  _qwizState.wd1 = wd1;
-  _qwizState.step = 4;
-  renderQuarterWizardStep();
-}
-
-async function runQuarterWizard() {
-  const { fromQ, fromY, toQ, toY, selectedTaskIds } = _qwizState;
-  const qEnd = quarterEndDate(toQ, toY);
-
-  // Save key dates if entered
-  const secDate   = document.getElementById('qwiz-sec')?.value   || null;
-  const earnDate  = document.getElementById('qwiz-earn')?.value  || null;
-  const earnTime  = document.getElementById('qwiz-earntime')?.value || '';
-  if (secDate||earnDate) {
-    // Save quarter dates inline (bypasses modal)
-    const qdFields = {
-      Title: `${toQ} ${toY}`,
-      Quarter: toQ, Year: String(toY),
-      SECFilingDate: secDate, EarningsCallDate: earnDate,
-      EarningsCallTime: earnTime,
-    };
-    const existQd = _quarterDates.find(d=>d.quarter===toQ&&d.year===toY);
-    try {
-      if (existQd) { await updateListItem(LISTS.quarterDates, existQd._spId, qdFields); Object.assign(existQd, normaliseQuarterDate({...qdFields,id:existQd._spId})); }
-      else { const c = await createListItem(LISTS.quarterDates, qdFields); _quarterDates.push(normaliseQuarterDate({...qdFields,id:c?.id||uid()})); }
-    } catch(e) { console.warn('Could not save key dates:', e.message); }
-  }
-
-  document.getElementById('quarter-wizard').classList.add('hidden');
-  showLoadingOverlay(true);
-
-  try {
-    // Save close calendar now that rollforward is confirmed — deferred from qwizNext3
-    if (_qwizState.wd1) saveCloseCalendar(_qwizState.toQ, _qwizState.toY, _qwizState.wd1);
-
-    const selectedTasks = getTasks().filter(t => selectedTaskIds.includes(t._spId));
-    if (!selectedTasks.length) {
-      showLoadingOverlay(false);
-      showToast('No tasks selected — rollforward cancelled. The source quarter was not locked.', 'warning');
-      return;
-    }
-    // _copyTasksToQuarter throws and rolls back if any task fails — lockQuarter
-    // is only reached when the full copy succeeded. This ordering is intentional:
-    // never lock the source quarter if the copy did not complete cleanly.
-    const copied = await _copyTasksToQuarter(selectedTasks, fromQ, fromY, toQ, toY, _qwizState.carryForwardNotes || {});
-    await lockQuarter(fromQ, fromY);
-    await refreshData();
-    showToast(`${copied} task${copied!==1?'s':''} copied to ${toQ} ${toY}. ${fromQ} ${fromY} locked.`, 'success', TOAST_DURATION_LONG);
-  } catch(e) { showToast('Quarter wizard failed: '+e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 12 — FULL AUDIT LOG EXPORT ──────────────────────
-// ═══════════════════════════════════════════════════════════════
-function exportFullAuditLog(scope) {
-  let tasks = getTasks();
-  let label = 'AllQuarters';
-  if (scope === 'quarter') {
-    const q  = document.getElementById('audit-quarter-select')?.value || 'Q1';
-    const yr = parseInt(document.getElementById('audit-year-select')?.value || new Date().getFullYear());
-    tasks = tasks.filter(t => t.quarter===q && t.year===yr);
-    label = `${q}_${yr}`;
-  }
-
-  // Sign-offs
-  const soRows = [];
-  tasks.forEach(t => {
-    // include refType as element [2] so we can split status vs date changes below
-    getSignOffsFor(t._spId).forEach(s => soRows.push([t.quarter, t.year, s.refType||'task', t.name, s.userName, s.fromStatus, s.toStatus, s.ts, s.tsIso]));
-    getStepsForTask(t._spId).forEach(step => {
-      getSignOffsFor(step._spId).forEach(s => soRows.push([t.quarter, t.year, s.refType||'step', step.name, s.userName, s.fromStatus, s.toStatus, s.ts, s.tsIso]));
-    });
-  });
-
-  // Comments
-  const allComments = _comments.filter(c => tasks.some(t => t._spId===c.taskId || t.id===c.taskId));
-  const commentRows = allComments.map(c => {
-    const task = tasks.find(t=>t._spId===c.taskId||t.id===c.taskId);
-    const cAuthor = getUserById(c.authorId)?.name || (c.authorId ? 'Former team member' : 'Unknown');
-    return [task?.quarter||'', task?.year||'', task?.name||'', c.stepId?'Step':'Task', cAuthor, c.text, c.time];
-  });
-
-  // Tasks summary
-  const taskRows = tasks.map(t => [t.quarter, t.year, t.name, t.type, t.status,
-    getUserById(t.ownerId)?.name||t.ownerId,
-    getUserById(t.reviewerId)?.name||'',
-    getUserById(t.reviewer2Id)?.name||'',
-    t.dueDate, t.applicability]);
-
-  // Separate due_date_change sign-offs into their own section for clarity
-  const statusChanges = soRows.filter(r => r[2] !== 'due_date_change');
-  const dateChanges   = soRows.filter(r => r[2] === 'due_date_change').map(r =>
-    [r[0], r[1], r[3], r[4], r[5], r[6], r[7], r[8]]  // Quarter, Year, Item, Changed By, Old Date, New Date, Display, ISO
-  );
-
-  const shHtml = (header, rows) => `<table>
-    <thead><tr>${header.map(h=>`<th style="background:#0f2140;color:#fff;font-weight:bold;padding:6px 10px;font-size:12px">${h}</th>`).join('')}</tr></thead>
-    <tbody>
-      ${rows.map((r,i) => `
-        <tr style="background:${i%2 ? '#f7f9fc' : '#fff'}">
-          ${r.map(c => `<td style="padding:6px 10px;font-size:12px;border:1px solid #dde3ed">${escHtml(String(c||''))}</td>`).join('')}
-        </tr>`).join('')}
-    </tbody>
-  </table>`;
-
-  const wb = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
-<head><meta charset="UTF-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
-  <x:ExcelWorksheet><x:Name>Tasks</x:Name><x:WorksheetOptions><x:Selected/></x:WorksheetOptions></x:ExcelWorksheet>
-  <x:ExcelWorksheet><x:Name>Sign-Off Log</x:Name><x:WorksheetOptions/></x:ExcelWorksheet>
-  <x:ExcelWorksheet><x:Name>Date Changes</x:Name><x:WorksheetOptions/></x:ExcelWorksheet>
-  <x:ExcelWorksheet><x:Name>Comments</x:Name><x:WorksheetOptions/></x:ExcelWorksheet>
-</x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
-<style>table{border-collapse:collapse}</style></head><body>
-${shHtml(['Quarter','Year','Task','Type','Status','Preparer','Reviewer 1','Reviewer 2','Due Date','Applicability'], taskRows)}
-${shHtml(['Quarter','Year','Item','Changed By','From Status','To Status','Display Time','ISO Time'], statusChanges)}
-${shHtml(['Quarter','Year','Item','Changed By','Old Date','New Date','Display Time','ISO Time'], dateChanges)}
-${shHtml(['Quarter','Year','Task','Level','Author','Comment','Time'], commentRows)}
-</body></html>`;
-
-  const blob = new Blob([wb], {type:'application/vnd.ms-excel;charset=utf-8'});
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href=url; a.download=`AuditLog_${label}_FRT.xls`;
-  a.click(); URL.revokeObjectURL(url);
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 9 — STICKY QUARTER ──────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function saveQuarterPref(q, yr) {
-  try { sessionStorage.setItem('ft_quarter', q); sessionStorage.setItem('ft_year', String(yr)); } catch(e) {}
-}
-function loadQuarterPref() {
-  try { return { q: sessionStorage.getItem('ft_quarter'), yr: sessionStorage.getItem('ft_year') }; } catch(e) { return {}; }
-}
-
-// Returns the active working quarter and year — used as the default
-// across all views. Uses the Admin-set working quarter if available,
-// otherwise falls back to the current calendar quarter.
-function workingQ() {
-  // SharePoint is the source of truth — check _quarterDates first
-  const spWq = _quarterDates.find(d => d.isWorkingQuarter);
-  if (spWq) return { q: spWq.quarter, yr: spWq.year };
-  // Fall back to localStorage (set before data loaded, or for offline use)
-  const local = loadWorkingQuarter();
-  if (local?.q && local?.yr) return local;
-  // Final fallback: current calendar quarter
-  const now = new Date(); const m = now.getMonth();
-  return { q: m<3?'Q1':m<6?'Q2':m<9?'Q3':'Q4', yr: now.getFullYear() };
-}
-
-// Working quarter — the quarter your team is currently closing.
-// Set in Admin. Persists in localStorage so every team member's app
-// defaults to the right quarter on login, regardless of calendar month.
-function saveWorkingQuarter(q, yr) {
-  try { localStorage.setItem('ft_working_q', q); localStorage.setItem('ft_working_yr', String(yr)); } catch(e) {}
-}
-function loadWorkingQuarter() {
-  try {
-    const q  = localStorage.getItem('ft_working_q');
-    const yr = localStorage.getItem('ft_working_yr');
-    return (q && yr) ? { q, yr: parseInt(yr) } : null;
-  } catch(e) { return null; }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 5 — COLOUR-CODED OWNERS ─────────────────────────
-// ═══════════════════════════════════════════════════════════════
-const OWNER_COLOURS = [
-  {bg:'#EDE9FE',text:'#5B21B6'}, {bg:'#CCFBF1',text:'#0F766E'},
-  {bg:'#FEE2E2',text:'var(--red-dark)'}, {bg:'#FEF9C3',text:'#713F12'},
-  {bg:'#DBEAFE',text:'#1D4ED8'}, {bg:'#FCE7F3',text:'#9D174D'},
-  {bg:'#D1FAE5',text:'#065F46'}, {bg:'#FED7AA',text:'#C2410C'},
-  {bg:'#E0E7FF',text:'#3730A3'}, {bg:'#F0FDF4',text:'#166534'},
-];
-const _ownerColorMap = {};
-function getOwnerColour(userId) {
-  if (!userId) return OWNER_COLOURS[0];
-  if (!_ownerColorMap[userId]) {
-    const idx = Object.keys(_ownerColorMap).length % OWNER_COLOURS.length;
-    _ownerColorMap[userId] = OWNER_COLOURS[idx];
-  }
-  return _ownerColorMap[userId];
-}
-function buildOwnerColorMap() {
-  // Clear existing keys without reassigning the const reference
-  Object.keys(_ownerColorMap).forEach(k => delete _ownerColorMap[k]);
-  _users.forEach((u, i) => {
-    _ownerColorMap[u._spId || u.id] = OWNER_COLOURS[i % OWNER_COLOURS.length];
-  });
-}
-function coloredAvatar(userId, name, size=28) {
-  const col = getOwnerColour(userId);
-  return `<div class="mini-avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.38)}px;background:${col.bg};color:${col.text}">${initials(name||'?')}</div>`;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 2 — UNDO TOAST ──────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-let _undoTimer = null;
-let _undoAction = null;
-let _undoSourceView = null; // the view that was active when the undoable action was taken
-
-function showUndoToast(message, undoFn) {
-  if (_undoTimer) { clearTimeout(_undoTimer); removeUndoToast(); }
-  _undoAction = undoFn;
-  // Remember which view triggered this so we can navigate back on undo
-  const activeView = document.querySelector('.view.active');
-  _undoSourceView = activeView ? activeView.id.replace('view-', '') : null;
-  let toast = document.getElementById('undo-toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'undo-toast';
-    toast.className = 'undo-toast';
-    document.body.appendChild(toast);
-  }
-  toast.innerHTML = `<span class="undo-msg">${escHtml(message)}</span>
-    <button class="undo-btn" onclick="executeUndo()">↩ Undo</button>
-    <button class="undo-close" onclick="removeUndoToast()">✕</button>`;
-  toast.classList.add('visible');
-  _undoTimer = setTimeout(removeUndoToast, UNDO_DURATION);
-}
-function removeUndoToast() {
-  const t = document.getElementById('undo-toast');
-  if (t) { t.classList.remove('visible'); }
-  _undoAction = null;
-  if (_undoTimer) { clearTimeout(_undoTimer); _undoTimer = null; }
-}
-async function executeUndo() {
-  if (_undoAction) {
-    const sourceView = _undoSourceView;
-    removeUndoToast();
-    await _undoAction();
-    // Navigate back to the view where the action originated if user has moved away
-    if (sourceView && !document.getElementById('view-' + sourceView)?.classList.contains('active')) {
-      const navEl = document.querySelector(`[data-view="${sourceView}"]`);
-      switchView(sourceView, navEl);
-    }
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 8 — DUE DATE CHANGE HISTORY ─────────────────────
-// ═══════════════════════════════════════════════════════════════
-// Stored in sign-off log with refType='due_date_change'
-async function recordDueDateChange(spId, itemType, itemName, oldDate, newDate) {
-  if (oldDate === newDate) return;
-  const signOffId = uid(); // single ID shared between SharePoint record and local cache
-  const entry = {
-    Title:        `Due date changed: ${itemName}`,
-    SignOffId:    signOffId,
-    RefId:        String(spId),
-    RefType:      'due_date_change',
-    RefName:      itemName,
-    UserId:       currentUserId(),
-    UserName:     currentUser.name,
-    FromStatus:   oldDate || '(none)',
-    ToStatus:     newDate || '(none)',
-    Timestamp:    nowLabel(),
-    TimestampISO: nowISO(),
-  };
-  // Optimistically push to local cache first
-  _signOffs.unshift(normaliseSignOff({ ...entry, id: signOffId }));
-  try {
-    const created = await createListItem(LISTS.signOffs, entry);
-    // Patch the local cache entry with the real SharePoint ID once available
-    const cached = _signOffs.find(s => s.id === signOffId);
-    if (cached && created?.id) cached._spId = created.id;
-  } catch(e) { console.warn('Could not record due date change:', e.message); }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 3 — GLOBAL SEARCH ───────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function openGlobalSearch() {
-  let overlay = document.getElementById('global-search-overlay');
-  if (!overlay) {
-    overlay = document.createElement('div');
-    overlay.id = 'global-search-overlay';
-    overlay.className = 'gs-overlay';
-    overlay.innerHTML = `
-      <div class="gs-box" onclick="event.stopPropagation()">
-        <div class="gs-input-wrap">
-          <span class="gs-icon">🔍</span>
-          <input type="text" id="gs-input" class="gs-input" placeholder="Search tasks, steps, comments, users…" oninput="runGlobalSearch(this.value)" autocomplete="off" />
-          <button class="gs-close" onclick="closeGlobalSearch()">✕</button>
-        </div>
-        <div id="gs-results" class="gs-results"></div>
-      </div>`;
-    overlay.addEventListener('click', closeGlobalSearch);
-    document.body.appendChild(overlay);
-  }
-  overlay.classList.add('visible');
-  setTimeout(() => document.getElementById('gs-input')?.focus(), 50);
-}
-
-function closeGlobalSearch() {
-  const overlay = document.getElementById('global-search-overlay');
-  if (overlay) overlay.classList.remove('visible');
-}
-
-function runGlobalSearch(q) {
-  const el = document.getElementById('gs-results'); if(!el) return;
-  q = (q||'').toLowerCase().trim();
-  if (!q || q.length < 2) { el.innerHTML = '<div class="gs-hint">Type at least 2 characters to search…</div>'; return; }
-
-  const results = [];
-
-  // Tasks
-  getActiveTasks().filter(t => t.name.toLowerCase().includes(q) || (t.description||'').toLowerCase().includes(q) || (t.notes||'').toLowerCase().includes(q))
-    .slice(0,5).forEach(t => results.push({
-      type:'Task', icon:'📋', label:t.name, sub:`${t.type} · ${t.quarter} ${t.year} · ${statusBadgeClass(t.status)?t.status:''}`,
-      action: `closeGlobalSearch();
-               switchView('dashboard',document.querySelector('[data-view=\'dashboard\']'));
-               document.getElementById('quarter-filter').value='${t.quarter}';
-               document.getElementById('year-filter').value='${t.year}';
-               renderDashboard();`
-    }));
-
-  // Steps
-  _steps.filter(s => s.name.toLowerCase().includes(q) || (s.notes||s.note||'').toLowerCase().includes(q))
-    .slice(0,5).forEach(s => {
-      const task = _tasks.find(t=>t._spId===s.taskId);
-      results.push({ type:'Step', icon:'📝', label:s.name, sub:`Step in: ${task?.name||'Unknown task'}`,
-        action: `openSteps('${s.taskId}','${escHtml(task?.name||'')}');closeGlobalSearch();` });
-    });
-
-  // Comments
-  _comments.filter(c => c.text.toLowerCase().includes(q))
-    .slice(0,3).forEach(c => {
-      const task = _tasks.find(t=>t._spId===c.taskId||t.id===c.taskId);
-      results.push({ type:'Comment', icon:'💬', label:c.text.slice(0,60)+(c.text.length>60?'…':''),
-        sub:`By ${getUserById(c.authorId)?.name||'Former team member'} on ${task?.name||'Unknown task'}`,
-        action: `openComments('${c.taskId}','${escHtml(task?.name||'')}');closeGlobalSearch();` });
-    });
-
-  // Users
-  _users.filter(u => u.name.toLowerCase().includes(q) || u.role.toLowerCase().includes(q) || (u.email||'').toLowerCase().includes(q))
-    .slice(0,3).forEach(u => results.push({
-      type:'User', icon:'👤', label:u.name, sub:`${u.role}${u.isAdmin?' · Admin':''}`,
-      action: `closeGlobalSearch();`
-    }));
-
-  if (!results.length) { el.innerHTML = `<div class="gs-hint">No results for "<b>${escHtml(q)}</b>"</div>`; return; }
-
-  el.innerHTML = results.map(r => `
-    <div class="gs-result" onclick="${r.action}">
-      <span class="gs-result-icon">${r.icon}</span>
-      <div class="gs-result-body">
-        <div class="gs-result-label">${escHtml(r.label)}</div>
-        <div class="gs-result-sub">${escHtml(r.sub)}</div>
-      </div>
-      <span class="gs-result-type">${r.type}</span>
-    </div>`).join('');
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 4 — SAVED FILTERS ───────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-const MAX_SAVED_FILTERS = 3;
-
-function getSavedFilters() {
-  try { return JSON.parse(localStorage.getItem('ft_saved_filters')||'[]'); } catch(e) { return []; }
-}
-function setSavedFilters(filters) {
-  try { localStorage.setItem('ft_saved_filters', JSON.stringify(filters)); } catch(e) {}
-}
-
-function saveCurrentFilter() {
-  const filters = getSavedFilters();
-  if (filters.length >= MAX_SAVED_FILTERS) {
-    showToast(`You can save up to ${MAX_SAVED_FILTERS} filters. Delete one first.`, 'warning'); return;
-  }
-  const q    = document.getElementById('quarter-filter')?.value || 'Q1';
-  const yr   = document.getElementById('year-filter')?.value || new Date().getFullYear();
-  const type = activeTypeFilter;
-  const filter = activeFilter;
-  document.getElementById('modal-title').textContent = 'Save Filter';
-  document.getElementById('modal-body').innerHTML = `
-    <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
-      Saves the current quarter (${q} ${yr}), quick filter, and type filter as a named shortcut.
-    </p>
-    <div class="form-group"><label>Filter name</label>
-      <input type="text" id="save-filter-name" placeholder='e.g. My Q1 overdue' style="width:100%" />
-    </div>
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="
-        const n=document.getElementById('save-filter-name')?.value.trim();
-        if(!n){showToast('Please enter a name.','warning');return;}
-        const f=getSavedFilters();
-        f.push({name:n,q:'${q}',yr:'${yr}',type:'${type}',filter:'${filter}'});
-        setSavedFilters(f);renderSavedFilters();closeAllModals();
-        showToast('Filter saved: '+n,'success',2500);
-      ">Save</button>
-    </div>`;
-  openModal();
-  setTimeout(()=>document.getElementById('save-filter-name')?.focus(),50);
-}
-
-function applySavedFilter(idx) {
-  const filters = getSavedFilters();
-  const f = filters[idx]; if(!f) return;
-  // Legacy filters saved with filter='mine' → redirect to My Tasks
-  if (f.filter === 'mine') {
-    switchView('mytasks', document.querySelector('[data-view="mytasks"]'));
-    return;
-  }
-  const qEl = document.getElementById('quarter-filter');
-  const yEl = document.getElementById('year-filter');
-  if (qEl) qEl.value = f.q;
-  if (yEl) yEl.value = f.yr;
-  activeFilter     = f.filter || 'all';
-  activeTypeFilter = f.type   || 'all';
-  const typeEl = document.getElementById('type-filter');
-  if (typeEl) typeEl.value = activeTypeFilter;
-  document.querySelectorAll('.qfilter').forEach(b => {
-    b.classList.toggle('active', b.dataset.filter === activeFilter);
-  });
-  saveQuarterPref(f.q, f.yr);
-  renderDashboard();
-  switchView('dashboard', document.querySelector('[data-view="dashboard"]'));
-}
-
-function deleteSavedFilter(idx) {
-  const filters = getSavedFilters();
-  filters.splice(idx, 1);
-  setSavedFilters(filters);
-  renderSavedFilters();
-}
-
-function renderSavedFilters() {
-  const bar     = document.getElementById('saved-filters-bar');
-  const details = document.getElementById('saved-filters-details');
-  const lbl     = document.getElementById('saved-filters-summary-label');
-  if (!bar) return;
-  const filters = getSavedFilters();
-  // Update summary label with count
-  if (lbl) lbl.textContent = filters.length ? `☆ Saved filters (${filters.length})` : '☆ Saved filters';
-  bar.innerHTML = filters.map((f,i) => `
-    <div class="saved-filter-chip">
-      <span onclick="applySavedFilter(${i})">${escHtml(f.name)}</span>
-      <button onclick="deleteSavedFilter(${i})" title="Delete filter">✕</button>
-    </div>`).join('');
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── COMPACT MODE ─────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-// Toggles compact row display. Persists preference in localStorage.
-function toggleCompactMode() {
-  const isCompact = document.body.classList.toggle('compact');
-  try { localStorage.setItem('ft_compact', isCompact ? '1' : '0'); } catch(e) {}
-  const btn = document.getElementById('compact-toggle');
-  if (btn) btn.textContent = isCompact ? '⊞ Normal' : '⊟ Compact';
-}
-function initCompactMode() {
-  try {
-    if (localStorage.getItem('ft_compact') === '1') {
-      document.body.classList.add('compact');
-      const btn = document.getElementById('compact-toggle');
-      if (btn) btn.textContent = '⊞ Normal';
-    }
-  } catch(e) {}
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── FEATURE 11 — DRAG TO REORDER STEPS ──────────────────────
-// ═══════════════════════════════════════════════════════════════
-let _dragStepSpId = null;
-
-function stepDragStart(e, stepSpId) {
-  _dragStepSpId = stepSpId;
-  e.dataTransfer.effectAllowed = 'move';
-  e.currentTarget.classList.add('step-dragging');
-}
-function stepDragEnd(e) {
-  e.currentTarget.classList.remove('step-dragging');
-  document.querySelectorAll('.step-drag-over').forEach(el => el.classList.remove('step-drag-over'));
-}
-function stepDragOver(e, stepSpId) {
-  e.preventDefault();
-  if (_dragStepSpId === stepSpId) return;
-  e.dataTransfer.dropEffect = 'move';
-  document.querySelectorAll('.step-drag-over').forEach(el => el.classList.remove('step-drag-over'));
-  e.currentTarget.closest('.step-row')?.classList.add('step-drag-over');
-}
-async function stepDrop(e, targetSpId) {
-  e.preventDefault();
-  document.querySelectorAll('.step-drag-over').forEach(el => el.classList.remove('step-drag-over'));
-  if (!_dragStepSpId || _dragStepSpId === targetSpId) return;
-  const steps = getStepsForTask(stepsTaskSpId).sort((a,b)=>(a.order||0)-(b.order||0));
-  const dragIdx   = steps.findIndex(s=>s._spId===_dragStepSpId);
-  const targetIdx = steps.findIndex(s=>s._spId===targetSpId);
-  if (dragIdx < 0 || targetIdx < 0) return;
-  // Reorder in memory
-  const [moved] = steps.splice(dragIdx, 1);
-  steps.splice(targetIdx, 0, moved);
-  // Assign new order numbers and save
-  showLoadingOverlay(true);
-  try {
-    for (let i=0; i<steps.length; i++) {
-      steps[i].order = i+1;
-      await updateListItem(LISTS.steps, steps[i]._spId, { StepOrder: String(i+1) });
-    }
-    renderStepsPanel();
-  } catch(e) { showToast('Could not reorder steps: '+e.message, 'error'); }
-  finally { showLoadingOverlay(false); _dragStepSpId = null; }
-}
-// ── INIT ──────────────────────────────────────────────────────
-(function init() {
-  // Set version in sidebar
-  const vEl = document.getElementById('app-version');
-  if (vEl) vEl.textContent = APP_VERSION;
-
-  // Show today's date on login screen
-  const qCtx = document.getElementById('login-quarter-context');
-  if (qCtx) {
-    qCtx.textContent = new Date().toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
-  }
-
-  // Handle redirect — when returning from Microsoft login, complete the sign-in
-  msalInstance.handleRedirectPromise()
-    .then(async result => {
-      if (result) {
-        // Returning from loginRedirect — complete the login flow
-        await afterMicrosoftLogin();
-      }
-    })
-    .catch(e => { showError("Sign-in failed: " + e.message); });
-
-  // Check if setup is needed (after redirect promise so auth state is settled)
-  showSetupWizardIfNeeded();
-
-  // Keyboard shortcuts
-  document.addEventListener('keydown', e => {
-    const tag = document.activeElement?.tagName?.toLowerCase();
-    const inInput = tag === 'input' || tag === 'textarea' || tag === 'select';
-    // "/" opens global search (when not typing)
-    if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !inInput) {
-      e.preventDefault();
-      openGlobalSearch();
-      return;
-    }
-    // Escape closes any open overlay/modal
-    if (e.key === 'Escape') {
-      const search = document.getElementById('global-search-overlay');
-      if (search?.classList.contains('visible')) { closeGlobalSearch(); return; }
-      const steps = document.getElementById('steps-overlay');
-      if (steps && !steps.classList.contains('hidden')) { closeStepsPanel(); return; }
-      const comments = document.getElementById('comment-overlay');
-      if (comments && !comments.classList.contains('hidden')) { closeCommentModal(); return; }
-      const modal = document.getElementById('modal-overlay');
-      if (modal && !modal.classList.contains('hidden')) { closeAllModals(); return; }
-      const checklist = document.getElementById('checklist-overlay');
-      if (checklist && !checklist.classList.contains('hidden')) { exitChecklistMode(); return; }
-    }
-  });
-
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) {
-    // Already signed in with Microsoft — restore session or re-identify
-    const savedId = sessionStorage.getItem('ft_session');
-    if (savedId) {
-      loadAllData().then(() => {
-        const user = _users.find(u => (u._spId||u.id) === savedId);
-        if (user) { currentUser = user; launchApp(); }
-        else { afterMicrosoftLogin(); } // session expired
-      }).catch(e => {
-        showError('Could not restore session: ' + e.message);
-      });
+        </div>`;
     } else {
-      afterMicrosoftLogin(); // signed in but no session — identify and launch
+      // Not authorised to sign reviewer step — show override button
+      html = `
+        <div style="font-size:11px;color:var(--slate);margin-bottom:8px">
+          Awaiting reviewer sign-off by ${renderBadge(assignment.Reviewer)}.
+        </div>
+        <button class="btn-secondary btn-sm" data-action="signoff-behalf" data-id="${assignment._id}" data-role="reviewer">
+          Sign Off on Behalf…
+        </button>`;
+    }
+  } else {
+    // All signed off — show reverse options
+    if (prepDone && canReversePreparer) {
+      html += `<button class="btn-danger btn-sm" data-action="reverse" data-id="${assignment._id}" data-role="preparer" style="margin-right:6px">Reverse preparer sign-off</button>`;
+    }
+    if (revDone && canReverseReviewer) {
+      html += `<button class="btn-danger btn-sm" data-action="reverse" data-id="${assignment._id}" data-role="reviewer">Reverse reviewer sign-off</button>`;
+    }
+    if (!html) {
+      html = `<p style="font-size:11px;color:var(--slate)">Task complete.</p>`;
     }
   }
-})();
 
-// ═══════════════════════════════════════════════════════════════
-// ── MY TASKS VIEW ────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function renderMyTasks() {
-  const userId = currentUserId(); // canonical ID for the current user
-  const titleEl = document.getElementById('mytasks-title');
-  if (titleEl) titleEl.textContent = `My Tasks — ${currentUser.name.split(' ')[0]}`;
-  const container = document.getElementById('mytasks-content');
+  actionDiv.innerHTML = html;
+  attachCardEvents();
+}
+
+function closeTaskPanel() {
+  document.getElementById('task-panel')?.classList.add('hidden');
+  document.getElementById('panel-overlay')?.classList.add('hidden');
+  STATE.taskDetailId = null;
+}
+
+// ============================================================
+// REVIEW COMMENTS VIEW
+// ============================================================
+function renderReviewComments() {
+  const quarter = getReadQuarter();
+
+  // Populate the quarter filter dropdown — repopulated on every render so new quarters appear.
+  const quarterFilterSel = document.getElementById('rc-quarter-filter');
+  if (quarterFilterSel) {
+    const currentQ = quarterFilterSel.value || 'all';
+    const quarters = [...new Set(STATE.reviewComments.map(rc => rc.Quarter).filter(Boolean))].sort().reverse();
+    quarterFilterSel.innerHTML = '<option value="all">All quarters</option>' +
+      quarters.map(q => `<option value="${escapeHtml(q)}" ${q === currentQ ? 'selected' : ''}>${escapeHtml(q)}</option>`).join('');
+    if (!quarterFilterSel.dataset.listenerAttached) {
+      quarterFilterSel.dataset.listenerAttached = 'true';
+      quarterFilterSel.addEventListener('change', () => {
+        STATE.filters.rcQuarter = quarterFilterSel.value;
+        renderReviewComments();
+      });
+    }
+  }
+
+  // Apply quarter filter if set
+  const rcQuarter = STATE.filters.rcQuarter && STATE.filters.rcQuarter !== 'all'
+    ? STATE.filters.rcQuarter
+    : quarter;
+  const sub = document.getElementById('rc-sub');
+  if (sub) {
+    const urgent  = STATE.reviewComments.filter(rc => rc.Priority === 'Urgent' && rc.Status === 'Open').length;
+    const open    = STATE.reviewComments.filter(rc => rc.Status === 'Open').length;
+    const resolved = STATE.reviewComments.filter(rc => rc.Status === 'Resolved').length;
+    sub.textContent = `${quarter || '—'} · ${urgent} urgent · ${open} open · ${resolved} resolved`;
+    document.getElementById('rc-urgent-count').textContent = urgent;
+    document.getElementById('rc-open-count').textContent = STATE.reviewComments.filter(rc => rc.Priority === 'Normal' && rc.Status === 'Open').length;
+    document.getElementById('rc-resolved-count').textContent = resolved;
+  }
+
+  const urgentList = document.getElementById('rc-urgent-list');
+  const openList   = document.getElementById('rc-open-list');
+  const resolvedList = document.getElementById('rc-resolved-list');
+
+  const allRCs  = rcQuarter ? STATE.reviewComments.filter(rc => rc.Quarter === rcQuarter) : STATE.reviewComments;
+  const urgent  = allRCs.filter(rc => rc.Priority === 'Urgent' && rc.Status === 'Open');
+  const normal  = allRCs.filter(rc => rc.Priority === 'Normal' && rc.Status === 'Open');
+  const resolved = allRCs.filter(rc => rc.Status === 'Resolved');
+
+  const urgentSection = document.getElementById('rc-urgent-section');
+  if (urgentSection) urgentSection.classList.toggle('hidden', urgent.length === 0);
+  const openSection = document.getElementById('rc-open-section');
+  if (openSection) openSection.classList.toggle('hidden', normal.length === 0);
+
+  if (urgentList) urgentList.innerHTML = urgent.map(rc => renderRCCard(rc)).join('');
+  if (openList)   openList.innerHTML   = normal.map(rc => renderRCCard(rc)).join('');
+  if (resolvedList) resolvedList.innerHTML = resolved.map(rc => renderRCCard(rc, true)).join('');
+}
+
+function renderRCCard(rc, isResolved = false) {
+  const template   = STATE.templates.find(t => t._id === rc.TaskTemplateLookupId);
+  const taskName   = template?.TaskName || rc.Title || '—';
+  const taggedBadges = (rc.TaggedUsers || '').split(';').filter(Boolean).map(e => renderBadge(e.trim())).join('');
+  const resNote = rc.ResolutionNote
+    ? `<div class="resolution-note">✓ Resolved by ${renderBadge(rc.ResolvedBy)} · ${formatDateET(rc.ResolvedDate)}${rc.ResolutionNote ? ' · "' + escapeHtml(rc.ResolutionNote) + '"' : ''}</div>`
+    : '';
+  const canResolve = !isResolved && (rc.CreatedBy === STATE.currentUser?.Email || STATE.isAdmin);
+
+  // Find the assignment for this task so we can show key metadata without opening the panel.
+  const assignment = STATE.assignments.find(a => a.TaskTemplateLookupId === rc.TaskTemplateLookupId);
+  const assignmentId = assignment?._id || null;
+  const taskMeta = assignment
+    ? `<div class="rc-task-meta">
+        ${renderBadge(assignment.Preparer)}
+        ${assignment.Reviewer ? `<span class="rc-meta-text">→</span>${renderBadge(assignment.Reviewer)}` : ''}
+        <span class="rc-meta-text">Due WD${assignment.PreparerWorkday}${assignment.ReviewerWorkday ? ' / WD' + assignment.ReviewerWorkday : ''}</span>
+        ${renderStatusBadge(assignment)}
+       </div>`
+    : '';
+
+  // Reply count badge — gives a heads-up that there's a thread without scrolling.
+  const replyCount = (STATE.rcReplies || []).filter(r => r.ReviewCommentLookupId === rc._id).length;
+  const replyBadge = replyCount > 0
+    ? `<span class="rc-reply-count">${replyCount} repl${replyCount === 1 ? 'y' : 'ies'}</span>`
+    : '';
+
+  return `
+    <div class="rc-card ${rc.Priority === 'Urgent' ? 'urgent' : ''} ${isResolved ? 'resolved' : ''}">
+      <div class="rc-card-header">
+        <div>
+          <div class="rc-task-link ${assignmentId ? 'rc-task-link-active' : ''}"
+               ${assignmentId ? `data-action="rc-open-task" data-id="${assignmentId}"` : ''}
+               role="${assignmentId ? 'button' : ''}"
+               ${assignmentId ? 'tabindex="0"' : ''}
+               title="${assignmentId ? 'Click to open task' : ''}"
+          >${escapeHtml(taskName)}</div>
+          ${taskMeta}
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
+          <div class="rc-badges">
+            <span class="${rc.Priority === 'Urgent' ? 'badge-urgent' : 'badge-normal'}">${rc.Priority}</span>
+            <span class="${isResolved ? 'badge-resolved' : 'badge-open'}">${isResolved ? '✓ Resolved' : 'Open'}</span>
+          </div>
+          ${replyBadge}
+        </div>
+      </div>
+      <div class="rc-comment-text">"${escapeHtml(rc.CommentText || '')}"</div>
+      <div class="rc-meta">
+        ${renderBadge(rc.CreatedBy)}
+        <span class="rc-meta-text">${formatDateShort(rc.CreatedDate) || '—'}</span>
+        ${taggedBadges}
+      </div>
+      ${resNote}
+      ${renderRCReplies(rc._id)}
+      ${!isResolved ? `
+      <div class="rc-actions">
+        ${!isViewingHistory() ? `<button class="btn-icon" data-action="rc-reply" data-id="${rc._id}">Reply</button>` : ''}
+        ${canResolve && !isViewingHistory() ? `<button class="btn-success btn-sm" data-action="rc-resolve" data-id="${rc._id}">✓ Mark Resolved</button>` : ''}
+      </div>` : ''}
+    </div>`;
+}
+
+function renderRCReplies(rcId) {
+  const replies = (STATE.rcReplies || []).filter(r => r.ReviewCommentLookupId === rcId);
+  if (!replies.length) return '';
+  return replies.map(r => `
+    <div class="rc-reply">
+      <div class="rc-reply-text">${escapeHtml(r.ReplyText || '')}</div>
+      <div class="rc-reply-meta">${renderBadge(r.CreatedByEmail)} · ${formatDateShort(r.CreatedDate)}</div>
+    </div>`).join('');
+}
+
+// ============================================================
+// MATRIX VIEW
+// ============================================================
+function renderMatrixView() {
+  const container = document.getElementById('matrix-container');
   if (!container) return;
 
-  // Quarter filter
-  const mqEl = document.getElementById('mytasks-quarter');
-  const myEl = document.getElementById('mytasks-year');
-  const mq   = mqEl?.value || 'all';
-  const my   = myEl?.value ? parseInt(myEl.value) : 0;
+  const quarter = getReadQuarter();
+  const sub = document.getElementById('matrix-sub');
+  if (sub) sub.textContent = `${quarter || '—'} · Final reviewer summary`;
 
-  // All tasks/steps where I am preparer, reviewer 1, or reviewer 2
-  let allTasks = getActiveTasks().filter(t =>
-    t.status !== 'Not Applicable' &&
-    (t.ownerId===userId || t.reviewerId===userId || t.reviewer2Id===userId)
-  );
-  if (mq !== 'all') allTasks = allTasks.filter(t => t.quarter===mq && (!my || t.year===my));
-  let allSteps = _steps.filter(s => {
-    if (s.status === 'Not Applicable') return false;
-    if (!(s.ownerId===userId || s.reviewerId===userId || s.reviewer2Id===userId)) return false;
-    const pt = _tasks.find(t => t._spId === s.taskId);
-    if (!pt || isQuarterLocked(pt.quarter, pt.year)) return false; // exclude locked quarters
-    return true;
-  });
-  if (mq !== 'all') {
-    allSteps = allSteps.filter(s => {
-      const pt = _tasks.find(t=>t._spId===s.taskId);
-      return pt && pt.quarter===mq && (!my || pt.year===my);
+  // Get matrix items grouped by section
+  const sections = {
+    'Form 10-Q': [],
+    'MD&A': [],
+  };
+
+  // Get unique matrix items from templates
+  const filingType = isQuarterQ4(quarter) ? '10-K' : '10-Q';
+  STATE.templates
+    .filter(t => t.MatrixItem && t.MatrixSection && (t.FilingType === filingType || t.FilingType === 'Both'))
+    .forEach(t => {
+      const section = t.MatrixSection;
+      if (!sections[section]) sections[section] = [];
+      if (!sections[section].find(i => i.name === t.MatrixItem)) {
+        sections[section].push({ name: t.MatrixItem });
+      }
     });
+
+  // Build matrix table
+  const checkpoints = CONFIG.matrixCheckpoints;
+  let html = `<table class="matrix-table">
+    <thead><tr>
+      <th class="left-align" style="min-width:160px">Item</th>
+      <th class="left-align" style="min-width:80px">Preparer</th>
+      <th class="left-align" style="min-width:80px">1st Reviewer</th>
+      ${checkpoints.map(cp => `<th style="min-width:60px">${escapeHtml(cp)}</th>`).join('')}
+    </tr></thead>
+    <tbody>`;
+
+  Object.entries(sections).forEach(([sectionName, items]) => {
+    if (!items.length) return;
+    html += `<tr class="section-header"><td colspan="${3 + checkpoints.length}">${escapeHtml(sectionName)}</td></tr>`;
+
+    items.forEach(item => {
+      // Get preparer and reviewer from assignments
+      const assignments = STATE.assignments.filter(a => a.MatrixItem === item.name);
+      const preparers = [...new Set(assignments.map(a => a.Preparer).filter(Boolean))];
+      const reviewers = [...new Set(assignments.map(a => a.Reviewer).filter(Boolean))];
+
+      html += `<tr>
+        <td class="item-cell">${escapeHtml(item.name)}</td>
+        <td class="person-cell">${preparers.map(e => renderBadge(e)).join('')}</td>
+        <td class="person-cell">${reviewers.map(e => renderBadge(e)).join('')}</td>`;
+
+      checkpoints.forEach(cp => {
+        const isMatrixOnly = CONFIG.matrixOnlyColumns.includes(cp);
+
+        if (isMatrixOnly) {
+          // Matrix-only column — use module-level MATRIX_FIELD_MAP
+          const ms = STATE.matrixStatus.find(m => m.MatrixItem === item.name && m.Quarter === quarter);
+          const fm = MATRIX_FIELD_MAP[cp];
+          const status = ms?.[fm.status] || 'Not Started';
+          const isFinalReview = cp === 'Final Review';
+          const canAct = isFinalReview ? STATE.isFinalReviewer : true;
+
+          if (status === 'Complete') {
+            const tooltip = `Signed off by ${ms?.[fm.by] || '—'} · ${formatDateET(ms?.[fm.date])}`;
+            html += `<td class="cell-done" title="${escapeHtml(tooltip)}">
+              <svg width="12" height="12" viewBox="0 0 12 12"><polyline points="2,6 5,9 10,3" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </td>`;
+          } else if (status === 'N/A') {
+            html += `<td class="cell-na" title="Not applicable"></td>`;
+          } else if (canAct && !isViewingHistory()) {
+            html += `<td class="cell-actionable" data-action="matrix-update" data-item="${escapeHtml(item.name)}" data-col="${escapeHtml(cp)}" title="Click to update">
+              <svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="#005EFF" stroke-width="1.5"/></svg>
+            </td>`;
+          } else {
+            html += `<td class="cell-empty"></td>`;
+          }
+        } else {
+          // Task-linked column — use getCheckpointRole/getSignOffFields for consistent field access
+          const linkedAssignment = STATE.assignments.find(
+            a => a.MatrixItem === item.name && a.MatrixCheckpoint === cp
+          );
+
+          if (!linkedAssignment) {
+            html += `<td class="cell-na" title="Not applicable"></td>`;
+          } else {
+            const cpRole = getCheckpointRole(cp);
+            const cpFields = getSignOffFields(cpRole);
+            const done = linkedAssignment[cpFields.signOff];
+
+            if (done) {
+              const tooltip = `Signed off by ${linkedAssignment[cpFields.signOffBy] || '—'} · ${formatDateET(linkedAssignment[cpFields.signOffDate])}`;
+              html += `<td class="cell-done" title="${escapeHtml(tooltip)}" data-action="open-task" data-id="${linkedAssignment._id}">
+                <svg width="12" height="12" viewBox="0 0 12 12"><polyline points="2,6 5,9 10,3" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </td>`;
+            } else {
+              const overdue = isTaskOverdue(linkedAssignment);
+              const tooltip = `Assigned to ${linkedAssignment[cpFields.assignee] || '—'} · Due WD${linkedAssignment[cpFields.workday]}${overdue ? ' · Overdue' : ''}`;
+              html += `<td class="cell-empty" title="${escapeHtml(tooltip)}" data-action="open-task" data-id="${linkedAssignment._id}"></td>`;
+            }
+          }
+        }
+      });
+
+      html += '</tr>';
+    });
+  });
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+
+  // Attach matrix cell events
+  container.querySelectorAll('[data-action="matrix-update"]').forEach(cell => {
+    cell.setAttribute('tabindex', '0');
+    const activateCell = () => {
+      STATE.pendingMatrixAction = {
+        item: cell.dataset.item,
+        col:  cell.dataset.col,
+      };
+      const isNA = cell.dataset.col === 'Final Review' && !STATE.isFinalReviewer;
+      const titleEl = document.getElementById('matrix-modal-title');
+      const descEl = document.getElementById('matrix-modal-desc');
+      const optsEl = document.getElementById('matrix-modal-options');
+      if (titleEl) titleEl.textContent = `Update: ${cell.dataset.item} — ${cell.dataset.col}`;
+      if (descEl) descEl.textContent = `Choose the new status for this item.`;
+      if (optsEl) optsEl.innerHTML = `
+        <label class="radio-opt"><input type="radio" name="matrix-action" value="Complete" checked/> ✓ Mark as Complete</label>
+        <label class="radio-opt"><input type="radio" name="matrix-action" value="N/A"/> — Mark as N/A</label>`;
+      showModal('modal-matrix-action');
+    };
+    cell.addEventListener('click', activateCell);
+    cell.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activateCell(); }
+    });
+  });
+
+  container.querySelectorAll('[data-action="open-task"]').forEach(cell => {
+    cell.setAttribute('tabindex', '0');
+    cell.addEventListener('click', () => openTaskPanel(cell.dataset.id));
+    cell.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openTaskPanel(cell.dataset.id); }
+    });
+  });
+}
+
+// ============================================================
+// DASHBOARD VIEW
+// ============================================================
+function renderDashboard() {
+  const quarter = getReadQuarter();
+  const sub = document.getElementById('dashboard-sub');
+  if (sub) sub.textContent = `${quarter || '—'} · ${STATE.isAdmin ? 'Admin view' : 'Read-only'}`;
+
+  // Metrics
+  const total    = STATE.assignments.length;
+  const complete = STATE.assignments.filter(a => a.Status === 'Complete').length;
+  const overdue  = STATE.assignments.filter(a => isTaskOverdue(a)).length;
+  const urgentRC = STATE.reviewComments.filter(rc => rc.Priority === 'Urgent' && rc.Status === 'Open').length;
+  const pct = total ? Math.round((complete / total) * 100) : 0;
+
+  const metricGrid = document.getElementById('metric-grid');
+  if (metricGrid) {
+    metricGrid.innerHTML = `
+      <div class="metric-card"><div class="metric-label">Overall complete</div><div class="metric-value ${pct > 75 ? 'success' : ''}">${pct}%</div><div class="metric-sub">${complete} of ${total} tasks</div></div>
+      <div class="metric-card"><div class="metric-label">Overdue tasks</div><div class="metric-value ${overdue > 0 ? 'danger' : ''}">${overdue}</div><div class="metric-sub">Across all categories</div></div>
+      <div class="metric-card"><div class="metric-label">Urgent comments</div><div class="metric-value ${urgentRC > 0 ? 'danger' : ''}">${urgentRC}</div><div class="metric-sub">${STATE.reviewComments.filter(rc => rc.Status === 'Open').length} open total</div></div>
+      <div class="metric-card"><div class="metric-label">Active quarter</div><div class="metric-value" style="font-size:18px;padding-top:4px">${quarter || '—'}</div><div class="metric-sub">${isQuarterQ4(quarter) ? '10-K · WD1–35' : '10-Q · WD1–20'}</div></div>`;
   }
 
-  if (!allTasks.length && !allSteps.length) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-icon">🎉</div>
-      <p>Nothing assigned to you right now.</p></div>`;
+  // Category progress
+  const catBars = document.getElementById('category-bars');
+  if (catBars) {
+    const cats = [...new Set(STATE.assignments.map(a => a.Category).filter(Boolean))].sort();
+    catBars.innerHTML = cats.map(cat => {
+      const catTasks = STATE.assignments.filter(a => a.Category === cat);
+      const catComplete = catTasks.filter(a => a.Status === 'Complete').length;
+      const catPct = catTasks.length ? Math.round((catComplete / catTasks.length) * 100) : 0;
+      const danger = catPct < 30;
+      return `<div class="prog-row">
+        <div class="prog-label">${escapeHtml(cat)}</div>
+        <div class="prog-bar-wrap"><div class="prog-bar ${danger ? 'danger' : ''}" style="width:${catPct}%"></div></div>
+        <div class="prog-pct ${danger ? 'danger' : ''}">${catPct}%</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Person progress
+  const personBars = document.getElementById('person-bars');
+  if (personBars) {
+    personBars.innerHTML = STATE.users.map(user => {
+      const myTasks = STATE.assignments.filter(a => a.Preparer === user.Email || a.Reviewer === user.Email);
+      if (!myTasks.length) return '';
+      const done = myTasks.filter(a => a.Status === 'Complete').length;
+      const pctUser = Math.round((done / myTasks.length) * 100);
+      const danger = pctUser < 30;
+      const hex = user.Color || '#75787B';
+      return `<div class="prog-row">
+        <span class="person-badge" style="background:${hex}22;color:${hex};width:90px;flex-shrink:0">${user.Emoji || ''} ${user.Title || ''}</span>
+        <div class="prog-bar-wrap"><div class="prog-bar ${danger ? 'danger' : ''}" style="width:${pctUser}%"></div></div>
+        <div class="prog-pct">${pctUser}%</div>
+      </div>`;
+    }).filter(Boolean).join('');
+  }
+
+  // Upcoming milestones
+  const milestoneList = document.getElementById('milestone-list');
+  if (milestoneList) {
+    const today = todayET();
+    const upcoming = STATE.calendar
+      .filter(c => c.MilestoneLabel && c.ActualDate >= today)
+      .slice(0, 5);
+    milestoneList.innerHTML = upcoming.map(m => `
+      <div class="milestone-row">
+        <span class="milestone-wd">WD${m.WorkdayNumber}</span>
+        <span class="milestone-date">${formatDateShort(m.ActualDate)}</span>
+        <span class="milestone-name">${escapeHtml(m.MilestoneLabel)}${m.ActualDate === today ? ' <span class="milestone-today">Today</span>' : ''}</span>
+      </div>`).join('') || '<p style="font-size:11px;color:var(--slate)">No upcoming milestones.</p>';
+  }
+
+  // Overdue detail
+  const overdueTitle = document.getElementById('overdue-summary-title');
+  const overdueSub   = document.getElementById('overdue-summary-sub');
+  if (overdueTitle) overdueTitle.textContent = `${overdue} overdue task${overdue !== 1 ? 's' : ''}`;
+  const overdueTasks = STATE.assignments.filter(a => isTaskOverdue(a));
+  const cats2 = [...new Set(overdueTasks.map(a => a.Category).filter(Boolean))];
+  if (overdueSub) overdueSub.textContent = cats2.length ? `Across ${cats2.join(', ')}` : '';
+
+  const overdueList = document.getElementById('overdue-detail-list');
+  if (overdueList) {
+    const wd = getTodaysWorkday(STATE.activeQuarter);
+    overdueList.innerHTML = overdueTasks.map(a => {
+      const dueWD = a.PreparerSignOff ? Number(a.ReviewerWorkday) : Number(a.PreparerWorkday);
+      const daysOver = typeof wd === 'number' ? wd - dueWD : 0;
+      return `<div class="overdue-detail-row">
+        <div>
+          <div style="font-size:12px;font-weight:500">${escapeHtml(a.Title || '')}</div>
+          <div style="font-size:10px;color:var(--slate)">${escapeHtml(a.Category || '')} · Preparer: ${renderBadge(a.Preparer)} · Due WD${dueWD}${resolveWorkday(STATE.activeQuarter, dueWD) ? ' · ' + formatDateShort(resolveWorkday(STATE.activeQuarter, dueWD)) : ''}</div>
+        </div>
+        <span class="overdue-days">${daysOver > 0 ? daysOver + ' day' + (daysOver !== 1 ? 's' : '') + ' overdue' : 'Overdue'}</span>
+      </div>`;
+    }).join('');
+  }
+}
+
+// ============================================================
+// CALENDAR VIEW
+// ============================================================
+function renderCalendarView() {
+  const container = document.getElementById('view-calendar');
+  if (!container) return;
+
+  const quarter = getReadQuarter();
+  const sub = document.getElementById('calendar-sub');
+  if (sub) sub.textContent = `${quarter || '—'} · Close calendar`;
+
+  const calBody = document.getElementById('cal-view-body');
+  if (!calBody) return;
+
+  if (!STATE.calendar.length) {
+    calBody.innerHTML = '<p style="font-size:13px;color:var(--slate)">No calendar rows set up yet. Go to Admin → Close Calendar → Setup Calendar.</p>';
     return;
   }
 
-  // ── Grouping: Ready for Me / Waiting / Complete ───────────
-  function isReadyForMe(item) {
-    const isOwner     = item.ownerId    === userId;
-    const isReviewer1 = item.reviewerId === userId;
-    const isReviewer2 = item.reviewer2Id === userId;
-    if (item.status === 'Not Started' || item.status === 'In Progress') {
-      if (!isOwner) return false;
-      // For steps: also check whether a predecessor is blocking this step
-      if (item.taskId !== undefined && getBlockingPredecessor(item)) return false;
-      return true;
+  // Build a map from date string → calendar row for fast lookup
+  const byDate = {};
+  STATE.calendar.forEach(c => { if (c.ActualDate) byDate[c.ActualDate] = c; });
+
+  // Find the Monday of the week containing the first workday
+  const firstDate = new Date(STATE.calendar[0].ActualDate + 'T12:00:00');
+  const lastDate  = new Date(STATE.calendar[STATE.calendar.length - 1].ActualDate + 'T12:00:00');
+  const today     = todayET();
+
+  // Rewind to Monday of the first week
+  const startMonday = new Date(firstDate);
+  const dow = startMonday.getDay(); // 0=Sun,1=Mon,...
+  const daysBack = dow === 0 ? 6 : dow - 1;
+  startMonday.setDate(startMonday.getDate() - daysBack);
+
+  // Forward to Sunday of the last week
+  const endSunday = new Date(lastDate);
+  const dowLast = endSunday.getDay();
+  const daysForward = dowLast === 0 ? 0 : 7 - dowLast;
+  endSunday.setDate(endSunday.getDate() + daysForward);
+
+  let html = `
+    <div class="cal-view-legend">
+      <div class="cal-view-legend-item"><span class="milestone-std" style="padding:2px 8px;border-radius:8px">Standard</span>&nbsp;Meetings &amp; filings</div>
+      <div class="cal-view-legend-item"><span class="milestone-svp" style="padding:2px 8px;border-radius:8px">SVP</span>&nbsp;SVP deliverables</div>
+      <div class="cal-view-legend-item"><span class="milestone-md" style="padding:2px 8px;border-radius:8px">MD</span>&nbsp;MD deliverables</div>
+      <div class="cal-view-legend-item"><span class="milestone-cfo" style="padding:2px 8px;border-radius:8px">CFO</span>&nbsp;CFO deliverables</div>
+    </div>
+    <div class="cal-dow-header">
+      <div class="cal-dow-label">Mon</div>
+      <div class="cal-dow-label">Tue</div>
+      <div class="cal-dow-label">Wed</div>
+      <div class="cal-dow-label">Thu</div>
+      <div class="cal-dow-label">Fri</div>
+      <div class="cal-dow-label wknd">Sat</div>
+      <div class="cal-dow-label wknd">Sun</div>
+    </div>`;
+
+  // Walk week by week
+  // Convert a Date to YYYY-MM-DD in Eastern Time — consistent with todayET()
+  // and all other date strings stored in SharePoint.
+  const toETDateStr = (d) => {
+    const et = new Date(d.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+    const y   = et.getFullYear();
+    const mo  = String(et.getMonth() + 1).padStart(2, '0');
+    const day = String(et.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${day}`;
+  };
+
+  let cursor = new Date(startMonday);
+  while (cursor <= endSunday) {
+    html += '<div class="cal-week-row">';
+    for (let d = 0; d < 7; d++) {
+      const dateStr = toETDateStr(cursor);
+      const calRow  = byDate[dateStr];
+      const isToday = dateStr === today;
+      const isPast  = dateStr < today;
+
+      if (!calRow) {
+        // Non-workday — empty cell
+        html += '<div class="cal-day empty"></div>';
+      } else {
+        const cls = [
+          'cal-day',
+          isPast && !isToday ? 'past' : '',
+          isToday ? 'today' : '',
+          calRow.IsWeekend ? 'wknd-wd' : '',
+        ].filter(Boolean).join(' ');
+
+        html += `<div class="${cls}">
+          <div class="cal-day-top">
+            <span class="cal-day-wd">WD${calRow.WorkdayNumber}${isToday ? '<span class="cal-today-dot"></span>' : ''}</span>
+            <span class="cal-day-date">${formatDateShort(dateStr + 'T12:00:00')}</span>
+          </div>
+          ${calRow.IsWeekend ? '<span class="cal-wknd-flag">Weekend</span>' : ''}
+          ${calRow.MilestoneLabel
+            ? `<span class="cal-ms ${milestoneClass(calRow)}">${escapeHtml(calRow.MilestoneLabel)}</span>`
+            : ''}
+        </div>`;
+      }
+
+      cursor.setDate(cursor.getDate() + 1);
     }
-    if (item.status === 'Ready for Review 1') return isReviewer1;
-    if (item.status === 'Ready for Review 2') return isReviewer2;
-    return false;
+    html += '</div>';
   }
 
-  function isWaiting(item) {
-    if (item.status === 'Complete') return false;
-    return !isReadyForMe(item);
-  }
-
-  const taskGroups = {
-    readyForMe: allTasks.filter(t => isReadyForMe(t)),
-    waiting:    allTasks.filter(t => isWaiting(t)),
-    complete:   allTasks.filter(t => t.status === 'Complete'),
-  };
-  const stepGroups = {
-    readyForMe: allSteps.filter(s => isReadyForMe(s)),
-    waiting:    allSteps.filter(s => isWaiting(s)),
-    complete:   allSteps.filter(s => s.status === 'Complete'),
-  };
-
-  function taskRow(task) {
-    const locked  = isQuarterLocked(task.quarter, task.year);
-    const canEdit = !locked;
-    const ds      = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
-    const myRole  = task.ownerId===userId ? 'Preparer' : task.reviewerId===userId ? 'Reviewer 1' : 'Reviewer 2';
-    const unresolvedComments = _comments.filter(c=>(c.taskId===task._spId||c.taskId===task.id)&&!c.isResolved).length;
-    return `<div class="mytask-row">
-      <div class="mytask-main">
-        <div class="mytask-name"
-          onclick="openSteps('${task._spId}','${escHtml(task.name)}')"
-          style="cursor:pointer" title="Click to open steps">
-          ${escHtml(task.name)}
-          <span class="mytask-role-chip">${myRole}</span>
-          ${task.skipNextRollforward?'<span class="skip-badge">⊘ skip</span>':''}
-        </div>
-        <div class="mytask-meta">
-          <span class="badge ${typeBadgeClass(task.type)}" style="font-size:10px">${escHtml(task.type)}</span>
-          <span class="deadline-cell">
-            <span class="deadline-dot ${dotClass(ds)}"></span>
-            ${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}
-            ${ds === 'overdue' ? '<span class="overdue-label"> OVERDUE</span>' : ''}
-          </span>
-          <span class="text-muted" style="font-size:11px">${task.quarter} ${task.year}</span>
-        </div>
-      </div>
-      <div class="mytask-actions">
-        <span class="status-badge ${statusBadgeClass(task.status)}" ${canEdit?`onclick="event.stopPropagation();openQuickStatus('${task._spId}','task',this)" style="cursor:pointer"`:''}>${escHtml(task.status)}</span>
-        <button class="icon-btn" title="Steps" onclick="openSteps('${task._spId}','${escHtml(task.name)}')">📋</button>
-        <button class="icon-btn ${unresolvedComments>0 ? 'comment-btn-unresolved' : ''}"
-          title="Comments"
-          onclick="openComments('${task._spId}','${escHtml(task.name)}')">
-          💬${unresolvedComments > 0 ? `<span class="unresolved-badge">${unresolvedComments}</span>` : ''}
-        </button>
-      </div>
-    </div>`;
-  }
-
-  function stepRow(step) {
-    const parentTask = _tasks.find(t=>t._spId===step.taskId);
-    const locked     = parentTask ? isQuarterLocked(parentTask.quarter, parentTask.year) : false;
-    const ds         = step.dueDate ? deadlineStatus(step.dueDate, step.status, step.workdayNum, parentTask?.quarter||task?.quarter, parentTask?.year||task?.year) : 'ok';
-    const myRole     = step.ownerId===userId ? 'Preparer' : step.reviewerId===userId ? 'Reviewer 1' : 'Reviewer 2';
-    const blocker    = getBlockingPredecessor(step);
-    return `<div class="mytask-row step">
-      <div class="mytask-main">
-        <div class="mytask-name">${escHtml(step.name)}
-          <span class="mytask-role-chip">${myRole}</span>
-          ${blocker?`<span class="mytask-blocked-chip">🔒 needs: ${escHtml(blocker.name)}</span>`:''}
-        </div>
-        <div class="mytask-meta">
-          <span class="text-muted" style="font-size:11px">↳ ${escHtml(parentTask?.name||'')}</span>
-          ${step.dueDate||step.workdayNum?`<span class="deadline-cell"><span class="deadline-dot ${dotClass(ds)}"></span>${formatWorkdayDate(step.workdayNum,step.dueDate,parentTask?.quarter,parentTask?.year)}</span>`:''}
-        </div>
-      </div>
-      <div class="mytask-actions">
-        ${!locked
-          ? `<span class="status-badge ${statusBadgeClass(step.status)}"
-               style="cursor:pointer;font-size:11px"
-               onclick="event.stopPropagation();openQuickStatus('${step._spId}','step',this)">${escHtml(step.status)}</span>`
-          : `<span class="status-badge ${statusBadgeClass(step.status)}"
-               style="font-size:11px">${escHtml(step.status)}</span>`}
-      </div>
-    </div>`;
-  }
-
-  function section(label, emoji, tasks, steps, emptyMsg) {
-    const total = tasks.length + steps.length;
-    if (!total && emptyMsg==='hide') return '';
-    return `<div class="mytask-section">
-      <div class="mytask-section-header">
-        <span class="mytask-section-emoji">${emoji}</span>
-        <span class="mytask-section-label">${label}</span>
-        <span class="mytask-section-count">${total}</span>
-      </div>
-      ${total ? `<div class="mytask-section-body">
-        ${tasks.map(taskRow).join('')}
-        ${steps.map(stepRow).join('')}
-      </div>` : `<div class="mytask-empty">${emptyMsg}</div>`}
-    </div>`;
-  }
-
-  container.innerHTML =
-    section('Ready for Me',      '⚡', taskGroups.readyForMe, stepGroups.readyForMe, 'Nothing needs your attention right now.') +
-    section('Waiting on Others', '⏳', taskGroups.waiting,    stepGroups.waiting,    'hide') +
-    section('Complete',          '✅', taskGroups.complete,   stepGroups.complete,   'hide');
+  calBody.innerHTML = html;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ── KANBAN BOARD ─────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function initKanbanSelects() {
-  const wq = workingQ();
-  const qEl = document.getElementById('kanban-quarter');
-  if (qEl) qEl.value = wq.q;
-  const yEl = document.getElementById('kanban-year');
-  if (yEl) yEl.value = wq.yr;
+// ============================================================
+// ADMIN VIEW
+// ============================================================
+function renderAdminView() {
+  if (!STATE.isAdmin) {
+    const content = document.getElementById('admin-content');
+    if (content) content.innerHTML = '<p style="color:var(--red)">Access denied.</p>';
+    return;
+  }
+  renderAdminPanel('overview');
 }
 
-function renderKanban() {
-  const mode    = document.getElementById('kanban-mode')?.value    || 'personal';
-  const quarter = document.getElementById('kanban-quarter')?.value || 'Q1';
-  const year    = parseInt(document.getElementById('kanban-year')?.value || new Date().getFullYear());
-  const locked  = isQuarterLocked(quarter, year);
-  const userId = currentUserId();
-  const subEl   = document.getElementById('kanban-sub');
-  if (subEl) subEl.textContent = mode==='personal'
-    ? `${currentUser.name.split(' ')[0]}'s board · ${quarter} ${year}${locked?' 🔒':''}`
-    : `Full team · ${quarter} ${year}${locked?' 🔒':''}`;
+function renderAdminPanel(panelName) {
+  const content = document.getElementById('admin-content');
+  if (!content) return;
 
-  let tasks = getActiveTasks().filter(t => t.quarter===quarter && t.year===year);
-  if (mode === 'personal') tasks = tasks.filter(t => t.ownerId===userId);
-
-  const board = document.getElementById('kanban-board');
-  if (!board) return;
-
-  const cols = STATUS_ORDER.filter(s => s !== 'Not Applicable').map(status => {
-    const colTasks = tasks.filter(t => t.status === status);
-    const cards    = colTasks.map(task => {
-      const owner    = getUserById(task.ownerId);
-      const ds       = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
-      const canEdit  = !locked && (currentUser.isAdmin || task.ownerId===uid);
-      const steps    = getStepsForTask(task._spId);
-      const doneS    = steps.filter(s=>s.status==='Complete').length;
-      const appBadge = task.applicability && task.applicability !== 'All Quarters'
-        ? `<span class="app-badge ${task.applicability.startsWith('10-K')?'app-badge-10k':'app-badge-10q'} " style="margin-left:0">${task.applicability.startsWith('10-K')?'10-K':'10-Q'}</span>` : '';
-      return `<div class="kanban-card" draggable="${canEdit}" ondragstart="kanbanDragStart(event,'${task._spId}')" ondragover="event.preventDefault()" ondrop="kanbanDrop(event,'${status}')">
-        <div class="kanban-card-header">
-          <span class="badge ${typeBadgeClass(task.type)}" style="font-size:10px">${escHtml(task.type)}</span>
-          ${appBadge}
-        </div>
-        <div class="kanban-card-name">${escHtml(task.name)}</div>
-        ${steps.length ? `
-          <div class="kanban-step-bar">
-            <div class="kanban-step-fill" style="width:${Math.round(doneS/steps.length*100)}%"></div>
-          </div>
-          <div class="kanban-step-label">${doneS}/${steps.length} steps</div>` : ''}
-        <div class="kanban-card-footer">
-          <div class="owner-chip">
-            <div class="mini-avatar" style="width:20px;height:20px;font-size:9px">${owner?initials(owner.name):'?'}</div>
-            ${mode==='team'&&owner?`<span style="font-size:11px">${escHtml(owner.name.split(' ')[0])}</span>`:''}
-          </div>
-          <div class="deadline-cell" style="font-size:11px">
-            <span class="deadline-dot ${dotClass(ds)}"></span>${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}
-          </div>
-        </div>
-        <div class="kanban-card-actions">
-          <button class="icon-btn" style="width:24px;height:24px;font-size:11px" onclick="openSteps('${task._spId}','${escHtml(task.name)}')">📋</button>
-          <button class="icon-btn" style="width:24px;height:24px;font-size:11px" onclick="openComments('${task._spId}','${escHtml(task.name)}')">💬</button>
-          ${canEdit?`<button class="icon-btn" style="width:24px;height:24px;font-size:11px" onclick="openEditTask('${task._spId}')">✏️</button>`:''}
-        </div>
-      </div>`;
-    }).join('');
-
-    return `<div class="kanban-col" ondragover="event.preventDefault()" ondrop="kanbanDrop(event,'${status}')">
-      <div class="kanban-col-header">
-        <span class="kanban-col-title">${status}</span>
-        <span class="kanban-col-count">${colTasks.length}</span>
-      </div>
-      <div class="kanban-col-body" id="kanban-col-${status.replace(/\s/g,'-')}">
-        ${cards || `<div class="kanban-empty">No tasks</div>`}
-      </div>
-    </div>`;
+  // Update sidebar active state
+  document.querySelectorAll('.sidebar-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.panel === panelName);
   });
 
-  board.innerHTML = cols.join('');
-}
-
-let _dragTaskSpId = null;
-function kanbanDragStart(e, spId) {
-  _dragTaskSpId = spId;
-  e.dataTransfer.effectAllowed = 'move';
-}
-async function kanbanDrop(e, newStatus) {
-  e.preventDefault();
-  if (!_dragTaskSpId) return;
-  const task = _tasks.find(t => t._spId === _dragTaskSpId);
-  if (!task || task.status === newStatus) { _dragTaskSpId = null; return; }
-  const prev = task.status;
-  task.status = newStatus;
-  renderKanban();
-  try {
-    await updateListItem(LISTS.tasks, _dragTaskSpId, { Status: newStatus });
-    await writeSignOff(_dragTaskSpId, 'task', task.name, prev, newStatus);
-  } catch(e) {
-    task.status = prev; // revert optimistic update
-    renderKanban();
-    console.error('Kanban drop failed:', e);
-    showToast('Could not move task: ' + e.message, 'error');
+  switch (panelName) {
+    case 'overview':    content.innerHTML = renderAdminOverview();    break;
+    case 'calendar':    content.innerHTML = renderAdminCalendar();    break;
+    case 'rollforward': content.innerHTML = renderAdminRollforward(); break;
+    case 'templates':   content.innerHTML = renderAdminTemplates();   break;
+    case 'suggestions':
+      content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading...</p>';
+      loadSuggestions().then(() => {
+        // Guard: only write if the user hasn't navigated to a different panel while loading.
+        const activeBtn = document.querySelector('.sidebar-btn.active');
+        if (activeBtn?.dataset.panel === 'suggestions') {
+          content.innerHTML = renderAdminSuggestions();
+          attachAdminEvents('suggestions');
+        }
+      });
+      return; // early return — attachAdminEvents called in callback above
+    case 'users':       content.innerHTML = renderAdminUsers();       break;
+    case 'auditlog':
+      content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading audit log...</p>';
+      loadAuditLogEntries().then(() => {
+        const activeBtn = document.querySelector('.sidebar-btn.active');
+        if (activeBtn?.dataset.panel === 'auditlog') {
+          content.innerHTML = renderAdminAuditLog();
+          attachAdminEvents('auditlog');
+        }
+      });
+      return;
+    case 'import':      content.innerHTML = renderAdminImport();      break;
+    default: content.innerHTML = '';
   }
-  _dragTaskSpId = null;
+  attachAdminEvents(panelName);
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ── SUMMARY REPORT VIEW ──────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function initReportSelects() {
-  switchReportTab('quarter');
-
-  const wq = workingQ();
-  const qEl = document.getElementById('report-quarter'); if(qEl) qEl.value = wq.q;
-  const yEl = document.getElementById('report-year');    if(yEl) yEl.value = wq.yr;
+function renderAdminOverview() {
+  return `
+    <div class="admin-section-title">Admin Overview</div>
+    <div class="admin-section-sub">${STATE.activeQuarter || 'No active quarter'} · Folio v${CONFIG.version}</div>
+    <div class="quarter-status-bar">
+      <div class="quarter-pills">
+        <div>
+          <div class="quarter-pill-label">Live quarter</div>
+          <span class="pill-live">${STATE.activeQuarter || 'None'}</span>
+        </div>
+        <div class="quarter-divider"></div>
+        <div>
+          <div class="quarter-pill-label">Staging quarter</div>
+          <span class="pill-staging">${STATE.workingQuarter || 'None'}</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px">
+        ${STATE.workingQuarter ? `<button class="btn-secondary btn-sm" id="btn-edit-staging">Edit staging</button>
+        <button class="btn-success btn-sm" id="btn-activate-quarter">Activate ${STATE.workingQuarter}</button>` : ''}
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+        System diagnostics
+        <button class="btn-secondary btn-sm" id="btn-run-diagnostics">Run diagnostics</button>
+      </div>
+      <div class="diag-grid" id="diag-results">
+        <div class="diag-item"><div class="diag-dot dot-amber"></div><div class="diag-name">Run diagnostics to check all connections</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Close calendar — ${STATE.activeQuarter || '—'}</div>
+      ${renderCalendarPreview()}
+    </div>`;
 }
 
-function renderReport() {
-  const quarter = document.getElementById('report-quarter')?.value || 'Q1';
-  const year    = parseInt(document.getElementById('report-year')?.value || new Date().getFullYear());
-  const tasks   = getTasks().filter(t => t.quarter===quarter && t.year===year);
-  const locked  = isQuarterLocked(quarter, year);
-  const el      = document.getElementById('report-content');
-  if (!el) return;
+function renderCalendarPreview() {
+  const today = todayET();
+  const items = STATE.calendar.filter(c => c.MilestoneLabel).slice(0, 8);
+  if (!items.length) return '<p style="font-size:11px;color:var(--slate)">No milestones set. Go to Close Calendar to configure.</p>';
+  return `<table class="cal-table">
+    <thead><tr><th>WD</th><th>Date</th><th>Milestone</th></tr></thead>
+    <tbody>${items.map(m => `
+      <tr ${m.ActualDate === today ? 'class="today-row"' : ''}>
+        <td style="font-weight:500">WD${m.WorkdayNumber}</td>
+        <td style="color:var(--slate)">${formatDateShort(m.ActualDate)}</td>
+        <td>
+          <span class="${milestoneClass(m)}">${escapeHtml(m.MilestoneLabel)}</span>
+          ${m.ActualDate === today ? '<span class="today-marker" style="margin-left:4px">Today</span>' : ''}
+          ${m.IsWeekend ? '<span class="weekend-marker" style="margin-left:4px">Weekend</span>' : ''}
+        </td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
 
-  const activeTasks2 = tasks.filter(t=>t.status!=='Not Applicable');
-  const naCount2     = tasks.filter(t=>t.status==='Not Applicable').length;
-  const total        = activeTasks2.length;
-  const complete     = activeTasks2.filter(t=>t.status==='Complete').length;
-  const review       = activeTasks2.filter(t=>t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
-  const inprog       = activeTasks2.filter(t=>t.status==='In Progress').length;
-  const notstart     = activeTasks2.filter(t=>t.status==='Not Started').length;
-  const overdue      = activeTasks2.filter(t=>deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
-  const pct          = total ? Math.round(complete/total*100) : 0;
+function renderAdminCalendar() {
+  const quarter = STATE.activeQuarter;
+  const hasRows = STATE.calendar.length > 0;
+  return `
+    <div class="admin-section-title">Close Calendar</div>
+    <div class="admin-section-sub">${quarter || 'No active quarter'}</div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+      <button class="btn-primary btn-sm" id="btn-setup-calendar">Setup Calendar…</button>
+      <span style="font-size:11px;color:var(--slate)">${hasRows ? `${STATE.calendar.length} workdays configured` : 'No workdays set up yet — click Setup Calendar to create them'}</span>
+    </div>
+    <div class="card">
+      ${!hasRows ? `<p style="font-size:12px;color:var(--slate);padding:8px 0">No calendar rows yet. Click <strong>Setup Calendar</strong> to create workday rows for this quarter.</p>` : `
+      <table class="cal-table">
+        <thead><tr><th>WD</th><th>Date</th><th>Milestone</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${STATE.calendar.map(c => `
+            <tr ${c.ActualDate === todayET() ? 'class="today-row"' : ''}>
+              <td style="font-weight:500">WD${c.WorkdayNumber}</td>
+              <td style="color:var(--slate)">${formatDateShort(c.ActualDate)}</td>
+              <td>
+                ${c.MilestoneLabel ? `<span class="${milestoneClass(c)}">${escapeHtml(c.MilestoneLabel)}</span>` : '—'}
+                ${c.ActualDate === todayET() ? '<span class="today-marker" style="margin-left:4px">Today</span>' : ''}
+                ${c.IsWeekend ? '<span class="weekend-marker" style="margin-left:4px">Weekend</span>' : ''}
+              </td>
+              <td><button class="btn-secondary btn-sm" data-action="edit-cal-row" data-id="${c._id}">Edit</button></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>`;
+}
 
-  const byType   = {};
-  tasks.forEach(t => { byType[t.type] = (byType[t.type]||0)+1; });
+function renderAdminRollforward() {
+  return `
+    <div class="admin-section-title">Quarterly Rollforward</div>
+    <div class="admin-section-sub">Stage and activate a new quarter</div>
+    <div class="card">
+      <div class="card-title">Current status</div>
+      <p style="font-size:13px;margin-bottom:12px">Live quarter: <strong>${STATE.activeQuarter || 'None'}</strong> &nbsp;·&nbsp; Staging: <strong>${STATE.workingQuarter || 'None'}</strong></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-primary btn-sm" id="btn-start-new-quarter">Start New Quarter</button>
+        ${STATE.workingQuarter ? `<button class="btn-secondary btn-sm" id="btn-rollforward">Roll Forward from ${STATE.activeQuarter || 'previous'}</button>` : ''}
+        ${STATE.workingQuarter ? `<button class="btn-success btn-sm" id="btn-activate-quarter-rf">Activate ${STATE.workingQuarter}</button>` : ''}
+      </div>
+    </div>
+    ${STATE.workingQuarter ? renderStagingGrid() : ''}`;
+}
 
-  const taskRows = tasks.map(task => {
-    const owner     = getUserById(task.ownerId);
-    const reviewer  = task.reviewerId  ? getUserById(task.reviewerId)  : null;
-    const reviewer2 = task.reviewer2Id ? getUserById(task.reviewer2Id) : null;
-    const steps     = getStepsForTask(task._spId);
-    const doneS     = steps.filter(s=>s.status==='Complete').length;
-    const signoffs  = getSignOffsFor(task._spId);
-    const lastSO    = signoffs[0];
-    const ds        = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
-    // Find who signed off at each key stage
-    const preparedBy  = signoffs.slice().reverse().find(s=>s.toStatus==='In Progress');
-    const reviewed1By = signoffs.slice().reverse().find(s=>s.toStatus==='Ready for Review 1'||s.toStatus==='Ready for Review');
-    const reviewed2By = signoffs.slice().reverse().find(s=>s.toStatus==='Ready for Review 2');
-    const completedBy = signoffs.slice().reverse().find(s=>s.toStatus==='Complete');
+function renderStagingGrid() {
+  const stagingItems = STATE._stagingItems.filter(
+    a => a.Quarter === STATE.workingQuarter
+  );
+
+  // Load staging items from SharePoint if not already in STATE
+  // (STATE.assignments only holds active quarter — staging is a different quarter)
+  if (!stagingItems.length) {
+    // Trigger async load and re-render
+    if (!STATE._stagingLoading) {
+      STATE._stagingLoading = true;
+      getListItems(CONFIG.lists.quarterlyAssignments,
+        `fields/Quarter eq '${STATE.workingQuarter}' and fields/IsStaging eq true`
+      ).then(items => {
+        STATE._stagingItems = items.map(i => ({ ...i.fields, _id: i.id }));
+        STATE._stagingLoading = false;
+        renderAdminPanel('rollforward');
+      }).catch(() => { STATE._stagingLoading = false; });
+    }
+    return `<div class="card">
+      <div class="card-title">Staging grid — ${STATE.workingQuarter}</div>
+      <p style="font-size:12px;color:var(--slate)">
+        ${STATE._stagingLoading ? 'Loading staging assignments...' : 'Click "Roll Forward" to populate staging assignments, then review them here.'}
+      </p>
+    </div>`;
+  }
+
+  // Build user dropdown options
+  const userOpts = STATE.users
+    .filter(u => u.IsActive !== false)
+    .sort((a, b) => (a.Title || '').localeCompare(b.Title || ''))
+    .map(u => `<option value="${escapeHtml(u.Email)}">${escapeHtml((u.Emoji || '') + ' ' + (u.Title || u.Email.split('@')[0]))}</option>`)
+    .join('');
+  const blankOpt = '<option value="">— Unassigned —</option>';
+
+  const rows = stagingItems
+    .sort((a, b) => (a.Category || '').localeCompare(b.Category || '') || (a.Title || '').localeCompare(b.Title || ''))
+    .map(item => `
+      <tr>
+        <td style="font-size:11px;max-width:160px">${escapeHtml(item.Title || '')}</td>
+        <td><span class="cat-tag">${escapeHtml(item.Category || '')}</span></td>
+        <td>
+          <input type="number" class="staging-select staging-wd" data-id="${item._id}" data-field="PreparerWorkday"
+            value="${item.PreparerWorkday || ''}" min="1" max="35"
+            style="font-size:11px;width:52px;text-align:center" title="Preparer workday" />
+        </td>
+        <td>
+          ${item.SignOffMode === 'Preparer Only'
+            ? '<span style="font-size:10px;color:var(--slate)">—</span>'
+            : `<input type="number" class="staging-select staging-wd" data-id="${item._id}" data-field="ReviewerWorkday"
+                value="${item.ReviewerWorkday || ''}" min="1" max="35"
+                style="font-size:11px;width:52px;text-align:center" title="Reviewer workday" />`}
+        </td>
+        <td>
+          <select class="staging-select" data-id="${item._id}" data-field="Preparer" style="font-size:11px;max-width:130px">
+            ${blankOpt}${userOpts.replace(`value="${escapeHtml(item.Preparer)}"`, `value="${escapeHtml(item.Preparer)}" selected`)}
+          </select>
+        </td>
+        <td>
+          ${item.SignOffMode === 'Preparer Only'
+            ? '<span style="font-size:10px;color:var(--slate)">Prep only</span>'
+            : `<select class="staging-select" data-id="${item._id}" data-field="Reviewer" style="font-size:11px;max-width:130px">
+                ${blankOpt}${userOpts.replace(`value="${escapeHtml(item.Reviewer)}"`, `value="${escapeHtml(item.Reviewer)}" selected`)}
+              </select>`}
+        </td>
+      </tr>`).join('');
+
+  return `
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+        Staging grid — ${STATE.workingQuarter}
+        <span style="font-size:11px;font-weight:400;color:var(--slate)">${stagingItems.length} assignments · changes save instantly</span>
+      </div>
+      <p style="font-size:12px;color:var(--slate);margin-bottom:10px">Review and adjust workday numbers, preparers, and reviewers before activating. Changes here only affect the staging quarter.</p>
+      <div class="table-wrap">
+        <table class="data-table" style="table-layout:fixed;width:100%">
+          <colgroup>
+            <col style="width:22%"/><col style="width:12%"/><col style="width:7%"/>
+            <col style="width:7%"/><col style="width:26%"/><col style="width:26%"/>
+          </colgroup>
+          <thead><tr>
+            <th>Task</th><th>Category</th>
+            <th title="Preparer Workday">Prep WD</th>
+            <th title="Reviewer Workday">Rev WD</th>
+            <th>Preparer</th><th>Reviewer</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderAdminTemplates() {
+  return `
+    <div class="admin-section-title">Task Templates</div>
+    <div class="admin-section-sub">${STATE.templates.length} active templates</div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn-primary btn-sm" id="btn-new-template">+ New Template</button>
+      <input type="text" class="filter-search" id="template-search" placeholder="Search templates..." style="width:200px"/>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr>
+          <th>Task Name</th><th>Category</th><th>Filing</th><th>Sign-off</th>
+          <th title="Standard / 10-Q preparer workday">Prep WD</th>
+          <th title="Standard / 10-Q reviewer workday">Rev WD</th>
+          <th title="10-K preparer workday (Q4 only)">Prep WD <span style="font-size:9px;opacity:0.7">10-K</span></th>
+          <th title="10-K reviewer workday (Q4 only)">Rev WD <span style="font-size:9px;opacity:0.7">10-K</span></th>
+          <th>Actions</th>
+        </tr></thead>
+        <tbody>
+          ${STATE.templates.map(t => `
+            <tr>
+              <td style="font-size:12px">${escapeHtml(t.TaskName || t.Title || '')}</td>
+              <td><span class="cat-tag">${escapeHtml(t.Category || '')}</span></td>
+              <td style="font-size:11px">${escapeHtml(t.FilingType || '')}</td>
+              <td style="font-size:11px">${escapeHtml(t.SignOffMode || '')}</td>
+              <td style="font-size:11px">WD${t.PreparerWorkday || '—'}</td>
+              <td style="font-size:11px">${t.ReviewerWorkday ? 'WD' + t.ReviewerWorkday : '—'}</td>
+              <td style="font-size:11px">${t.PreparerWorkday10K ? 'WD' + t.PreparerWorkday10K : '<span style="color:var(--slate)">—</span>'}</td>
+              <td style="font-size:11px">${t.ReviewerWorkday10K ? 'WD' + t.ReviewerWorkday10K : '<span style="color:var(--slate)">—</span>'}</td>
+              <td style="font-size:11px">
+                <button class="btn-icon btn-sm" data-action="edit-template" data-id="${t._id}">Edit</button>
+                <button class="btn-danger btn-sm" data-action="retire-template" data-id="${t._id}" style="margin-left:4px">Retire</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function renderAdminSuggestions() {
+  // Suggestions are loaded via loadSuggestions() when Admin panel is opened.
+  // STATE.suggestions is populated by that call.
+  const pending  = (STATE.suggestions || []).filter(s => s.Status === 'Pending');
+  const approved = (STATE.suggestions || []).filter(s => s.Status === 'Approved');
+  const rejected = (STATE.suggestions || []).filter(s => s.Status === 'Rejected');
+
+  const renderSuggestionRow = (s) => `
+    <div class="suggest-item">
+      <div>
+        <span class="suggest-type-${(s.SuggestionType || '').toLowerCase()}">${escapeHtml(s.SuggestionType || '')}</span>
+        <span style="font-size:12px;margin-left:6px;font-weight:500">${escapeHtml(s.Title || '')}</span>
+        <div style="font-size:11px;color:var(--slate);margin-top:3px">${escapeHtml(s.ProposedChanges || '')}</div>
+        <div style="font-size:10px;color:var(--slate);margin-top:2px">Submitted by ${renderBadge(s.SuggestedBy)}</div>
+      </div>
+      ${s.Status === 'Pending' ? `
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <button class="btn-success btn-sm" data-action="approve-suggestion" data-id="${s._id}">Approve</button>
+          <button class="btn-danger btn-sm" data-action="reject-suggestion" data-id="${s._id}">Reject</button>
+        </div>` : `<span class="cat-tag">${escapeHtml(s.Status)}</span>`}
+    </div>`;
+
+  return `
+    <div class="admin-section-title">Task Suggestions</div>
+    <div class="admin-section-sub">${pending.length} pending · ${approved.length} approved · ${rejected.length} rejected</div>
+    <div id="suggestions-list">
+      ${pending.length
+        ? pending.map(renderSuggestionRow).join('')
+        : '<p style="font-size:12px;color:var(--slate)">No pending suggestions.</p>'}
+      ${(approved.length || rejected.length) ? `
+        <hr style="margin:14px 0;border:none;border-top:1px solid var(--mid-gray)"/>
+        <div style="font-size:11px;font-weight:600;color:var(--slate);margin-bottom:8px">RECENT</div>
+        ${[...approved, ...rejected].sort((a,b) => new Date(b.ReviewDate||0) - new Date(a.ReviewDate||0)).slice(0,5).map(renderSuggestionRow).join('')}` : ''}
+    </div>`;
+}
+
+function renderAdminUsers() {
+  return `
+    <div class="admin-section-title">Users</div>
+    <div class="admin-section-sub">${STATE.users.length} active users</div>
+    <div style="margin-bottom:12px">
+      <button class="btn-primary btn-sm" id="btn-add-user">+ Add User</button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last Login</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${STATE.users.map(u => `
+            <tr>
+              <td>${renderBadge(u.Email)}</td>
+              <td style="font-size:11px">${escapeHtml(u.Email || '')}</td>
+              <td><span class="cat-tag">${escapeHtml(u.Role || 'TeamMember')}</span></td>
+              <td style="font-size:11px">${u.LastLogin ? formatDateShort(u.LastLogin) : '—'}</td>
+              <td><button class="btn-secondary btn-sm" data-action="edit-user" data-email="${escapeHtml(u.Email)}">Edit role</button></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+async function loadAuditLogEntries() {
+  // Load all audit entries across all quarters for the viewer.
+  // Sorted by ActionDate descending (most recent first).
+  const items = await getListItems(CONFIG.lists.auditLog);
+  STATE._auditEntries = items
+    .map(i => ({ ...i.fields, _id: i.id }))
+    .sort((a, b) => new Date(b.ActionDate) - new Date(a.ActionDate));
+}
+
+function renderAdminAuditLog() {
+  const entries = STATE._auditEntries || [];
+  const f = STATE._auditFilter;
+
+  const TYPE_STYLE = {
+    SignOff:               'background:#EAF3DE;color:#27500A',
+    Reversal:              'background:#FCEBEB;color:#791F1F',
+    Reassignment:          'background:#FAEEDA;color:#633806',
+    MatrixStatusChange:    'background:#EEEDFE;color:#3C3489',
+    CalendarEdit:          'background:#E1F5EE;color:#085041',
+    Rollforward:           'background:#E6F1FB;color:#0C447C',
+    QuarterActivation:     'background:#E6F1FB;color:#0C447C',
+    QuarterCreated:        'background:#E6F1FB;color:#0C447C',
+    TaskEdit:              'background:#F1EFE8;color:#444441',
+    UserEdit:              'background:#F1EFE8;color:#444441',
+    ReviewCommentCreated:  'background:#FBEAF0;color:#72243E',
+    ReviewCommentResolved: 'background:#EAF3DE;color:#085041',
+    SuggestionApproved:    'background:#EAF3DE;color:#27500A',
+    SuggestionRejected:    'background:#FCEBEB;color:#791F1F',
+  };
+
+  const allTypes    = ['All','SignOff','Reversal','Reassignment','ReviewCommentCreated',
+    'ReviewCommentResolved','MatrixStatusChange','CalendarEdit','Rollforward',
+    'QuarterActivation','TaskEdit','UserEdit'];
+  const allPeople   = [...new Set(entries.map(e => e.ActionBy).filter(Boolean))].sort();
+  const allQuarters = [...new Set(entries.map(e => e.Quarter).filter(Boolean))].sort().reverse();
+
+  let filtered = entries;
+  if (f.type && f.type !== 'All') filtered = filtered.filter(e => e.ActionType === f.type);
+  if (f.person)  filtered = filtered.filter(e => e.ActionBy === f.person);
+  if (f.quarter) filtered = filtered.filter(e => e.Quarter === f.quarter);
+
+  const rows = filtered.slice(0, 200).map(e => {
+    const style = TYPE_STYLE[e.ActionType] || 'background:#F1EFE8;color:#444441';
+    const label = e.ActionType?.replace(/([A-Z])/g, ' $1').trim() || '';
+    const badge = renderBadge(e.ActionBy);
+    const detail = [
+      e.NewValue,
+      e.PreviousValue ? `← ${e.PreviousValue}` : '',
+      e.ReasonNote ? `Reason: ${e.ReasonNote}` : '',
+    ].filter(Boolean).join('  ·  ');
     return `<tr>
-      <td style="font-weight:600">${escHtml(task.name)}</td>
-      <td><span class="badge ${typeBadgeClass(task.type)}" style="font-size:10px">${escHtml(task.type)}</span></td>
-      <td><div style="font-size:12px">${owner?escHtml(owner.name):'—'}
-        ${reviewer?`<div style="font-size:10px;color:var(--text-faint)">Rev: ${escHtml(reviewer.name)}</div>`:''}
-        ${reviewer2?`<div style="font-size:10px;color:var(--text-faint)">VP: ${escHtml(reviewer2.name)}</div>`:''}
-      </div></td>
-      <td><div class="deadline-cell" style="font-size:12px"><span class="deadline-dot ${dotClass(ds)}"></span>${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}</div></td>
-      <td><span class="status-badge ${statusBadgeClass(task.status)}" style="font-size:11px">${escHtml(task.status)}</span></td>
-      <td style="font-size:11px;color:var(--text-muted)">${steps.length?`${doneS}/${steps.length}`:'—'}</td>
-      <td style="font-size:11px;color:var(--text-muted)">
-        ${preparedBy  ? `<div>▶ ${escHtml(preparedBy.userName)} <span style="color:var(--text-faint)">${escHtml(preparedBy.ts)}</span></div>`:''}
-        ${reviewed1By ? `<div>🔍 ${escHtml(reviewed1By.userName)} <span style="color:var(--text-faint)">${escHtml(reviewed1By.ts)}</span></div>`:''}
-        ${reviewed2By ? `<div>🔎 ${escHtml(reviewed2By.userName)} <span style="color:var(--text-faint)">${escHtml(reviewed2By.ts)}</span></div>`:''}
-        ${completedBy ? `<div>✅ ${escHtml(completedBy.userName)} <span style="color:var(--text-faint)">${escHtml(completedBy.ts)}</span></div>`:''}
-        ${!preparedBy&&!reviewed1By&&!completedBy?'—':''}
+      <td style="font-size:11px;white-space:nowrap">
+        <div>${formatDateShort(e.ActionDate)}</div>
+        <div style="font-size:10px;color:var(--slate)">${formatDateET(e.ActionDate).split(',')[1]?.trim() || ''}</div>
+        ${e.WorkdayNumber ? `<div style="font-size:10px;color:var(--slate)">WD${e.WorkdayNumber}</div>` : ''}
       </td>
+      <td><span style="display:inline-block;font-size:10px;font-weight:500;padding:2px 6px;border-radius:99px;white-space:nowrap;${style}">${escapeHtml(label)}</span></td>
+      <td style="font-size:11px;max-width:180px;word-break:break-word">${escapeHtml(e.TaskName || '—')}</td>
+      <td>${badge}</td>
+      <td style="font-size:11px;color:var(--slate);max-width:220px;word-break:break-word">${escapeHtml(detail || '—')}</td>
     </tr>`;
   }).join('');
 
-  el.innerHTML = `
-    <div class="report-header">
-      <div>
-        <div class="report-title">${quarter} ${year} Financial Reporting</div>
-        <div class="report-subtitle">Quarter Summary Report · Generated ${nowLabel()}${locked?' · 🔒 Locked':''}</div>
-      </div>
-      <div class="report-logo">FRT · Financial Reporting Tracker</div>
+  return `
+    <div class="admin-section-title">Audit Log</div>
+    <div class="admin-section-sub">${entries.length} total entries · ${filtered.length} matching${filtered.length > 200 ? ' · showing first 200 — export for full list' : ''}</div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+      <select class="field-input" id="audit-filter-type" style="width:auto;font-size:11px">
+        ${allTypes.map(t => `<option value="${t}" ${f.type===t?'selected':''}>${t==='All'?'All types':t.replace(/([A-Z])/g,' $1').trim()}</option>`).join('')}
+      </select>
+      <select class="field-input" id="audit-filter-person" style="width:auto;font-size:11px">
+        <option value="">All people</option>
+        ${allPeople.map(p => `<option value="${escapeHtml(p)}" ${f.person===p?'selected':''}>${escapeHtml(p.split('@')[0])}</option>`).join('')}
+      </select>
+      <select class="field-input" id="audit-filter-quarter" style="width:auto;font-size:11px">
+        <option value="">All quarters</option>
+        ${allQuarters.map(q => `<option value="${escapeHtml(q)}" ${f.quarter===q?'selected':''}>${escapeHtml(q)}</option>`).join('')}
+      </select>
+      <button class="btn-secondary btn-sm" id="btn-export-audit-excel">Export CSV</button>
+      <button class="btn-primary btn-sm" id="btn-export-sox">Audit Log Export…</button>
     </div>
 
-    <div class="report-stat-row">
-      <div class="report-stat"><div class="report-stat-val">${total}</div><div class="report-stat-lbl">Active Deliverables</div></div>
-      <div class="report-stat complete"><div class="report-stat-val">${complete}</div><div class="report-stat-lbl">Complete</div></div>
-      <div class="report-stat review"><div class="report-stat-val">${review}</div><div class="report-stat-lbl">Ready for Review</div></div>
-      <div class="report-stat progress"><div class="report-stat-val">${inprog}</div><div class="report-stat-lbl">In Progress</div></div>
-      <div class="report-stat overdue"><div class="report-stat-val">${overdue}</div><div class="report-stat-lbl">Overdue</div></div>
-      <div class="report-stat"><div class="report-stat-val">${pct}%</div><div class="report-stat-lbl">Completion Rate</div></div>
-    </div>
-
-    <div class="report-progress-wrap">
-      <div class="report-progress-fill" style="width:${pct}%"></div>
-    </div>
-
-    <div style="display:flex;gap:16px;margin:16px 0;flex-wrap:wrap">
-      ${Object.entries(byType).map(([type,count])=>`
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px">
-          <span class="badge ${typeBadgeClass(type)}" style="font-size:10px">${escHtml(type)}</span>
-          <span style="color:var(--text-muted)">${count} task${count!==1?'s':''}</span>
-        </div>`).join('')}
-    </div>
-
-    <table class="task-table report-table">
-      <thead><tr>
-        <th>Deliverable</th><th>Type</th><th>Owner / Reviewers</th>
-        <th>Due Date</th><th>Status</th><th>Steps</th><th>Sign-Off Trail</th>
-      </tr></thead>
-      <tbody>${taskRows}</tbody>
-    </table>
-
-    <div class="report-footer">
-      Financial Reporting Tracker · ${quarter} ${year} · Confidential · ${nowLabel()}
-    </div>
-  `;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── EXECUTIVE STATUS PAGE ────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function renderExecView() {
-  const q   = document.getElementById('exec-quarter')?.value || document.getElementById('quarter-filter')?.value || 'Q1';
-  const yr  = parseInt(document.getElementById('exec-year')?.value || document.getElementById('year-filter')?.value || new Date().getFullYear());
-  const el  = document.getElementById('exec-content');
-  if (!el) return;
-
-  const allTasks    = getTasks().filter(t => t.quarter===q && t.year===yr);
-  const tasks       = allTasks.filter(t => t.status !== 'Not Applicable');
-  const naCount     = allTasks.filter(t => t.status === 'Not Applicable').length;
-  const total       = tasks.length;
-  const complete    = tasks.filter(t => t.status==='Complete').length;
-  const inprog      = tasks.filter(t => t.status==='In Progress').length;
-  const rfr         = tasks.filter(t => t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
-  const notstarted  = tasks.filter(t => t.status==='Not Started').length;
-  const overdue     = tasks.filter(t => deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
-  const pct         = total ? Math.round(complete/total*100) : 0;
-  const locked      = isQuarterLocked(q, yr);
-
-  // Traffic light helper
-  function tl(task) {
-    const ds = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
-    if (task.status==='Complete')                          return {dot:'tl-green',  label:'Complete'};
-    if (ds==='overdue')                                    return {dot:'tl-red',    label:'Overdue'};
-    if (task.status==='Ready for Review 1'||task.status==='Ready for Review 2') return {dot:'tl-blue', label:'For Review'};
-    if (ds==='soon')                                       return {dot:'tl-amber',  label:'Due Soon'};
-    return {dot:'tl-gray', label:task.status};
-  }
-
-  const taskRows = tasks
-    .sort((a,b) => {
-      const order = {'Complete':4,'Not Applicable':5,'Ready for Review 2':1,'Ready for Review 1':1,'In Progress':2,'Not Started':3};
-      const oa = order[a.status]||3, ob = order[b.status]||3;
-      if (oa!==ob) return oa-ob;
-      return (a.dueDate||'').localeCompare(b.dueDate||'');
-    })
-    .map(task => {
-      const owner    = getUserById(task.ownerId);
-      const reviewer = task.reviewerId ? getUserById(task.reviewerId) : null;
-      const signoffs = getSignOffsFor(task._spId);
-      const lastSO   = signoffs[0];
-      const completedBy = signoffs.slice().reverse().find(s=>s.toStatus==='Complete');
-      const ds = deadlineStatus(task.dueDate, task.status, task.workdayNum, task.quarter, task.year);
-      const traf = tl(task);
-      const unresolvedComments = _comments.filter(c=>(c.taskId===task._spId||c.taskId===task.id)&&!c.isResolved).length;
-      return `<tr>
-        <td style="width:24px;text-align:center"><span class="tl-dot ${traf.dot}"></span></td>
-        <td style="font-weight:500;font-size:13px">${escHtml(task.name)}</td>
-        <td><span class="badge ${typeBadgeClass(task.type)}" style="font-size:10px">${escHtml(task.type)}</span></td>
-        <td style="font-size:12px">${owner?escHtml(owner.name):'—'}${reviewer?`<span style="font-size:10px;color:var(--text-muted)"> / ${escHtml(reviewer.name)}</span>`:''}</td>
-        <td style="font-size:12px">
-          ${formatWorkdayDate(task.workdayNum, task.dueDate, task.quarter, task.year)}
-          ${ds === 'overdue' ? '<span style="color:var(--red);font-size:10px;font-weight:700;margin-left:4px">OVERDUE</span>' : ''}
-        </td>
-        <td><span class="status-badge ${statusBadgeClass(task.status)}" style="font-size:11px;pointer-events:none">${escHtml(task.status)}</span></td>
-        <td style="font-size:11px;color:var(--text-muted)">
-          ${completedBy ? `✅ ${escHtml(completedBy.userName)}` : lastSO ? `${escHtml(lastSO.toStatus)} — ${escHtml(lastSO.userName)}` : '—'}
-          ${unresolvedComments>0?`<span style="color:var(--amber);font-weight:600;margin-left:4px">💬 ${unresolvedComments}</span>`:''}
-        </td>
-      </tr>`;
-    }).join('');
-
-  el.innerHTML = `
-    <div class="exec-header">
-      <div>
-        <div class="exec-title">${q} ${yr} — Financial Reporting Status</div>
-        <div class="exec-subtitle">As of ${nowLabel()}${locked?' · Quarter Locked':''}</div>
-      </div>
-      <div class="exec-logo">FRT · Financial Reporting Tracker</div>
-    </div>
-
-    <div class="exec-stats">
-      <div class="exec-stat">
-        <div class="exec-stat-val">${pct}%</div>
-        <div class="exec-stat-lbl">Complete</div>
-        <div class="exec-progress"><div class="exec-progress-fill ${pct>=100?'exec-progress-done':pct>=50?'exec-progress-mid':''}" style="width:${pct}%"></div></div>
-      </div>
-      <div class="exec-stat-grid">
-        <div class="exec-mini-stat tl-green-bg"><span>${complete}</span><label>Complete</label></div>
-        <div class="exec-mini-stat tl-blue-bg"><span>${rfr}</span><label>For Review</label></div>
-        <div class="exec-mini-stat tl-amber-bg"><span>${inprog}</span><label>In Progress</label></div>
-        <div class="exec-mini-stat tl-gray-bg"><span>${notstarted}</span><label>Not Started</label></div>
-        <div class="exec-mini-stat tl-red-bg"><span>${overdue}</span><label>Overdue</label></div>
-        <div class="exec-mini-stat" style="background:#F1F5F9"><span>${total}</span><label>Total</label></div>
-      </div>
-    </div>
-
-    <table class="exec-table">
-      <thead><tr>
-        <th style="width:24px"></th>
-        <th>Deliverable</th><th>Type</th><th>Owner / Reviewer</th>
-        <th>Due Date</th><th>Status</th><th>Last Action</th>
-      </tr></thead>
-      <tbody>${taskRows}</tbody>
-    </table>
-
-    <div class="exec-footer">
-      Financial Reporting Tracker · ${q} ${yr} · Confidential · Printed ${nowLabel()}
+    <div class="table-wrap">
+      <table class="data-table" style="table-layout:fixed;width:100%">
+        <colgroup>
+          <col style="width:13%"/><col style="width:16%"/><col style="width:22%"/>
+          <col style="width:13%"/><col style="width:36%"/>
+        </colgroup>
+        <thead><tr>
+          <th>Date / WD</th><th>Action</th><th>Task / Subject</th>
+          <th>By</th><th>Detail</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" style="font-size:12px;color:var(--slate);padding:12px 0">No entries match the current filters.</td></tr>'}</tbody>
+      </table>
     </div>`;
 }
-// ═══════════════════════════════════════════════════════════════
-// ── EXCEL EXPORT ─────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-// Exports tasks, steps, and sign-offs for the selected quarter as a multi-sheet .xls file.
-function exportExcel() {
-  const quarter = document.getElementById('report-quarter')?.value || 'Q1';
-  const year    = parseInt(document.getElementById('report-year')?.value || new Date().getFullYear());
-  const tasks   = getTasks().filter(t => t.quarter===quarter && t.year===year);
 
-  // Build CSV content for three tabs (we use multi-sheet CSV trick via XLSX-style tab encoding)
-  // Since we have no XLSX library, generate a proper HTML table that Excel can open natively
+function renderAdminImport() {
+  return `
+    <div class="admin-section-title">Bulk Import</div>
+    <div class="admin-section-sub">One-time CSV import for TaskTemplates</div>
+    <div class="card">
+      <div class="card-title">Import TaskTemplates from CSV</div>
+      <p style="font-size:12px;color:var(--slate);margin-bottom:12px">Upload a CSV file with your task templates. See the Build Guide Section 8 for the required column format.</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="file" id="import-file" accept=".csv" class="field-input" style="width:auto"/>
+        <button class="btn-secondary btn-sm" id="btn-validate-import">Validate</button>
+        <button class="btn-primary btn-sm" id="btn-run-import" disabled>Import</button>
+      </div>
+      <div id="import-status" style="margin-top:12px;font-size:12px;color:var(--slate)"></div>
+      <div id="import-progress" style="margin-top:8px"></div>
+    </div>`;
+}
 
-  // --- Sheet 1: Tasks ---
-  const taskHeader = ['Task Name','Type','Quarter','Year','Owner','Due Date','Status','Applicability','Description'];
-  const taskRows   = tasks.map(t => {
-    const owner = getUserById(t.ownerId);
-    return [t.name, t.type, t.quarter, t.year, owner?owner.name:'', t.dueDate, t.status, t.applicability||'All Quarters', t.description||''];
+function attachAdminEvents(panelName) {
+  // Overview events
+  const btnRunDiag = document.getElementById('btn-run-diagnostics');
+  if (btnRunDiag) btnRunDiag.addEventListener('click', runDiagnostics);
+
+  // Edit staging button navigates to the rollforward panel where the staging grid lives
+  document.getElementById('btn-edit-staging')?.addEventListener('click', () => {
+    renderAdminPanel('rollforward');
   });
 
-  // --- Sheet 2: Steps ---
-  const stepHeader = ['Task Name','Step Name','Step Order','Owner','Due Date','Status','Applicability','Note'];
-  const stepRows   = [];
-  tasks.forEach(t => {
-    getStepsForTask(t._spId).forEach(s => {
-      const owner = getUserById(s.ownerId);
-      stepRows.push([t.name, s.name, s.order, owner?owner.name:'', s.dueDate, s.status, s.applicability||'All Quarters', s.note||'']);
+  const btnActivate = document.getElementById('btn-activate-quarter') || document.getElementById('btn-activate-quarter-rf');
+  if (btnActivate) btnActivate.addEventListener('click', () => {
+    STATE.pendingActivation = STATE.workingQuarter;
+    const titleEl = document.getElementById('activate-modal-title');
+    const descEl  = document.getElementById('activate-modal-desc');
+    if (titleEl) titleEl.textContent = `Activate ${STATE.workingQuarter}?`;
+    if (descEl) descEl.textContent = `This will immediately make ${STATE.workingQuarter} visible to all ${STATE.users.length} team members.`;
+    showModal('modal-activate');
+  });
+
+  // All admin-content delegated actions (edit-template, retire-template, edit-cal-row,
+  // edit-user, rc-reply, approve-suggestion, reject-suggestion) are handled by the
+  // unified adminActionsAttached listener below.
+
+  // Rollforward events
+  document.getElementById('btn-start-new-quarter')?.addEventListener('click', startNewQuarter);
+  document.getElementById('btn-rollforward')?.addEventListener('click', performRollforward);
+
+  // Calendar setup button
+  document.getElementById('btn-setup-calendar')?.addEventListener('click', () => {
+    const quarterEl = document.getElementById('cal-setup-quarter');
+    const maxWDEl   = document.getElementById('cal-setup-maxwd');
+    const errEl     = document.getElementById('cal-setup-error');
+    if (quarterEl) quarterEl.value = STATE.activeQuarter || '';
+    if (maxWDEl)   maxWDEl.value   = isQuarterQ4(STATE.activeQuarter) ? '35' : '20';
+    if (errEl)     errEl.classList.add('hidden');
+    showModal('modal-cal-setup');
+  });
+
+  // Template search
+  document.getElementById('template-search')?.addEventListener('input', e => {
+    filterTemplateTable(e.target.value);
+  });
+
+  // New template button — opens edit modal in create mode (no templateId)
+  document.getElementById('btn-new-template')?.addEventListener('click', () => {
+    openEditTemplateModal(null);
+  });
+
+  // Add user button
+  document.getElementById('btn-add-user')?.addEventListener('click', () => {
+    const emailEl = document.getElementById('add-user-email');
+    const nameEl  = document.getElementById('add-user-name');
+    const roleEl  = document.getElementById('add-user-role');
+    const errEl   = document.getElementById('add-user-error');
+    const customEl = document.getElementById('add-user-emoji-custom');
+    if (emailEl)  emailEl.value  = '';
+    if (nameEl)   nameEl.value   = '';
+    if (roleEl)   roleEl.value   = 'TeamMember';
+    if (errEl)    errEl.classList.add('hidden');
+    if (customEl) customEl.value = '';
+
+    // Reset preview
+    const previewWrap = document.getElementById('add-user-preview-wrap');
+    if (previewWrap) previewWrap.style.display = 'none';
+
+    // Init emoji + color pickers — store selections in closure vars
+    STATE._addUserEmoji = null;
+    STATE._addUserColor = null;
+
+    renderEmojiPicker('add-user-emoji-grid', null, (emoji) => {
+      STATE._addUserEmoji = emoji;
+      const customEl = document.getElementById('add-user-emoji-custom');
+      if (customEl) customEl.value = '';
+      updateAddUserPreview();
+    });
+    renderColorPicker('add-user-color-grid', null, (color) => {
+      STATE._addUserColor = color;
+      updateAddUserPreview();
+    });
+
+    // Custom emoji overrides grid selection
+    document.getElementById('add-user-emoji-custom')?.addEventListener('input', function() {
+      const val = this.value.trim();
+      STATE._addUserEmoji = val || null;
+      if (val) {
+        document.querySelectorAll('#add-user-emoji-grid .emoji-option')
+          .forEach(el => el.classList.remove('selected'));
+      }
+      updateAddUserPreview();
+    });
+
+    // Live preview updates as name/email is typed
+    ['add-user-name', 'add-user-email'].forEach(id => {
+      document.getElementById(id)?.addEventListener('input', updateAddUserPreview);
+    });
+
+    showModal('modal-add-user');
+  });
+
+  // Template edit/retire (delegated from admin-content)
+  // Suggestion approve/reject already uses a delegated listener on admin-content.
+  // We extend the same listener rather than adding another — handled below by
+  // checking additional action values in the existing admin-content click handler.
+  // Staging grid — save preparer/reviewer on dropdown change
+  const adminContent2 = document.getElementById('admin-content');
+  if (adminContent2 && !adminContent2.dataset.stagingEventsAttached) {
+    adminContent2.dataset.stagingEventsAttached = 'true';
+    adminContent2.addEventListener('change', async e => {
+      const sel = e.target.closest('.staging-select');
+      if (!sel) return;
+      const { id, field } = sel.dataset;
+
+      // WD fields are numbers; person fields are strings or null.
+      const isWD = field === 'PreparerWorkday' || field === 'ReviewerWorkday';
+      const raw  = sel.value;
+      const value = isWD
+        ? (raw ? Number(raw) : null)
+        : (raw || null);
+
+      // Validate WD range
+      if (isWD && value !== null && (value < 1 || value > 35)) {
+        showToast('Workday must be between 1 and 35', 'error');
+        return;
+      }
+
+      try {
+        await updateListItem(CONFIG.lists.quarterlyAssignments, id, { [field]: value });
+        const item = STATE._stagingItems.find(i => i._id === id);
+        if (item) item[field] = value;
+        showToast(`✓ ${isWD ? field.replace('Workday','') + ' WD' : field} updated`, 'success');
+      } catch (err) {
+        showToast(`Failed to update ${field}`, 'error');
+        logError('Staging grid update failed:', err);
+      }
+    });
+  }
+
+  const adminContentEl = document.getElementById('admin-content');
+  if (adminContentEl && !adminContentEl.dataset.adminActionsAttached) {
+    adminContentEl.dataset.adminActionsAttached = 'true';
+    adminContentEl.addEventListener('click', async e => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const { action, id, email } = btn.dataset;
+
+      if (action === 'edit-template')      openEditTemplateModal(id);
+      if (action === 'retire-template')   await retireTemplate(id);
+      if (action === 'edit-cal-row')      openEditCalendarRowModal(id);
+      if (action === 'edit-user')         openEditUserRoleModal(email);
+      if (action === 'rc-reply')          openRCReplyInput(id);
+      if (action === 'approve-suggestion') await approveSuggestion(id);
+      if (action === 'reject-suggestion') {
+        STATE.pendingSuggestionReject = id;
+        const noteEl = document.getElementById('reject-suggestion-note');
+        if (noteEl) noteEl.value = '';
+        showModal('modal-reject-suggestion');
+      }
+    });
+  }
+
+  // Template edit modal confirm/cancel
+  document.getElementById('btn-edit-tpl-save')?.addEventListener('click', saveTemplateEdit);
+  document.getElementById('btn-edit-tpl-cancel')?.addEventListener('click', () => {
+    hideModal('modal-edit-template');
+    STATE.pendingTemplateEdit = null;
+  });
+
+  // Calendar edit modal confirm/cancel
+  document.getElementById('btn-edit-cal-save')?.addEventListener('click', saveCalendarRowEdit);
+  document.getElementById('btn-edit-cal-cancel')?.addEventListener('click', () => {
+    hideModal('modal-edit-calendar');
+    STATE.pendingCalendarEdit = null;
+  });
+
+  // User role modal confirm/cancel
+  document.getElementById('btn-edit-user-save')?.addEventListener('click', saveUserRoleEdit);
+  document.getElementById('btn-edit-user-cancel')?.addEventListener('click', () => {
+    hideModal('modal-edit-user');
+    STATE.pendingUserEdit = null;
+  });
+
+  // Audit log exports
+  document.getElementById('btn-export-audit-excel')?.addEventListener('click', exportAuditLog);
+  document.getElementById('btn-export-sox')?.addEventListener('click', () => openSOXExportModal());
+  document.getElementById('btn-sox-confirm')?.addEventListener('click', confirmSOXExport);
+  document.getElementById('btn-sox-cancel')?.addEventListener('click', () => hideModal('modal-sox-export'));
+
+  // Audit log filter dropdowns — re-render on change
+  ['audit-filter-type','audit-filter-person','audit-filter-quarter'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', e => {
+      const field = id.replace('audit-filter-', '');
+      STATE._auditFilter[field] = e.target.value;
+      document.getElementById('admin-content').innerHTML = renderAdminAuditLog();
+      attachAdminEvents('auditlog');
     });
   });
 
-  // --- Sheet 3: Sign-Off Log (status changes only, not due-date edits) ---
-  const soHeader = ['Type','Item','Changed By','From Status','To Status','Date & Time'];
-  const soRows   = [];
-  tasks.forEach(t => {
-    getSignOffsFor(t._spId).filter(s=>s.refType!=='due_date_change').forEach(s => soRows.push(['Task', t.name, s.userName, s.fromStatus, s.toStatus, s.ts]));
-    getStepsForTask(t._spId).forEach(step => {
-      getSignOffsFor(step._spId).filter(s=>s.refType!=='due_date_change').forEach(s => soRows.push(['Step', step.name, s.userName, s.fromStatus, s.toStatus, s.ts]));
+
+  // Import events
+  const btnValidate = document.getElementById('btn-validate-import');
+  const btnImport   = document.getElementById('btn-run-import');
+  if (btnValidate) btnValidate.addEventListener('click', validateImport);
+  if (btnImport)   btnImport.addEventListener('click', runImport);
+}
+
+// ============================================================
+// DIAGNOSTICS
+// ============================================================
+async function runDiagnostics() {
+  const results = document.getElementById('diag-results');
+  if (!results) return;
+  results.innerHTML = '<div class="diag-item"><div class="diag-dot dot-amber"></div><div class="diag-name">Running diagnostics...</div></div>';
+
+  const rows = [];
+
+  // ── List connectivity ──────────────────────────────────────
+  for (const [key, listName] of Object.entries(CONFIG.lists)) {
+    try {
+      const items = await getListItems(listName);
+      rows.push({ name: listName, status: `${items.length} items`, ok: true });
+    } catch {
+      rows.push({ name: listName, status: 'Error — list not found or no access', ok: false });
+    }
+  }
+
+  // ── Auth ──────────────────────────────────────────────────
+  try {
+    await getToken();
+    rows.push({ name: 'MSAL auth', status: 'Token valid', ok: true });
+  } catch {
+    rows.push({ name: 'MSAL auth', status: 'Auth error', ok: false });
+  }
+
+  // ── Missing assignments check ─────────────────────────────
+  // Every active template should have a QuarterlyAssignment for the active quarter.
+  if (STATE.activeQuarter && STATE.templates.length && STATE.assignments.length) {
+    const activeTemplateIds = STATE.templates
+      .filter(t => t.IsActive !== false)
+      .map(t => t._id);
+    const assignedTemplateIds = new Set(STATE.assignments.map(a => a.TaskTemplateLookupId));
+    const missing = activeTemplateIds.filter(id => !assignedTemplateIds.has(id));
+    rows.push({
+      name: 'Assignment coverage',
+      status: missing.length === 0
+        ? `All ${activeTemplateIds.length} active templates have assignments`
+        : `${missing.length} active template${missing.length !== 1 ? 's' : ''} have no assignment for ${STATE.activeQuarter}`,
+      ok: missing.length === 0,
+    });
+  }
+
+  // ── Orphaned review comments check ────────────────────────
+  // Review comments whose TaskTemplateLookupId no longer matches any known template.
+  if (STATE.reviewComments.length && STATE.templates.length) {
+    const templateIds = new Set(STATE.templates.map(t => t._id));
+    const orphaned = STATE.reviewComments.filter(
+      rc => rc.TaskTemplateLookupId && !templateIds.has(rc.TaskTemplateLookupId)
+    );
+    rows.push({
+      name: 'Review comment integrity',
+      status: orphaned.length === 0
+        ? `All ${STATE.reviewComments.length} review comments reference valid tasks`
+        : `${orphaned.length} review comment${orphaned.length !== 1 ? 's' : ''} reference retired or missing tasks`,
+      ok: orphaned.length === 0,
+    });
+  }
+
+  // ── Quarter mismatch check ────────────────────────────────
+  // Confirms assignments and calendar entries all belong to the active quarter.
+  if (STATE.activeQuarter) {
+    const wrongQuarterAssignments = STATE.assignments.filter(
+      a => a.Quarter && a.Quarter !== STATE.activeQuarter
+    );
+    const wrongQuarterCalendar = STATE.calendar.filter(
+      c => c.Quarter && c.Quarter !== STATE.activeQuarter
+    );
+    const mismatch = wrongQuarterAssignments.length + wrongQuarterCalendar.length;
+    rows.push({
+      name: 'Quarter consistency',
+      status: mismatch === 0
+        ? `All loaded data matches active quarter (${STATE.activeQuarter})`
+        : `${mismatch} record${mismatch !== 1 ? 's' : ''} have a quarter mismatch — reload may be needed`,
+      ok: mismatch === 0,
+    });
+  }
+
+  results.innerHTML = rows.map(r => `
+    <div class="diag-item">
+      <div class="diag-dot ${r.ok ? 'dot-green' : 'dot-red'}"></div>
+      <div class="diag-name">${escapeHtml(r.name)}</div>
+      <div class="diag-status">${escapeHtml(r.status)}</div>
+    </div>`).join('');
+}
+
+// ============================================================
+// BULK IMPORT
+// ============================================================
+// Parses a CSV string into an array of objects keyed by header row.
+// Handles Windows (CRLF) and Unix (LF) line endings, quoted fields containing
+// commas, and escaped double-quotes inside quoted fields.
+function parseCSV(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim());
+  if (!lines.length) return [];
+
+  function parseRow(line) {
+    const values = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+        else if (ch === '"') { inQuotes = false; }
+        else { cur += ch; }
+      } else {
+        if (ch === '"') { inQuotes = true; }
+        else if (ch === ',') { values.push(cur.trim()); cur = ''; }
+        else { cur += ch; }
+      }
+    }
+    values.push(cur.trim());
+    return values;
+  }
+
+  const headers = parseRow(lines[0]);
+  return lines.slice(1).map(line => {
+    const vals = parseRow(line);
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = vals[i] || ''; });
+    return obj;
+  });
+}
+
+function validateImport() {
+  const fileInput = document.getElementById('import-file');
+  const status    = document.getElementById('import-status');
+  const btnImport = document.getElementById('btn-run-import');
+  if (!fileInput?.files?.[0]) {
+    if (status) status.textContent = 'Please select a CSV file first.';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const rows = parseCSV(e.target.result);
+    const required = ['TaskName', 'Category', 'FilingType', 'SignOffMode', 'PreparerWorkday', 'IsActive'];
+    const missing = required.filter(r => !rows[0] || !(r in rows[0]));
+    if (missing.length) {
+      if (status) status.textContent = `❌ Missing required columns: ${missing.join(', ')}`;
+      return;
+    }
+    if (status) status.textContent = `✓ Validation passed. ${rows.length} tasks ready to import.`;
+    if (btnImport) { btnImport.disabled = false; btnImport.dataset.rows = JSON.stringify(rows); }
+  };
+  reader.readAsText(fileInput.files[0]);
+}
+
+async function runImport() {
+  const btnImport = document.getElementById('btn-run-import');
+  const status    = document.getElementById('import-status');
+  const progress  = document.getElementById('import-progress');
+  if (!btnImport?.dataset.rows) return;
+
+  const rows = JSON.parse(btnImport.dataset.rows);
+  btnImport.disabled = true;
+  let imported = 0, failed = 0;
+
+  const batchSize = 20;
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize);
+    for (const row of batch) {
+      try {
+        await createListItem(CONFIG.lists.taskTemplates, {
+          Title:           row.TaskName || row.Title || '',
+          TaskName:        row.TaskName || row.Title || '',
+          Category:        row.Category || '',
+          MatrixItem:      row.MatrixItem || null,
+          MatrixCheckpoint:row.MatrixCheckpoint || null,
+          MatrixSection:   row.MatrixSection || null,
+          FilingType:      row.FilingType || 'Both',
+          SignOffMode:     row.SignOffMode || 'Sequential',
+          PreparerWorkday: Number(row.PreparerWorkday) || 1,
+          ReviewerWorkday: row.ReviewerWorkday ? Number(row.ReviewerWorkday) : null,
+          DefaultPreparer:     row.DefaultPreparer || null,
+          DefaultReviewer:     row.DefaultReviewer || null,
+          PreparerWorkday10K:  row.PreparerWorkday10K ? Number(row.PreparerWorkday10K) : null,
+          ReviewerWorkday10K:  row.ReviewerWorkday10K ? Number(row.ReviewerWorkday10K) : null,
+          HasDocumentLink:     row.HasDocumentLink === 'Yes',
+          IsActive:        row.IsActive !== 'No',
+        });
+        imported++;
+      } catch (err) {
+        logError('Import failed for row:', row, err);
+        failed++;
+      }
+    }
+    const pct = Math.round(((i + batchSize) / rows.length) * 100);
+    if (progress) progress.innerHTML = `
+      <div class="prog-row">
+        <div class="prog-bar-wrap"><div class="prog-bar" style="width:${Math.min(pct,100)}%"></div></div>
+        <div class="prog-pct">${Math.min(pct,100)}%</div>
+      </div>`;
+    if (status) status.textContent = `Imported ${imported} tasks...${failed ? ` (${failed} failed)` : ''}`;
+    await sleep(200);
+  }
+
+  if (status) status.textContent = `✓ Import complete. ${imported} tasks imported.${failed ? ` ${failed} failed.` : ''}`;
+  try {
+    await loadTemplates();
+  } catch (err) {
+    logError('Failed to refresh template cache after import:', err);
+    showToast('Import complete but template list may be stale — refresh the page to update', '');
+  }
+}
+
+// ============================================================
+// PROFILE VIEW
+// ============================================================
+function renderProfileView() {
+  const u = STATE.currentUser;
+  if (!u) return;
+
+  const nameEl = document.getElementById('profile-name');
+  if (nameEl) nameEl.value = u.Title || '';
+
+  renderEmojiPicker('profile-emoji-grid', u.Emoji, (emoji) => {
+    STATE.currentUser.Emoji = emoji;
+    updateProfilePreview();
+  });
+  renderColorPicker('profile-color-grid', u.Color, (color) => {
+    STATE.currentUser.Color = color;
+    updateProfilePreview();
+  });
+  updateProfilePreview();
+
+  // Notification prefs
+  const notifList = document.getElementById('notif-prefs-list');
+  if (notifList) {
+    const prefs = [
+      { key: 'NotifyOnAssignment', label: 'Task assigned to me (quarter activation)' },
+      { key: 'NotifyOnReviewUnlock', label: 'Task ready for my review' },
+      { key: 'NotifyOnOverdue', label: 'Task overdue' },
+      { key: 'NotifyOnReassignment', label: 'Task reassigned to me' },
+      { key: 'NotifyOnSuggestionUpdate', label: 'My suggestion approved/rejected' },
+    ];
+    notifList.innerHTML = prefs.map(p => `
+      <div class="notif-row">
+        <span>${escapeHtml(p.label)}</span>
+        <input type="checkbox" ${u[p.key] === true ? 'checked' : ''} data-pref="${p.key}"/>
+      </div>`).join('');
+  }
+
+  // Quiet hours
+  const qStart = document.getElementById('quiet-start');
+  const qEnd   = document.getElementById('quiet-end');
+  if (qStart && u.QuietHoursStart) qStart.value = u.QuietHoursStart;
+  if (qEnd   && u.QuietHoursEnd)   qEnd.value   = u.QuietHoursEnd;
+}
+
+function updateProfilePreview() {
+  const badge = document.getElementById('profile-preview-badge');
+  const u = STATE.currentUser;
+  if (!badge || !u) return;
+  const hex = u.Color || '#75787B';
+  badge.style.background = hex + '22';
+  badge.style.color = hex;
+  badge.textContent = `${u.Emoji || '?'} ${u.Title || ''}`;
+}
+
+async function saveProfile() {
+  const u = STATE.currentUser;
+  if (!u) return;
+
+  const nameEl = document.getElementById('profile-name');
+  if (nameEl) u.Title = nameEl.value.trim() || u.Title;
+
+  const customEmoji = document.getElementById('profile-emoji-custom');
+  if (customEmoji?.value?.trim()) u.Emoji = customEmoji.value.trim();
+
+  const quietStart = document.getElementById('quiet-start');
+  const quietEnd   = document.getElementById('quiet-end');
+  if (quietStart) u.QuietHoursStart = quietStart.value;
+  if (quietEnd)   u.QuietHoursEnd   = quietEnd.value;
+
+  const notifCheckboxes = document.querySelectorAll('[data-pref]');
+  notifCheckboxes.forEach(cb => { u[cb.dataset.pref] = cb.checked; });
+
+  try {
+    await updateListItem(CONFIG.lists.users, u._id, {
+      Title:                    u.Title,
+      Emoji:                    u.Emoji,
+      Color:                    u.Color,
+      QuietHoursStart:          u.QuietHoursStart || null,
+      QuietHoursEnd:            u.QuietHoursEnd || null,
+      NotifyOnAssignment:       u.NotifyOnAssignment === true,
+      NotifyOnReviewUnlock:     u.NotifyOnReviewUnlock === true,
+      NotifyOnOverdue:          u.NotifyOnOverdue === true,
+      NotifyOnReassignment:     u.NotifyOnReassignment === true,
+      NotifyOnSuggestionUpdate: u.NotifyOnSuggestionUpdate === true,
+    });
+    updateNavAvatar();
+    showToast('✓ Profile saved', 'success');
+  } catch (err) {
+    showToast('Failed to save profile', 'error');
+    logError('Profile save failed:', err);
+  }
+}
+
+// ============================================================
+// EMOJI & COLOR PICKERS
+// ============================================================
+function renderEmojiPicker(containerId, selected, onChange) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = CONFIG.emojiOptions.map(e => `
+    <div class="emoji-option ${e === selected ? 'selected' : ''}" data-emoji="${e}">${e}</div>`).join('');
+  container.querySelectorAll('.emoji-option').forEach(el => {
+    el.addEventListener('click', () => {
+      container.querySelectorAll('.emoji-option').forEach(e => e.classList.remove('selected'));
+      el.classList.add('selected');
+      onChange(el.dataset.emoji);
+    });
+  });
+}
+
+function renderColorPicker(containerId, selected, onChange) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = CONFIG.colorOptions.map(c => `
+    <div class="color-option ${c.hex === selected ? 'selected' : ''}" data-hex="${c.hex}" style="background:${c.hex}" title="${c.label}"></div>`).join('');
+  container.querySelectorAll('.color-option').forEach(el => {
+    el.addEventListener('click', () => {
+      container.querySelectorAll('.color-option').forEach(e => e.classList.remove('selected'));
+      el.classList.add('selected');
+      onChange(el.dataset.hex);
+    });
+  });
+}
+
+// ============================================================
+// MODALS
+// ============================================================
+// ── Modal focus management ───────────────────────────────────
+// Tracks the element that triggered the modal so focus can be restored on close.
+let _modalTrigger = null;
+let _modalKeyHandler = null;
+
+// Focusable element selector — covers all interactive elements inside a modal.
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function trapFocus(modalEl) {
+  const focusable = Array.from(modalEl.querySelectorAll(FOCUSABLE));
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last  = focusable[focusable.length - 1];
+
+  // Move focus into the modal — prefer the first interactive element.
+  first.focus();
+
+  // Remove any previous key handler before adding a new one.
+  if (_modalKeyHandler) document.removeEventListener('keydown', _modalKeyHandler);
+
+  _modalKeyHandler = (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      hideAllModals();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+
+    // Keep Tab cycling inside the modal.
+    if (e.shiftKey) {
+      if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+    } else {
+      if (document.activeElement === last)  { e.preventDefault(); first.focus(); }
+    }
+  };
+
+  document.addEventListener('keydown', _modalKeyHandler);
+}
+
+function releaseFocus() {
+  if (_modalKeyHandler) {
+    document.removeEventListener('keydown', _modalKeyHandler);
+    _modalKeyHandler = null;
+  }
+  // Return focus to the element that opened the modal.
+  if (_modalTrigger && typeof _modalTrigger.focus === 'function') {
+    _modalTrigger.focus();
+  }
+  _modalTrigger = null;
+}
+
+function showModal(modalId) {
+  // Record what triggered the modal so we can restore focus on close.
+  _modalTrigger = document.activeElement;
+
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  document.getElementById('modal-backdrop')?.classList.remove('hidden');
+
+  // Trap focus inside the modal box.
+  trapFocus(modal);
+}
+
+function hideModal(modalId) {
+  document.getElementById(modalId)?.classList.add('hidden');
+  document.getElementById('modal-backdrop')?.classList.add('hidden');
+  releaseFocus();
+}
+
+function hideAllModals() {
+  document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+  document.getElementById('modal-backdrop')?.classList.add('hidden');
+  releaseFocus();
+}
+
+// ============================================================
+// TOAST
+// ============================================================
+function showToast(message, type = '') {
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.className = `toast ${type}`;
+  toast.classList.remove('hidden');
+  setTimeout(() => toast.classList.add('hidden'), 3000);
+}
+
+// ============================================================
+// LOADING
+// ============================================================
+function showLoading(text = 'Loading...') {
+  document.getElementById('loading-text').textContent = text;
+  document.getElementById('loading-overlay')?.classList.remove('hidden');
+}
+function hideLoading() {
+  document.getElementById('loading-overlay')?.classList.add('hidden');
+}
+
+// ============================================================
+// STALE DATA BANNER
+// ============================================================
+function showStaleBanner(show) {
+  document.getElementById('stale-banner')?.classList.toggle('hidden', !show);
+}
+
+// ============================================================
+// NAV AVATAR
+// ============================================================
+function updateNavAvatar() {
+  const btn = document.getElementById('nav-user-avatar');
+  if (!btn || !STATE.currentUser) return;
+  const u = STATE.currentUser;
+  btn.textContent = u.Emoji || u.Title?.[0] || '?';
+  const hex = u.Color || '#75787B';
+  btn.style.background = hex + '33';
+  btn.style.color = hex;
+}
+
+// ============================================================
+// EVENTS — GLOBAL
+// ============================================================
+function attachGlobalEvents() {
+  // Nav links
+  document.querySelectorAll('.nav-link').forEach(btn => {
+    btn.addEventListener('click', () => showView(btn.dataset.view));
+  });
+
+  // Admin sidebar
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('[data-panel]');
+    if (btn) renderAdminPanel(btn.dataset.panel);
+  });
+
+  // Refresh button
+  document.getElementById('btn-refresh')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-refresh');
+    btn?.classList.add('spinning');
+    try {
+      // Refresh the currently viewed quarter, not necessarily the live one.
+      await loadViewingQuarterData(getReadQuarter());
+      refreshCurrentView();
+      updateHistoryBanner();
+      showStaleBanner(false);
+    } catch { showStaleBanner(true); }
+    btn?.classList.remove('spinning');
+  });
+
+  // Return to live quarter button
+  document.getElementById('btn-return-live')?.addEventListener('click', () => {
+    switchToQuarter(STATE.activeQuarter);
+    const sel = document.getElementById('quarter-picker');
+    if (sel) sel.value = STATE.activeQuarter;
+  });
+
+  // Stale retry
+  document.getElementById('btn-stale-retry')?.addEventListener('click', async () => {
+    try { await loadAllData(); refreshCurrentView(); showStaleBanner(false); }
+    catch { /* stay stale */ }
+  });
+
+  // Profile save
+  document.getElementById('btn-save-profile')?.addEventListener('click', saveProfile);
+
+  // Nav user avatar → profile
+  document.getElementById('nav-user-avatar')?.addEventListener('click', () => showView('profile'));
+
+  // Panel close
+  document.getElementById('panel-close')?.addEventListener('click', closeTaskPanel);
+  document.getElementById('panel-overlay')?.addEventListener('click', closeTaskPanel);
+
+  // Panel review comments link
+  document.getElementById('panel-rc-link')?.addEventListener('click', () => {
+    closeTaskPanel();
+    showView('review-comments');
+  });
+
+  // Modal backdrop
+  document.getElementById('modal-backdrop')?.addEventListener('click', hideAllModals);
+
+  // Sign-off modal
+  document.getElementById('btn-signoff-confirm')?.addEventListener('click', async () => {
+    if (!STATE.pendingSignoff) return;
+    hideModal('modal-signoff');
+    await performSignOff(STATE.pendingSignoff.assignmentId, STATE.pendingSignoff.role);
+    STATE.pendingSignoff = null;
+    if (STATE.taskDetailId) openTaskPanel(STATE.taskDetailId);
+  });
+  document.getElementById('btn-signoff-cancel')?.addEventListener('click', () => {
+    hideModal('modal-signoff');
+    STATE.pendingSignoff = null;
+  });
+
+  // Reversal modal
+  document.getElementById('btn-reversal-confirm')?.addEventListener('click', async () => {
+    const reason = document.getElementById('reversal-reason')?.value?.trim();
+    if (!reason) {
+      document.getElementById('reversal-error')?.classList.remove('hidden');
+      return;
+    }
+    if (!STATE.pendingReversal) return;
+    hideModal('modal-reversal');
+    await performReversal(STATE.pendingReversal.assignmentId, STATE.pendingReversal.role, reason);
+    STATE.pendingReversal = null;
+    if (STATE.taskDetailId) openTaskPanel(STATE.taskDetailId);
+  });
+  document.getElementById('btn-reversal-cancel')?.addEventListener('click', () => {
+    hideModal('modal-reversal');
+    STATE.pendingReversal = null;
+  });
+
+  // Review comment modal
+  document.getElementById('btn-new-rc')?.addEventListener('click', () => {
+    // Only reviewers and admins can create review comments.
+    if (!STATE.isFinalReviewer && !STATE.isAdmin) {
+      showToast('Only reviewers and admins can post review comments', 'error');
+      return;
+    }
+    const sel = document.getElementById('rc-task-select');
+    if (sel) sel.innerHTML = STATE.templates.map(t =>
+      `<option value="${escapeHtml(t._id)}">${escapeHtml(t.TaskName || t.Title || '')}</option>`
+    ).join('');
+    showModal('modal-new-rc');
+  });
+  document.getElementById('btn-rc-save')?.addEventListener('click', saveReviewComment);
+  document.getElementById('btn-rc-cancel')?.addEventListener('click', () => hideModal('modal-new-rc'));
+
+  // Suggest modal
+  document.getElementById('btn-suggest-change')?.addEventListener('click', () => {
+    const sel = document.getElementById('suggest-task-select');
+    if (sel) sel.innerHTML = STATE.templates.map(t =>
+      `<option value="${escapeHtml(t._id)}">${escapeHtml(t.TaskName || t.Title || '')}</option>`
+    ).join('');
+    showModal('modal-suggest');
+  });
+  document.getElementById('btn-suggest-save')?.addEventListener('click', saveSuggestion);
+  document.getElementById('btn-suggest-cancel')?.addEventListener('click', () => hideModal('modal-suggest'));
+
+  // Matrix modal
+  document.getElementById('btn-matrix-confirm')?.addEventListener('click', async () => {
+    if (!STATE.pendingMatrixAction) return;
+    const selected = document.querySelector('input[name="matrix-action"]:checked')?.value;
+    hideModal('modal-matrix-action');
+    await performMatrixUpdate(STATE.pendingMatrixAction.item, STATE.pendingMatrixAction.col, selected);
+    STATE.pendingMatrixAction = null;
+  });
+  document.getElementById('btn-matrix-cancel')?.addEventListener('click', () => {
+    hideModal('modal-matrix-action');
+    STATE.pendingMatrixAction = null;
+  });
+
+  // Resolve RC modal
+  document.getElementById('btn-resolve-rc-confirm')?.addEventListener('click', async () => {
+    if (!STATE.pendingRCResolve) return;
+    const note = document.getElementById('resolve-rc-note')?.value?.trim() || '';
+    hideModal('modal-resolve-rc');
+    await confirmResolveReviewComment(STATE.pendingRCResolve, note);
+    STATE.pendingRCResolve = null;
+  });
+  document.getElementById('btn-resolve-rc-cancel')?.addEventListener('click', () => {
+    hideModal('modal-resolve-rc');
+    STATE.pendingRCResolve = null;
+  });
+
+  // Reject suggestion modal
+  document.getElementById('btn-reject-suggestion-confirm')?.addEventListener('click', async () => {
+    if (!STATE.pendingSuggestionReject) return;
+    const note = document.getElementById('reject-suggestion-note')?.value?.trim() || '';
+    hideModal('modal-reject-suggestion');
+    await rejectSuggestion(STATE.pendingSuggestionReject, note);
+    STATE.pendingSuggestionReject = null;
+  });
+  document.getElementById('btn-reject-suggestion-cancel')?.addEventListener('click', () => {
+    hideModal('modal-reject-suggestion');
+    STATE.pendingSuggestionReject = null;
+  });
+
+  // New quarter modal
+  document.getElementById('btn-new-quarter-confirm')?.addEventListener('click', confirmNewQuarter);
+  document.getElementById('btn-new-quarter-cancel')?.addEventListener('click', () => hideModal('modal-new-quarter'));
+  document.getElementById('new-quarter-name')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') confirmNewQuarter();
+  });
+
+  // Rollforward confirm modal
+  document.getElementById('btn-rollforward-confirm')?.addEventListener('click', confirmRollforward);
+  document.getElementById('btn-rollforward-cancel')?.addEventListener('click', () => {
+    hideModal('modal-rollforward-confirm');
+    STATE.pendingRollforward = null;
+  });
+
+  // Reassign modal
+  document.getElementById('btn-reassign-confirm')?.addEventListener('click', confirmReassign);
+  document.getElementById('btn-reassign-cancel')?.addEventListener('click', () => {
+    hideModal('modal-reassign');
+    STATE.pendingReassign = null;
+  });
+
+  // Calendar bulk setup modal
+  document.getElementById('btn-cal-setup-confirm')?.addEventListener('click', setupCalendarBulk);
+  document.getElementById('btn-cal-setup-cancel')?.addEventListener('click', () => hideModal('modal-cal-setup'));
+
+  // Cascade modal
+  document.getElementById('btn-cascade-confirm')?.addEventListener('click', confirmCascade);
+  document.getElementById('btn-cascade-no')?.addEventListener('click', () => {
+    hideModal('modal-cascade');
+    STATE.pendingCascade = null;
+    showToast('✓ Calendar row updated', 'success');
+    renderAdminPanel('calendar');
+  });
+
+  // Add user modal
+  document.getElementById('btn-add-user-confirm')?.addEventListener('click', createUser);
+  document.getElementById('btn-add-user-cancel')?.addEventListener('click', () => hideModal('modal-add-user'));
+  document.getElementById('add-user-email')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') createUser();
+  });
+
+  // Retire template modal
+  document.getElementById('btn-retire-template-confirm')?.addEventListener('click', () => {
+    hideModal('modal-retire-template');
+    confirmRetireTemplate();
+  });
+  document.getElementById('btn-retire-template-cancel')?.addEventListener('click', () => {
+    hideModal('modal-retire-template');
+    STATE.pendingTemplateRetire = null;
+  });
+
+  // Activation modal
+  document.getElementById('btn-activate-confirm')?.addEventListener('click', async () => {
+    if (!STATE.pendingActivation) return;
+    hideModal('modal-activate');
+    await activateQuarter(STATE.pendingActivation);
+    STATE.pendingActivation = null;
+  });
+  document.getElementById('btn-activate-cancel')?.addEventListener('click', () => {
+    hideModal('modal-activate');
+    STATE.pendingActivation = null;
+  });
+
+  // Waiting toggle
+  document.getElementById('waiting-toggle-header')?.addEventListener('click', () => {
+    const cards = document.getElementById('waiting-cards');
+    const btn   = document.getElementById('waiting-toggle');
+    if (!cards || !btn) return;
+    cards.classList.toggle('hidden');
+    btn.textContent = cards.classList.contains('hidden') ? '▼ Show' : '▲ Hide';
+  });
+
+  // RC resolved toggle
+  document.getElementById('rc-resolved-header')?.addEventListener('click', () => {
+    const list = document.getElementById('rc-resolved-list');
+    const btn  = document.getElementById('rc-resolved-toggle');
+    if (!list || !btn) return;
+    list.classList.toggle('hidden');
+    btn.textContent = list.classList.contains('hidden') ? '▼ Show' : '▲ Hide';
+  });
+
+  // All tasks filters
+  document.querySelectorAll('[data-filter="status"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-filter="status"]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      STATE.filters.status = btn.dataset.value;
+      saveFilters();
+      renderAllTasks();
     });
   });
 
-  // Build multi-sheet HTML workbook (Excel opens this natively)
-  const sheetHtml = (name, header, rows) => `
-    <table>
-      <thead><tr>${header.map(h=>`<th style="background:#0f2140;color:#fff;font-weight:bold">${h}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map((r,i)=>`<tr style="background:${i%2?'#f7f9fc':'#fff'}">${r.map(c=>`<td>${escHtml(String(c||''))}</td>`).join('')}</tr>`).join('')}</tbody>
-    </table>`;
+  // Sort column headers (delegated from thead)
+  document.getElementById('all-tasks-thead')?.addEventListener('click', e => {
+    const th = e.target.closest('th[data-sort]');
+    if (!th) return;
+    const col = th.dataset.sort;
+    if (STATE.filters.sort === col) {
+      // Same column — toggle direction
+      STATE.filters.sortDir = STATE.filters.sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      STATE.filters.sort    = col;
+      // Overdue sort defaults to asc (worst first); others default to asc too
+      STATE.filters.sortDir = 'asc';
+    }
+    saveFilters();
+    renderAllTasks();
+  });
 
-  const wb = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
-<head><meta charset="UTF-8">
-<!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
-  <x:ExcelWorksheet><x:Name>Tasks</x:Name><x:WorksheetOptions><x:Selected/></x:WorksheetOptions></x:ExcelWorksheet>
-  <x:ExcelWorksheet><x:Name>Steps</x:Name><x:WorksheetOptions/></x:ExcelWorksheet>
-  <x:ExcelWorksheet><x:Name>Sign-Off Log</x:Name><x:WorksheetOptions/></x:ExcelWorksheet>
-</x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
-<style>td,th{border:1px solid #dde3ed;padding:6px 10px;font-size:12px;font-family:Calibri,sans-serif}table{border-collapse:collapse}</style>
-</head><body>
-${sheetHtml('Tasks',     taskHeader, taskRows)}
-${sheetHtml('Steps',     stepHeader, stepRows)}
-${sheetHtml('Sign-Offs', soHeader,   soRows)}
-</body></html>`;
+  // Search
+  document.getElementById('filter-search')?.addEventListener('input', (e) => {
+    STATE.filters.search = e.target.value;
+    renderAllTasks();
+  });
 
-  const blob = new Blob([wb], { type: 'application/vnd.ms-excel;charset=utf-8' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `FinancialReportingTracker_${quarter}_${year}.xls`;
-  a.click();
+  // Table/card view toggle
+  document.getElementById('btn-table-view')?.addEventListener('click', () => {
+    document.getElementById('btn-table-view').classList.add('active');
+    document.getElementById('btn-card-view').classList.remove('active');
+    document.getElementById('all-tasks-table-wrap')?.classList.remove('hidden');
+    document.getElementById('all-tasks-cards-wrap')?.classList.add('hidden');
+  });
+  document.getElementById('btn-card-view')?.addEventListener('click', () => {
+    document.getElementById('btn-card-view').classList.add('active');
+    document.getElementById('btn-table-view').classList.remove('active');
+    document.getElementById('all-tasks-table-wrap')?.classList.add('hidden');
+    document.getElementById('all-tasks-cards-wrap')?.classList.remove('hidden');
+    renderAllTasksCards();
+  });
+
+  // Export sign-off log
+  document.getElementById('btn-export-log')?.addEventListener('click', exportSignOffLog);
+
+  // Export matrix
+  document.getElementById('btn-export-matrix-excel')?.addEventListener('click', exportMatrixExcel);
+
+  // Dashboard overdue expand
+  document.getElementById('overdue-expand-toggle')?.addEventListener('click', () => {
+    const list = document.getElementById('overdue-detail-list');
+    const btn  = document.getElementById('overdue-expand-toggle');
+    if (!list || !btn) return;
+    list.classList.toggle('hidden');
+    btn.textContent = list.classList.contains('hidden') ? '▼ Show all' : '▲ Hide';
+  });
+}
+
+// attachCardEvents uses event delegation on stable container elements rather than
+// per-card listeners. Cards are rebuilt on every poll; delegation means we never
+// need to re-attach listeners after a re-render.
+function attachCardEvents() {
+  // Delegate from each view container AND the task panel so we cover cards in
+  // all views as well as sign-off / reverse / reassign buttons inside the panel.
+  const containers = [
+    document.getElementById('view-my-tasks'),
+    document.getElementById('view-all-tasks'),
+    document.getElementById('view-review-comments'),
+    document.getElementById('task-panel'),
+  ].filter(Boolean);
+
+  containers.forEach(container => {
+    if (container.dataset.delegationAttached) return;
+    container.dataset.delegationAttached = 'true';
+
+    container.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-action]');
+      if (!el) return;
+      e.stopPropagation();
+      const { action, id, role } = el.dataset;
+
+      if (action === 'open-task') {
+        openTaskPanel(id);
+      }
+
+      if (action === 'signoff') {
+        const assignment = STATE.assignments.find(a => a._id === id);
+        if (!assignment) return;
+
+        // If fired from inside the task panel the confirm-box is the confirmation —
+        // execute directly. If fired from a task card open the modal first.
+        const fromPanel = !!e.target.closest('#task-panel');
+        if (fromPanel) {
+          performSignOff(id, role);
+        } else {
+          STATE.pendingSignoff = { assignmentId: id, role };
+          const titleEl = document.getElementById('modal-signoff-title');
+          const bodyEl  = document.getElementById('modal-signoff-body');
+          if (titleEl) titleEl.textContent = `Sign off as ${role}?`;
+          if (bodyEl) bodyEl.innerHTML = `
+            <p style="font-size:13px;margin-bottom:8px">${escapeHtml(assignment.Title || '')}</p>
+            <p style="font-size:12px;color:var(--slate)">Recorded as ${renderBadge(STATE.currentUser?.Email)} · ${formatDateET(new Date().toISOString())}</p>`;
+          showModal('modal-signoff');
+        }
+      }
+
+      if (action === 'reverse') {
+        STATE.pendingReversal = { assignmentId: id, role };
+        const desc = document.getElementById('reversal-desc');
+        if (desc) desc.textContent = `You are reversing the ${role} sign-off. This action will be logged.`;
+        const reasonEl = document.getElementById('reversal-reason');
+        if (reasonEl) reasonEl.value = '';
+        document.getElementById('reversal-error')?.classList.add('hidden');
+        showModal('modal-reversal');
+      }
+
+      if (action === 'rc-resolve') {
+        resolveReviewComment(id);
+      }
+
+      if (action === 'rc-open-task') {
+        openTaskPanel(id);
+      }
+
+      if (action === 'reassign') {
+        openReassignModal(id, el.dataset.role);
+      }
+
+      if (action === 'signoff-behalf') {
+        openSignOffBehalfModal(id, el.dataset.role);
+      }
+    });
+
+    // Keyboard activation for non-button interactive elements (cards, RC task links)
+    container.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const el = e.target.closest('[data-action="open-task"], [data-action="rc-open-task"]');
+      if (!el) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openTaskPanel(el.dataset.id);
+    });
+  });
+}
+
+// ============================================================
+// REVIEW COMMENT SAVE
+// ============================================================
+async function saveReviewComment() {
+  const taskId = document.getElementById('rc-task-select')?.value;
+  const text   = document.getElementById('rc-comment-text')?.value?.trim();
+  const priority = document.querySelector('input[name="rc-priority"]:checked')?.value || 'Normal';
+
+  if (!text) { showToast('Please enter a comment', 'error'); return; }
+
+  hideModal('modal-new-rc');
+
+  try {
+    const created = await createListItem(CONFIG.lists.reviewComments, {
+      Title:               `RC: ${STATE.templates.find(t => t._id === taskId)?.TaskName || taskId}`,
+      Quarter:             STATE.activeQuarter,
+      TaskTemplateLookupId: taskId,
+      CommentText:         text,
+      CreatedBy:           STATE.currentUser.Email,
+      CreatedDate:         new Date().toISOString(),
+      Priority:            priority,
+      Status:              'Open',
+    });
+    STATE.reviewComments.push({ ...created.fields, _id: created.id });
+    await writeAuditLog('ReviewCommentCreated', {
+      taskName:    `RC: ${STATE.templates.find(t => t._id === taskId)?.TaskName || taskId}`,
+      newValue:    `Priority: ${priority} — ${text.substring(0, 100)}${text.length > 100 ? '…' : ''}`,
+      assignmentId: taskId,
+    });
+    renderReviewComments();
+    showToast('✓ Review comment posted', 'success');
+  } catch (err) {
+    showToast('Failed to post comment', 'error');
+    logError('RC save failed:', err);
+  }
+}
+
+async function resolveReviewComment(rcId) {
+  const rc = STATE.reviewComments.find(r => r._id === rcId);
+  if (!rc) return;
+
+  // Store pending resolution and show the dedicated modal (modal-resolve-rc in index.html).
+  STATE.pendingRCResolve = rcId;
+  const noteEl = document.getElementById('resolve-rc-note');
+  if (noteEl) noteEl.value = '';
+  showModal('modal-resolve-rc');
+}
+
+async function confirmResolveReviewComment(rcId, note) {
+  const rc = STATE.reviewComments.find(r => r._id === rcId);
+  if (!rc) return;
+  try {
+    const now = new Date().toISOString();
+    await updateListItem(CONFIG.lists.reviewComments, rcId, {
+      Status:         'Resolved',
+      ResolvedBy:     STATE.currentUser.Email,
+      ResolvedDate:   now,
+      ResolutionNote: note,
+    });
+    rc.Status = 'Resolved';
+    rc.ResolvedBy = STATE.currentUser.Email;
+    rc.ResolvedDate = now;
+    rc.ResolutionNote = note;
+    await writeAuditLog('ReviewCommentResolved', {
+      taskName:    rc.Title || '',
+      newValue:    note ? `Resolution: ${note.substring(0, 100)}${note.length > 100 ? '…' : ''}` : 'Resolved — no note',
+      assignmentId: rcId,
+    });
+    renderReviewComments();
+    showToast('✓ Comment resolved', 'success');
+  } catch (err) {
+    showToast('Failed to resolve', 'error');
+    logError('RC resolve failed:', err);
+  }
+}
+
+// ============================================================
+// SUGGESTION SAVE / APPROVE / REJECT
+// ============================================================
+async function saveSuggestion() {
+  const type   = document.querySelector('input[name="suggest-type"]:checked')?.value || 'Edit';
+  const taskId = document.getElementById('suggest-task-select')?.value;
+  const desc   = document.getElementById('suggest-desc')?.value?.trim();
+  if (!desc) { showToast('Please describe the change', 'error'); return; }
+  hideModal('modal-suggest');
+  try {
+    await createListItem(CONFIG.lists.taskSuggestions, {
+      Title:               `${type}: ${STATE.templates.find(t => t._id === taskId)?.TaskName || 'New task'}`,
+      SuggestionType:      type,
+      SuggestedBy:         STATE.currentUser.Email,
+      SuggestionDate:      new Date().toISOString(),
+      TaskTemplateLookupId: taskId || null,
+      ProposedChanges:     desc,
+      Status:              'Pending',
+    });
+    showToast('✓ Suggestion submitted', 'success');
+  } catch (err) {
+    showToast('Failed to submit suggestion', 'error');
+    logError('Suggestion save failed:', err);
+  }
+}
+
+// Approves a suggestion and, for Edit/Retire types, automatically applies the
+// change to the TaskTemplates list so admin does not need to edit it manually.
+async function approveSuggestion(suggestionId) {
+  const suggestion = STATE.suggestions.find(s => s._id === suggestionId);
+  if (!suggestion) return;
+
+  showLoading('Approving suggestion...');
+  try {
+    // Mark approved first
+    await updateListItem(CONFIG.lists.taskSuggestions, suggestionId, {
+      Status:     'Approved',
+      ReviewedBy: STATE.currentUser.Email,
+      ReviewDate: new Date().toISOString(),
+    });
+    suggestion.Status = 'Approved';
+
+    // Auto-apply template mutation where possible
+    if (suggestion.SuggestionType === 'Retire' && suggestion.TaskTemplateLookupId) {
+      await applySuggestionToTemplate(suggestion);
+      showToast('✓ Suggestion approved — template retired', 'success');
+    } else if (suggestion.SuggestionType === 'Edit' && suggestion.TaskTemplateLookupId) {
+      // Edit suggestions are free-form text — cannot auto-apply, flag for manual update.
+      showToast('✓ Suggestion approved — update the template manually to reflect the change', 'success');
+    } else {
+      // Add suggestions — template must be created manually via Task Templates panel.
+      showToast('✓ Suggestion approved — add the new task via Task Templates if needed', 'success');
+    }
+
+    await writeAuditLog('SuggestionApproved', { taskName: suggestion.Title });
+    renderAdminPanel('suggestions');
+  } catch (err) {
+    showToast('Failed to approve suggestion', 'error');
+    logError('Suggestion approval failed:', err);
+  } finally {
+    // Always clear the loading overlay regardless of success, failure, or early return.
+    hideLoading();
+  }
+}
+
+// Rejects a suggestion with an admin note.
+async function rejectSuggestion(suggestionId, adminNote) {
+  const suggestion = STATE.suggestions.find(s => s._id === suggestionId);
+  if (!suggestion) return;
+
+  try {
+    await updateListItem(CONFIG.lists.taskSuggestions, suggestionId, {
+      Status:     'Rejected',
+      ReviewedBy: STATE.currentUser.Email,
+      ReviewDate: new Date().toISOString(),
+      AdminNote:  adminNote || '',
+    });
+    suggestion.Status = 'Rejected';
+    suggestion.AdminNote = adminNote;
+    await writeAuditLog('SuggestionRejected', { taskName: suggestion.Title });
+    showToast('Suggestion rejected', '');
+    renderAdminPanel('suggestions');
+  } catch (err) {
+    showToast('Failed to reject suggestion', 'error');
+    logError('Suggestion rejection failed:', err);
+  }
+}
+
+// Applies an approved suggestion directly to the TaskTemplates list.
+// Currently handles Retire (sets IsActive = false).
+// Edit suggestions are free-form and require manual template updates.
+async function applySuggestionToTemplate(suggestion) {
+  if (!suggestion.TaskTemplateLookupId) return;
+
+  if (suggestion.SuggestionType === 'Retire') {
+    await updateListItem(CONFIG.lists.taskTemplates, suggestion.TaskTemplateLookupId, {
+      IsActive: false,
+    });
+    // Reflect change in cached templates so the UI updates without a reload
+    const template = STATE.templates.find(t => t._id === suggestion.TaskTemplateLookupId);
+    if (template) template.IsActive = false;
+    log('Template retired:', suggestion.TaskTemplateLookupId);
+  }
+}
+
+// ============================================================
+// BULK CALENDAR SETUP
+// ============================================================
+// Creates all workday rows for a quarter from a single start date.
+// Skips weekends automatically, marks any resulting weekend workdays with IsWeekend = true.
+// Rows are created sequentially: WD1 = start date, WD2 = next business day, etc.
+// If rows already exist for the quarter they are replaced (deleted then recreated).
+
+async function setupCalendarBulk() {
+  const quarterEl   = document.getElementById('cal-setup-quarter');
+  const startEl     = document.getElementById('cal-setup-start');
+  const maxWDEl     = document.getElementById('cal-setup-maxwd');
+  const errEl       = document.getElementById('cal-setup-error');
+
+  const quarter = quarterEl?.value?.trim();
+  const startDate = startEl?.value;
+  const maxWD = Number(maxWDEl?.value) || 20; // select always has a value; fallback is a safety net only
+
+  if (!quarter || !/^Q[1-4]\s+\d{4}$/.test(quarter)) {
+    if (errEl) { errEl.textContent = 'Enter a valid quarter — e.g. Q2 2026'; errEl.classList.remove('hidden'); }
+    return;
+  }
+  if (!startDate) {
+    if (errEl) { errEl.textContent = 'Select a start date for WD1'; errEl.classList.remove('hidden'); }
+    return;
+  }
+
+  hideModal('modal-cal-setup');
+  showLoading(`Setting up ${quarter} calendar...`);
+
+  try {
+    // Delete existing rows for this quarter first
+    const existing = await getListItems(CONFIG.lists.closeCalendar, `fields/Quarter eq '${quarter}'`);
+    for (const item of existing) {
+      await graphRequest('DELETE',
+        `/sites/${await getSiteId()}/lists/${CONFIG.lists.closeCalendar}/items/${item.id}`
+      );
+    }
+
+    // Generate workday dates — each WD is one calendar day after the previous,
+    // skipping nothing (admins sometimes have weekend workdays, so we don't auto-skip).
+    // We mark any weekend dates with IsWeekend = true as a warning flag.
+    let current = new Date(startDate + 'T12:00:00');
+    const created = [];
+
+    for (let wd = 1; wd <= maxWD; wd++) {
+      // Use ET for date string and weekend detection — consistent with all other date handling.
+      const currentET  = new Date(current.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+      const dateStr    = `${currentET.getFullYear()}-${String(currentET.getMonth()+1).padStart(2,'0')}-${String(currentET.getDate()).padStart(2,'0')}`;
+      const dayOfWeek  = currentET.getDay(); // 0 = Sun, 6 = Sat
+      const isWeekend  = dayOfWeek === 0 || dayOfWeek === 6;
+
+      await createListItem(CONFIG.lists.closeCalendar, {
+        Title:         `${quarter}-WD${wd}`,
+        Quarter:       quarter,
+        WorkdayNumber: wd,
+        ActualDate:    dateStr,
+        IsWeekend:     isWeekend,
+        MilestoneType: 'Standard',
+      });
+      created.push({ WorkdayNumber: wd, ActualDate: dateStr, IsWeekend: isWeekend,
+                     MilestoneLabel: null, MilestoneType: 'Standard', Quarter: quarter });
+
+      // Advance by one calendar day for next workday
+      current = new Date(current.getTime() + 86400000);
+
+      // Update progress every 5 rows
+      if (wd % 5 === 0) {
+        const loadingText = document.getElementById('loading-text');
+        if (loadingText) loadingText.textContent = `Creating calendar... WD${wd} of ${maxWD}`;
+      }
+    }
+
+    // Update STATE.calendar if this is the active or viewing quarter
+    if (quarter === STATE.activeQuarter || quarter === STATE.viewingQuarter) {
+      STATE.calendar = created;
+    }
+
+    await writeAuditLog('CalendarEdit', {
+      taskName: `${quarter} calendar setup`,
+      newValue: `Created ${maxWD} workday rows starting ${startDate}`,
+    });
+
+    showToast(`✓ ${quarter} calendar created — ${maxWD} workdays from ${formatDateShort(startDate + 'T12:00:00')}`, 'success');
+    renderAdminPanel('calendar');
+  } catch (err) {
+    showToast('Calendar setup failed — check SharePoint and try again', 'error');
+    logError('setupCalendarBulk failed:', err);
+  } finally {
+    hideLoading();
+  }
+}
+
+// ============================================================
+// CALENDAR ROW EDIT
+// ============================================================
+function openEditCalendarRowModal(calRowId) {
+  const row = STATE.calendar.find(c => c._id === calRowId);
+  if (!row) return;
+  STATE.pendingCalendarEdit = calRowId;
+
+  const dateEl       = document.getElementById('edit-cal-date');
+  const milestoneEl  = document.getElementById('edit-cal-milestone');
+  const typeEl       = document.getElementById('edit-cal-milestone-type');
+  const weekendEl    = document.getElementById('edit-cal-weekend');
+  if (dateEl)      dateEl.value      = row.ActualDate || '';
+  if (milestoneEl) milestoneEl.value = row.MilestoneLabel || '';
+  if (typeEl)      typeEl.value      = row.MilestoneType || 'Standard';
+  if (weekendEl)   weekendEl.checked = !!row.IsWeekend;
+
+  const titleEl = document.getElementById('modal-edit-calendar-title');
+  if (titleEl) titleEl.textContent = `Edit WD${row.WorkdayNumber}`;
+  showModal('modal-edit-calendar');
+}
+
+async function saveCalendarRowEdit() {
+  const calRowId = STATE.pendingCalendarEdit;
+  if (!calRowId) return;
+  const row = STATE.calendar.find(c => c._id === calRowId);
+  if (!row) return;
+
+  const newDate      = document.getElementById('edit-cal-date')?.value;
+  const newMilestone = document.getElementById('edit-cal-milestone')?.value?.trim() || null;
+  const newType      = document.getElementById('edit-cal-milestone-type')?.value || 'Standard';
+  const newWeekend   = document.getElementById('edit-cal-weekend')?.checked || false;
+
+  if (!newDate) { showToast('Date is required', 'error'); return; }
+
+  const prevDate = row.ActualDate;
+  const quarter  = row.Quarter || STATE.activeQuarter;
+
+  // Snapshot current values for rollback on failure.
+  const snapshot = {
+    ActualDate:     row.ActualDate,
+    MilestoneLabel: row.MilestoneLabel,
+    MilestoneType:  row.MilestoneType,
+    IsWeekend:      row.IsWeekend,
+  };
+
+  // Optimistic update — apply immediately so the admin panel reflects the change.
+  row.ActualDate     = newDate;
+  row.MilestoneLabel = newMilestone;
+  row.MilestoneType  = newMilestone ? newType : null;
+  row.IsWeekend      = newWeekend;
+
+  try {
+    await updateListItem(CONFIG.lists.closeCalendar, calRowId, {
+      ActualDate:     newDate,
+      MilestoneLabel: newMilestone,
+      MilestoneType:  newMilestone ? newType : null,
+      IsWeekend:      newWeekend,
+    });
+    await writeAuditLog('CalendarEdit', {
+      taskName:      `WD${row.WorkdayNumber}`,
+      previousValue: prevDate,
+      newValue:      newDate,
+    });
+    hideModal('modal-edit-calendar');
+    STATE.pendingCalendarEdit = null;
+
+    // If the date changed, calculate the shift in days and offer cascade.
+    if (prevDate && newDate !== prevDate) {
+      // Use T12:00:00 to avoid DST boundary issues in date arithmetic.
+      const shiftDays = Math.round(
+        (new Date(newDate + 'T12:00:00') - new Date(prevDate + 'T12:00:00')) / (1000 * 60 * 60 * 24)
+      );
+
+      if (shiftDays !== 0) {
+        // Count subsequent workdays that would be affected.
+        const subsequent = STATE.calendar.filter(
+          c => c.Quarter === quarter && Number(c.WorkdayNumber) > Number(row.WorkdayNumber)
+        );
+
+        if (subsequent.length > 0) {
+          STATE.pendingCascade = {
+            quarter,
+            fromWD:    Number(row.WorkdayNumber),
+            shiftDays,
+            subsequent,
+          };
+
+          const descEl = document.getElementById('cascade-modal-desc');
+          if (descEl) descEl.textContent =
+            `WD${row.WorkdayNumber} moved ${Math.abs(shiftDays)} day${Math.abs(shiftDays) !== 1 ? 's' : ''} ` +
+            `${shiftDays > 0 ? 'later' : 'earlier'}. ` +
+            `Apply the same shift to all ${subsequent.length} subsequent workdays (WD${subsequent[0].WorkdayNumber}–WD${subsequent[subsequent.length-1].WorkdayNumber})?`;
+
+          // Warn about any resulting weekends
+          const warnEl = document.getElementById('cascade-warnings');
+          const weekendWarnings = subsequent
+            .map(c => {
+              const shifted = new Date(new Date(c.ActualDate + 'T12:00:00').getTime() + shiftDays * 86400000);
+              const shiftedLocalET = new Date(shifted.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+              const day = shiftedLocalET.getDay();
+              return (day === 0 || day === 6)
+                ? `WD${c.WorkdayNumber} would land on a ${day === 6 ? 'Saturday' : 'Sunday'}`
+                : null;
+            })
+            .filter(Boolean);
+
+          if (warnEl) {
+            if (weekendWarnings.length) {
+              warnEl.textContent = '⚠ ' + weekendWarnings.join(' · ');
+              warnEl.classList.remove('hidden');
+            } else {
+              warnEl.classList.add('hidden');
+            }
+          }
+
+          showModal('modal-cascade');
+          return; // Cascade modal takes over from here.
+        }
+      }
+    }
+
+    showToast('✓ Calendar row updated', 'success');
+    renderAdminPanel('calendar');
+  } catch (err) {
+    // Revert optimistic update so the calendar reflects actual SharePoint state.
+    Object.assign(row, snapshot);
+    showToast('Failed to update calendar row', 'error');
+    logError('saveCalendarRowEdit failed:', err);
+  }
+}
+
+// Applies the pending cascade shift to all subsequent workday rows.
+async function confirmCascade() {
+  const { quarter, fromWD, shiftDays, subsequent } = STATE.pendingCascade || {};
+  if (!subsequent?.length) return;
+  hideModal('modal-cascade');
+  STATE.pendingCascade = null;
+
+  showLoading(`Cascading ${Math.abs(shiftDays)}-day shift to ${subsequent.length} workdays...`);
+  let updated = 0;
+  try {
+    for (const c of subsequent) {
+      // Shift the date in ET to stay consistent with all other date handling.
+      const oldDate  = new Date(c.ActualDate + 'T12:00:00');
+      const shifted  = new Date(oldDate.getTime() + shiftDays * 86400000);
+      const shiftedET = new Date(shifted.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+      const newDateStr = `${shiftedET.getFullYear()}-${String(shiftedET.getMonth()+1).padStart(2,'0')}-${String(shiftedET.getDate()).padStart(2,'0')}`;
+      const isWeekend  = shiftedET.getDay() === 0 || shiftedET.getDay() === 6;
+
+      await updateListItem(CONFIG.lists.closeCalendar, c._id, {
+        ActualDate: newDateStr,
+        IsWeekend:  isWeekend,
+      });
+      c.ActualDate = newDateStr;
+      c.IsWeekend  = isWeekend;
+      updated++;
+    }
+    await writeAuditLog('CalendarEdit', {
+      taskName:  `Cascade from WD${fromWD}`,
+      newValue:  `Shifted ${updated} workdays by ${shiftDays > 0 ? '+' : ''}${shiftDays} days`,
+    });
+    showToast(`✓ Cascaded to ${updated} workdays`, 'success');
+  } catch (err) {
+    showToast(`Cascade failed after ${updated} workdays — remaining rows unchanged`, 'error');
+    logError('confirmCascade failed:', err);
+  } finally {
+    hideLoading();
+    renderAdminPanel('calendar');
+  }
+}
+
+// ============================================================
+// SIGN OFF ON BEHALF
+// ============================================================
+// Used when a non-reviewer needs to sign the reviewer step during a tight close.
+// The actual signer's email is recorded in the SignOffBy field — full audit trail.
+
+function openSignOffBehalfModal(assignmentId, role) {
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
+
+  STATE.pendingSignoff = { assignmentId, role };
+
+  const titleEl = document.getElementById('modal-signoff-title');
+  const bodyEl  = document.getElementById('modal-signoff-body');
+
+  const assignedEmail = role === 'preparer' ? assignment.Preparer : assignment.Reviewer;
+  const et = formatDateET(new Date().toISOString());
+
+  if (titleEl) titleEl.textContent = `Sign off on behalf?`;
+  if (bodyEl) bodyEl.innerHTML = `
+    <p style="font-size:13px;margin-bottom:6px">${escapeHtml(assignment.Title || '')}</p>
+    <p style="font-size:12px;color:var(--slate);margin-bottom:6px">
+      Assigned ${role}: ${renderBadge(assignedEmail)}
+    </p>
+    <p style="font-size:12px;color:var(--slate);margin-bottom:6px">
+      Signing as: ${renderBadge(STATE.currentUser?.Email)} · ${et}
+    </p>
+    <p style="font-size:11px;color:var(--amber);font-weight:500">
+      ⚠ This will be recorded in the audit log as signed on behalf of the assigned ${role}.
+    </p>`;
+
+  showModal('modal-signoff');
+}
+
+// ============================================================
+// REASSIGN TASK
+// ============================================================
+function openReassignModal(assignmentId, role) {
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
+
+  STATE.pendingReassign = { assignmentId, role };
+
+  const titleEl = document.getElementById('reassign-modal-title');
+  const currentEl = document.getElementById('reassign-current');
+  const selectEl = document.getElementById('reassign-user-select');
+
+  if (titleEl) titleEl.textContent = `Reassign ${role === 'preparer' ? 'Preparer' : 'Reviewer'}`;
+
+  const currentEmail = role === 'preparer' ? assignment.Preparer : assignment.Reviewer;
+  if (currentEl) currentEl.innerHTML = `Current: ${renderBadge(currentEmail || '—')}`;
+
+  if (selectEl) {
+    selectEl.innerHTML = `<option value="">— No change —</option>` +
+      STATE.users
+        .filter(u => u.IsActive !== false)
+        .sort((a, b) => (a.Title || '').localeCompare(b.Title || ''))
+        .map(u => `<option value="${escapeHtml(u.Email)}" ${u.Email === currentEmail ? 'selected' : ''}>${escapeHtml((u.Emoji || '') + ' ' + (u.Title || u.Email.split('@')[0]))}</option>`)
+        .join('');
+  }
+
+  showModal('modal-reassign');
+}
+
+async function confirmReassign() {
+  const { assignmentId, role } = STATE.pendingReassign || {};
+  if (!assignmentId) return;
+
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
+
+  const selectEl = document.getElementById('reassign-user-select');
+  const newEmail = selectEl?.value;
+  if (!newEmail) return;
+
+  const field = role === 'preparer' ? 'Preparer' : 'Reviewer';
+  const prevEmail = assignment[field];
+  if (newEmail === prevEmail) { hideModal('modal-reassign'); return; }
+
+  hideModal('modal-reassign');
+
+  // Optimistic update — apply immediately so badge updates without waiting for SharePoint.
+  const snapshot = assignment[field];
+  assignment[field] = newEmail;
+  openTaskPanel(assignmentId);
+  refreshCurrentView();
+
+  try {
+    await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, { [field]: newEmail });
+    await writeAuditLog('Reassignment', {
+      taskName:      assignment.Title,
+      assignmentId,
+      previousValue: `${role}: ${prevEmail}`,
+      newValue:      `${role}: ${newEmail}`,
+    });
+    showToast(`✓ ${role === 'preparer' ? 'Preparer' : 'Reviewer'} reassigned`, 'success');
+  } catch (err) {
+    // Revert optimistic update so STATE reflects actual SharePoint state.
+    assignment[field] = snapshot;
+    openTaskPanel(assignmentId);
+    refreshCurrentView();
+    showToast('Reassignment failed — please try again', 'error');
+    logError('confirmReassign failed:', err);
+  }
+  STATE.pendingReassign = null;
+}
+
+// ============================================================
+// USER ROLE EDIT
+// ============================================================
+function openEditUserRoleModal(email) {
+  const user = STATE.users.find(u => u.Email === email);
+  if (!user) return;
+  STATE.pendingUserEdit = email;
+
+  const nameEl = document.getElementById('edit-user-name');
+  const roleEl = document.getElementById('edit-user-role');
+  const activeEl = document.getElementById('edit-user-active');
+  if (nameEl) nameEl.textContent = `${user.Emoji || ''} ${user.Title || email}`;
+  if (roleEl) roleEl.value = user.Role || 'TeamMember';
+  if (activeEl) activeEl.checked = user.IsActive !== false;
+  showModal('modal-edit-user');
+}
+
+async function saveUserRoleEdit() {
+  const email = STATE.pendingUserEdit;
+  if (!email) return;
+  const user = STATE.users.find(u => u.Email === email);
+  if (!user) return;
+
+  const newRole   = document.getElementById('edit-user-role')?.value || 'TeamMember';
+  const newActive = document.getElementById('edit-user-active')?.checked !== false;
+
+  try {
+    await updateListItem(CONFIG.lists.users, user._id, {
+      Role:     newRole,
+      IsActive: newActive,
+    });
+    const prevRole = user.Role;
+    user.Role     = newRole;
+    user.IsActive = newActive;
+    await writeAuditLog('UserEdit', {
+      taskName:      email,
+      previousValue: `Role: ${prevRole}`,
+      newValue:      `Role: ${newRole}, IsActive: ${newActive}`,
+    });
+    // Update current user's role flags if they edited themselves
+    if (email === STATE.currentUser?.Email) {
+      STATE.isAdmin = newRole === 'Admin';
+      STATE.isFinalReviewer = newRole === 'FinalReviewer' || STATE.isAdmin;
+    }
+    hideModal('modal-edit-user');
+    STATE.pendingUserEdit = null;
+    showToast('✓ User updated', 'success');
+    renderAdminPanel('users');
+  } catch (err) {
+    showToast('Failed to update user', 'error');
+    logError('saveUserRoleEdit failed:', err);
+  }
+}
+
+// ============================================================
+// ADD USER
+// ============================================================
+function updateAddUserPreview() {
+  const nameEl  = document.getElementById('add-user-name');
+  const emailEl = document.getElementById('add-user-email');
+  const wrap    = document.getElementById('add-user-preview-wrap');
+  const badge   = document.getElementById('add-user-preview-badge');
+  if (!wrap || !badge) return;
+
+  const emoji = STATE._addUserEmoji;
+  const color = STATE._addUserColor;
+  const name  = nameEl?.value?.trim() ||
+    emailEl?.value?.trim()?.split('@')[0] || '?';
+
+  if (!emoji && !color) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+
+  if (emoji && color) {
+    badge.style.background = color + '22';
+    badge.style.color = color;
+    badge.textContent = `${emoji} ${name}`;
+  } else if (emoji) {
+    badge.style.background = 'var(--light-gray)';
+    badge.style.color = 'var(--dark-slate)';
+    badge.textContent = `${emoji} ${name}`;
+  } else {
+    badge.style.background = color + '22';
+    badge.style.color = color;
+    badge.textContent = name;
+  }
+}
+
+async function createUser() {
+  const emailEl = document.getElementById('add-user-email');
+  const nameEl  = document.getElementById('add-user-name');
+  const roleEl  = document.getElementById('add-user-role');
+  const errEl   = document.getElementById('add-user-error');
+
+  const email = emailEl?.value?.trim().toLowerCase();
+  const role  = roleEl?.value || 'TeamMember';
+  const name  = nameEl?.value?.trim() || email.split('@')[0];
+  const emoji = STATE._addUserEmoji || null;
+  const color = STATE._addUserColor || null;
+
+  // Basic validation
+  if (!email || !email.includes('@')) {
+    if (errEl) { errEl.textContent = 'Please enter a valid email address.'; errEl.classList.remove('hidden'); }
+    return;
+  }
+  if (STATE.users.find(u => u.Email.toLowerCase() === email)) {
+    if (errEl) { errEl.textContent = 'A user with that email already exists.'; errEl.classList.remove('hidden'); }
+    return;
+  }
+
+  hideModal('modal-add-user');
+  showLoading('Adding user...');
+  try {
+    const created = await createListItem(CONFIG.lists.users, {
+      Title:                    name,
+      Email:                    email,
+      Role:                     role,
+      Emoji:                    emoji,
+      Color:                    color,
+      IsActive:                 true,
+      NotifyOnAssignment:       false,
+      NotifyOnReviewUnlock:     false,
+      NotifyOnOverdue:          false,
+      NotifyOnReassignment:     false,
+      NotifyOnSuggestionUpdate: false,
+    });
+    STATE.users.push({ ...created.fields, _id: created.id });
+    await writeAuditLog('UserEdit', { taskName: email, newValue: `Pre-added with role: ${role}` });
+    const badgeNote = emoji && color ? ` with badge ${emoji}` : '';
+    showToast(`✓ ${name} added${badgeNote}`, 'success');
+    renderAdminPanel('users');
+  } catch (err) {
+    showToast('Failed to add user', 'error');
+    logError('createUser failed:', err);
+  } finally {
+    hideLoading();
+    STATE._addUserEmoji = null;
+    STATE._addUserColor = null;
+  }
+}
+
+// ============================================================
+// SOX EXPORT
+// ============================================================
+function openSOXExportModal() {
+  // Populate quarter picker with all available quarters from audit entries + assignments
+  const quarters = [...new Set([
+    ...STATE._auditEntries.map(e => e.Quarter).filter(Boolean),
+    STATE.activeQuarter,
+  ].filter(Boolean))].sort().reverse();
+
+  const sel = document.getElementById('sox-export-quarter');
+  if (sel) {
+    sel.innerHTML = quarters.map(q =>
+      `<option value="${escapeHtml(q)}" ${q === STATE.activeQuarter ? 'selected' : ''}>${escapeHtml(q)}</option>`
+    ).join('');
+  }
+  showModal('modal-sox-export');
+}
+
+async function confirmSOXExport() {
+  const quarter = document.getElementById('sox-export-quarter')?.value;
+  if (!quarter) return;
+  hideModal('modal-sox-export');
+  showLoading(`Building audit log export for ${quarter}...`);
+
+  try {
+    // ── 1. Sign-off log ──────────────────────────────────────
+    // Always fetch assignments fresh from SharePoint for the export quarter.
+    // STATE.assignments only holds the active quarter — historical exports
+    // would produce empty sign-off and unsigned tabs without this fetch.
+    let assignments = STATE.assignments.filter(a => a.Quarter === quarter);
+    if (!assignments.length || quarter !== STATE.activeQuarter) {
+      const items = await getListItems(CONFIG.lists.quarterlyAssignments,
+        `fields/Quarter eq '${quarter}' and fields/IsStaging eq false`);
+      assignments = items.map(i => ({ ...i.fields, _id: i.id }));
+    }
+
+    function getSignOffWD(isoDate) {
+      if (!isoDate) return '';
+      const dateStr = isoDate.substring(0, 10);
+      const match = STATE.calendar.find(c => c.Quarter === quarter && c.ActualDate === dateStr);
+      return match ? match.WorkdayNumber : '';
+    }
+
+    const signOffRows = [
+      ['Quarter','Task Name','Category','Sign-Off Type','Assigned To',
+       'Signed Off By','On Behalf','Date & Time ET','Sign-Off WD',
+       'Due WD','Timeliness','Reversed','Reversal Reason'],
+    ];
+
+    assignments.forEach(a => {
+      if (a.PreparerSignOff) {
+        const signWD = getSignOffWD(a.PreparerSignOffDate);
+        const dueWD  = Number(a.PreparerWorkday);
+        const onBehalf = a.PreparerSignOffBy && a.PreparerSignOffBy !== a.Preparer;
+        signOffRows.push([
+          quarter, a.Title, a.Category, 'Preparer',
+          a.Preparer, a.PreparerSignOffBy || a.Preparer,
+          onBehalf ? 'Yes' : 'No',
+          formatDateET(a.PreparerSignOffDate),
+          signWD, dueWD,
+          typeof signWD === 'number' ? (signWD <= dueWD ? 'On Time' : 'Late') : 'Unknown',
+          'No', '',
+        ]);
+      }
+      if (a.ReviewerSignOff && a.SignOffMode !== 'Preparer Only') {
+        const signWD = getSignOffWD(a.ReviewerSignOffDate);
+        const dueWD  = Number(a.ReviewerWorkday);
+        const onBehalf = a.ReviewerSignOffBy && a.ReviewerSignOffBy !== a.Reviewer;
+        signOffRows.push([
+          quarter, a.Title, a.Category, 'Reviewer',
+          a.Reviewer, a.ReviewerSignOffBy || a.Reviewer,
+          onBehalf ? 'Yes' : 'No',
+          formatDateET(a.ReviewerSignOffDate),
+          signWD, dueWD,
+          typeof signWD === 'number' ? (signWD <= dueWD ? 'On Time' : 'Late') : 'Unknown',
+          'No', '',
+        ]);
+      }
+    });
+
+    // ── 2. Unsigned tasks ────────────────────────────────────
+    const unsignedRows = [['Quarter','Task Name','Category','Sign-Off Type','Assigned To','Due WD','Status']];
+    assignments.forEach(a => {
+      if (!a.PreparerSignOff) {
+        unsignedRows.push([quarter, a.Title, a.Category, 'Preparer', a.Preparer || 'Unassigned', a.PreparerWorkday || '', a.Status || '']);
+      }
+      if (!a.ReviewerSignOff && a.SignOffMode !== 'Preparer Only') {
+        unsignedRows.push([quarter, a.Title, a.Category, 'Reviewer', a.Reviewer || 'Unassigned', a.ReviewerWorkday || '', a.Status || '']);
+      }
+    });
+
+    // ── 3. Reversals ─────────────────────────────────────────
+    const auditQ = STATE._auditEntries.filter(e => e.Quarter === quarter);
+    const reversalRows = [['Quarter','Date ET','WD','Task Name','Reversed By','Detail','Reason']];
+    auditQ.filter(e => e.ActionType === 'Reversal').forEach(e => {
+      reversalRows.push([quarter, formatDateET(e.ActionDate), e.WorkdayNumber || '', e.TaskName, e.ActionBy, e.NewValue || '', e.ReasonNote || '']);
+    });
+
+    // ── 4. Review comments ───────────────────────────────────
+    // Fetch fresh for the export quarter — STATE.reviewComments only holds active quarter.
+    let exportRCs = STATE.reviewComments.filter(rc => rc.Quarter === quarter);
+    if (!exportRCs.length || quarter !== STATE.activeQuarter) {
+      const rcItems = await getListItems(CONFIG.lists.reviewComments, `fields/Quarter eq '${quarter}'`);
+      exportRCs = rcItems.map(i => ({ ...i.fields, _id: i.id }));
+    }
+    const rcRows = [['Quarter','Task Name','Posted By','Posted Date ET','Priority','Status','Resolved By','Resolved Date ET','Resolution Note']];
+    exportRCs.forEach(rc => {
+      rcRows.push([
+        quarter, rc.Title, rc.CreatedBy,
+        formatDateET(rc.CreatedDate), rc.Priority || 'Normal', rc.Status,
+        rc.ResolvedBy || '', rc.ResolvedDate ? formatDateET(rc.ResolvedDate) : '',
+        rc.ResolutionNote || '',
+      ]);
+    });
+
+    // ── 5. Reassignments ─────────────────────────────────────
+    const reassignRows = [['Quarter','Date ET','WD','Task Name','Changed By','Change Detail']];
+    auditQ.filter(e => e.ActionType === 'Reassignment').forEach(e => {
+      reassignRows.push([quarter, formatDateET(e.ActionDate), e.WorkdayNumber || '', e.TaskName, e.ActionBy, e.NewValue || '']);
+    });
+
+    // ── 6. Admin actions ─────────────────────────────────────
+    const adminTypes = ['QuarterActivation','QuarterCreated','Rollforward','TaskEdit','UserEdit','CalendarEdit'];
+    const adminRows = [['Quarter','Date ET','WD','Action Type','Subject','By','Detail']];
+    auditQ.filter(e => adminTypes.includes(e.ActionType)).forEach(e => {
+      adminRows.push([quarter, formatDateET(e.ActionDate), e.WorkdayNumber || '', e.ActionType, e.TaskName, e.ActionBy, e.NewValue || '']);
+    });
+
+    // ── 7. Summary ───────────────────────────────────────────
+    const totalTasks     = assignments.length;
+    const totalPrepDone  = assignments.filter(a => a.PreparerSignOff).length;
+    const totalRevDone   = assignments.filter(a => a.ReviewerSignOff).length;
+    const totalOnTime    = signOffRows.slice(1).filter(r => r[10] === 'On Time').length;
+    const totalLate      = signOffRows.slice(1).filter(r => r[10] === 'Late').length;
+    const totalReversals = reversalRows.length - 1;
+    const totalRCs       = rcRows.length - 1;
+    const totalRCOpen    = STATE.reviewComments.filter(rc => rc.Quarter === quarter && rc.Status === 'Open').length;
+
+    const summaryRows = [
+      ['Folio Audit Log Export', '', '', ''],
+      ['Quarter', quarter, '', ''],
+      ['Generated', formatDateET(new Date().toISOString()), '', ''],
+      ['Generated By', STATE.currentUser?.Email || '', '', ''],
+      ['', '', '', ''],
+      ['SUMMARY', '', '', ''],
+      ['Total assignments', totalTasks, '', ''],
+      ['Preparer sign-offs complete', totalPrepDone, '', ''],
+      ['Reviewer sign-offs complete', totalRevDone, '', ''],
+      ['Sign-offs on time', totalOnTime, '', ''],
+      ['Sign-offs late', totalLate, '', ''],
+      ['Reversals', totalReversals, '', ''],
+      ['Review comments posted', totalRCs, '', ''],
+      ['Review comments open at export', totalRCOpen, '', ''],
+      ['', '', '', ''],
+      ['TABS IN THIS WORKBOOK', '', '', ''],
+      ['1. Summary', 'This tab', '', ''],
+      ['2. Sign-Offs', 'All completed preparer and reviewer sign-offs with timeliness', '', ''],
+      ['3. Unsigned', 'Tasks not yet signed off at time of export', '', ''],
+      ['4. Reversals', 'All sign-off reversals with reasons', '', ''],
+      ['5. Review Comments', 'All review comments and their resolution status', '', ''],
+      ['6. Reassignments', 'All mid-quarter reassignments', '', ''],
+      ['7. Admin Actions', 'Quarter lifecycle and template changes', '', ''],
+    ];
+
+    // ── Build Excel workbook (SheetJS) ──────────────────────
+    // Single .xlsx file with one named tab per section — proper auditor deliverable.
+    const XLSX = window.XLSX;
+    if (!XLSX) throw new Error('SheetJS not loaded — check network connection');
+
+    const wb = XLSX.utils.book_new();
+
+    function addSheet(name, rows, headerColor) {
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+
+      // Column widths — set all to reasonable auto-width approximation
+      const maxCols = Math.max(...rows.map(r => r.length));
+      ws['!cols'] = Array.from({ length: maxCols }, (_, i) => ({
+        wch: Math.min(50, Math.max(10,
+          ...rows.map(r => String(r[i] ?? '').length)
+        ))
+      }));
+
+      // Freeze header row
+      ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    }
+
+    addSheet('Summary',          summaryRows);
+    addSheet('Sign-Offs',        signOffRows);
+    addSheet('Unsigned Tasks',   unsignedRows);
+    addSheet('Reversals',        reversalRows);
+    addSheet('Review Comments',  rcRows);
+    addSheet('Reassignments',    reassignRows);
+    addSheet('Admin Actions',    adminRows);
+
+    // Write and download
+    const wbBuf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob  = new Blob([wbBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url   = URL.createObjectURL(blob);
+    const a     = document.createElement('a');
+    a.href     = url;
+    a.download = `Folio-AuditLog-${quarter}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    await writeAuditLog('SOXExport', {
+      description: `SOX report exported for ${quarter} — ${signOffRows.length - 1} sign-offs, ${reversalRows.length - 1} reversals, ${rcRows.length - 1} RCs`,
+      taskName: `SOX Export: ${quarter}`,
+      newValue: `Exported by ${STATE.currentUser?.Email}`,
+    });
+
+    showToast(`✓ Audit log export ready — Folio-AuditLog-${quarter}.xlsx`, 'success');
+  } catch (err) {
+    showToast('SOX export failed', 'error');
+    logError('confirmSOXExport failed:', err);
+  } finally {
+    hideLoading();
+  }
+}
+
+// ============================================================
+// AUDIT LOG EXPORT
+// ============================================================
+async function exportAuditLog() {
+  showLoading('Loading audit log...');
+  try {
+    const items = await getListItems(CONFIG.lists.auditLog,
+      STATE.activeQuarter ? `fields/Quarter eq '${STATE.activeQuarter}'` : ''
+    );
+    const rows = [['Quarter','Action Type','Action By','Date ET','Workday','Task Name','Assignment ID','Previous Value','New Value','Reason']];
+    items.forEach(i => {
+      const f = i.fields;
+      rows.push([
+        f.Quarter || '',
+        f.ActionType || '',
+        f.ActionBy || '',
+        formatDateET(f.ActionDate),
+        f.WorkdayNumber || '',
+        f.TaskName || '',
+        f.AssignmentID || '',
+        f.PreviousValue || '',
+        f.NewValue || '',
+        f.ReasonNote || '',
+      ]);
+    });
+    downloadCSV(rows, `Folio-AuditLog-${STATE.activeQuarter || 'all'}.csv`);
+    showToast(`✓ Exported ${items.length} audit entries`, 'success');
+  } catch (err) {
+    showToast('Failed to export audit log', 'error');
+    logError('exportAuditLog failed:', err);
+  } finally {
+    hideLoading();
+  }
+}
+
+// ============================================================
+// RC REPLY
+// ============================================================
+function openRCReplyInput(rcId) {
+  // Find the rc-actions div for this comment and inject an inline reply form
+  const btn = document.querySelector(`[data-action="rc-reply"][data-id="${rcId}"]`);
+  if (!btn) return;
+  const actionsDiv = btn.closest('.rc-actions');
+  if (!actionsDiv) return;
+  if (actionsDiv.querySelector('.rc-reply-form')) return; // already open
+
+  actionsDiv.insertAdjacentHTML('beforeend', `
+    <div class="rc-reply-form" style="display:flex;gap:6px;margin-top:8px;width:100%">
+      <textarea id="reply-text-${rcId}" class="field-textarea" rows="2"
+        placeholder="Type your reply..." style="flex:1;font-size:12px"></textarea>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <button class="btn-primary btn-sm" onclick="submitRCReply('${rcId}')">Post</button>
+        <button class="btn-secondary btn-sm" onclick="this.closest('.rc-reply-form').remove()">Cancel</button>
+      </div>
+    </div>`);
+  document.getElementById(`reply-text-${rcId}`)?.focus();
+}
+
+async function submitRCReply(rcId) {
+  const text = document.getElementById(`reply-text-${rcId}`)?.value?.trim();
+  if (!text) { showToast('Please enter a reply', 'error'); return; }
+
+  const now = new Date().toISOString();
+  try {
+    const created = await createListItem(CONFIG.lists.reviewCommentReplies, {
+      Title:                 `Reply to RC ${rcId}`,
+      ReviewCommentLookupId: rcId,
+      ReplyText:             text,
+      CreatedByEmail:        STATE.currentUser.Email,
+      CreatedDate:           now,
+    });
+    // Push into STATE immediately so the reply renders without waiting for next poll.
+    // Set ReviewCommentLookupId explicitly since SharePoint may return a numeric lookup ID
+    // in created.fields rather than the string rcId we need for client-side filtering.
+    STATE.rcReplies.push({ ...created.fields, _id: created.id, ReviewCommentLookupId: rcId });
+    showToast('✓ Reply posted', 'success');
+    renderReviewComments();
+  } catch (err) {
+    showToast('Failed to post reply', 'error');
+    logError('submitRCReply failed:', err);
+  }
+}
+
+// ============================================================
+// TEMPLATE MANAGEMENT
+// ============================================================
+
+// Filters the template table by the search term
+function filterTemplateTable(search) {
+  const term = search.toLowerCase();
+  document.querySelectorAll('#admin-content .data-table tbody tr').forEach(row => {
+    const text = row.textContent.toLowerCase();
+    row.style.display = !term || text.includes(term) ? '' : 'none';
+  });
+}
+
+async function retireTemplate(templateId) {
+  const template = STATE.templates.find(t => t._id === templateId);
+  if (!template) return;
+  const name = template.TaskName || template.Title || templateId;
+  // Use modal instead of window.confirm for consistency with the rest of the app.
+  STATE.pendingTemplateRetire = templateId;
+  const retireDetail = document.getElementById('retire-template-detail');
+  if (retireDetail) retireDetail.textContent =
+    `Retire "${name}"? This will set IsActive = No. The task will no longer appear in future rollforwards but existing assignments are unaffected.`;
+  showModal('modal-retire-template');
+}
+
+async function confirmRetireTemplate() {
+  const templateId = STATE.pendingTemplateRetire;
+  if (!templateId) return;
+  STATE.pendingTemplateRetire = null;
+  const template = STATE.templates.find(t => t._id === templateId);
+  if (!template) return;
+  const name = template.TaskName || template.Title || templateId;
+  try {
+    await updateListItem(CONFIG.lists.taskTemplates, templateId, { IsActive: false });
+    template.IsActive = false;
+    await writeAuditLog('TaskEdit', { taskName: name, newValue: 'IsActive set to false (retired)' });
+    showToast(`✓ "${name}" retired`, 'success');
+    renderAdminPanel('templates');
+  } catch (err) {
+    showToast('Failed to retire template', 'error');
+    logError('confirmRetireTemplate failed:', err);
+  }
+}
+
+// Opens a simple inline editor for a template row's most common fields.
+// Full edit capability; saves to SharePoint on confirm.
+function openEditTemplateModal(templateId) {
+  // templateId === null means create mode; a valid ID means edit mode.
+  STATE.pendingTemplateEdit = templateId;
+
+  const t = templateId ? STATE.templates.find(t => t._id === templateId) : null;
+
+  const titleEl = document.querySelector('#modal-edit-template .modal-title');
+  if (titleEl) titleEl.textContent = t ? 'Edit Template' : 'New Template';
+
+  // Populate modal fields — empty defaults for create mode.
+  const fields = {
+    'edit-tpl-name':          t?.TaskName || t?.Title || '',
+    'edit-tpl-category':      t?.Category || '',
+    'edit-tpl-filingtype':    t?.FilingType || 'Both',
+    'edit-tpl-signoffmode':   t?.SignOffMode || 'Sequential',
+    'edit-tpl-prepwd':        t?.PreparerWorkday || '',
+    'edit-tpl-revwd':         t?.ReviewerWorkday || '',
+    'edit-tpl-prepwd-10k':    t?.PreparerWorkday10K || '',
+    'edit-tpl-revwd-10k':     t?.ReviewerWorkday10K || '',
+  };
+  Object.entries(fields).forEach(([id, val]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  });
+  showModal('modal-edit-template');
+}
+
+async function saveTemplateEdit() {
+  const templateId = STATE.pendingTemplateEdit; // null = create mode, string = edit mode
+  const t = templateId ? STATE.templates.find(t => t._id === templateId) : null;
+
+  const name = document.getElementById('edit-tpl-name')?.value?.trim();
+  if (!name) { showToast('Task name is required', 'error'); return; }
+
+  const prepWD10K = document.getElementById('edit-tpl-prepwd-10k')?.value;
+  const revWD10K  = document.getElementById('edit-tpl-revwd-10k')?.value;
+
+  const updates = {
+    Title:               name,
+    Category:            document.getElementById('edit-tpl-category')?.value || 'Other',
+    FilingType:          document.getElementById('edit-tpl-filingtype')?.value || 'Both',
+    SignOffMode:         document.getElementById('edit-tpl-signoffmode')?.value || 'Sequential',
+    PreparerWorkday:     Number(document.getElementById('edit-tpl-prepwd')?.value) || 1,
+    ReviewerWorkday:     document.getElementById('edit-tpl-revwd')?.value
+      ? Number(document.getElementById('edit-tpl-revwd').value) : null,
+    PreparerWorkday10K:  prepWD10K ? Number(prepWD10K) : null,
+    ReviewerWorkday10K:  revWD10K  ? Number(revWD10K)  : null,
+    IsActive:            true,
+  };
+
+  try {
+    if (t) {
+      // Edit mode — update existing template
+      await updateListItem(CONFIG.lists.taskTemplates, templateId, updates);
+      Object.assign(t, updates);
+      await writeAuditLog('TaskEdit', {
+        taskName: updates.Title,
+        newValue: `Category: ${updates.Category}, FilingType: ${updates.FilingType}, SignOffMode: ${updates.SignOffMode}, PrepWD: ${updates.PreparerWorkday}`,
+      });
+      showToast('✓ Template saved', 'success');
+    } else {
+      // Create mode — new template
+      const created = await createListItem(CONFIG.lists.taskTemplates, {
+        ...updates,
+        TaskName: name, // TaskName mirrors Title for the app's display logic
+      });
+      STATE.templates.push({ ...created.fields, _id: created.id });
+      await writeAuditLog('TaskEdit', { taskName: name, newValue: 'New template created' });
+      showToast('✓ Template created', 'success');
+    }
+    hideModal('modal-edit-template');
+    STATE.pendingTemplateEdit = null;
+    renderAdminPanel('templates');
+  } catch (err) {
+    showToast('Failed to save template', 'error');
+    logError('saveTemplateEdit failed:', err);
+  }
+}
+
+// ============================================================
+// ROLLFORWARD
+// ============================================================
+
+// Prompts for a new quarter name and sets it as the WorkingQuarter in AppSettings.
+async function startNewQuarter() {
+  // Show the new-quarter modal instead of window.prompt.
+  const input = document.getElementById('new-quarter-name');
+  const err   = document.getElementById('new-quarter-error');
+  if (input) input.value = '';
+  if (err)   err.classList.add('hidden');
+  showModal('modal-new-quarter');
+}
+
+async function confirmNewQuarter() {
+  const input = document.getElementById('new-quarter-name');
+  const err   = document.getElementById('new-quarter-error');
+  const quarter = (input?.value || '').trim();
+
+  if (!/^Q[1-4]\s+\d{4}$/.test(quarter)) {
+    if (err) { err.textContent = 'Use format Q1/Q2/Q3/Q4 YYYY — e.g. Q2 2026'; err.classList.remove('hidden'); }
+    return;
+  }
+
+  hideModal('modal-new-quarter');
+  showLoading(`Creating ${quarter}...`);
+  try {
+    await setAppSetting('WorkingQuarter', quarter);
+    // Clear cached staging items so the grid reloads for the new quarter.
+    STATE._stagingItems   = [];
+    STATE._stagingLoading = false;
+    STATE._auditEntries   = [];  // Force reload next time audit log opens
+    STATE._auditFilter    = { type: 'All', person: '', quarter: '' };
+    STATE.workingQuarter  = quarter;
+    await writeAuditLog('QuarterCreated', { description: `Staging quarter set to ${quarter}` });
+    showToast(`✓ ${quarter} created as staging quarter`, 'success');
+    renderAdminPanel('rollforward');
+  } catch (err) {
+    showToast('Failed to create quarter', 'error');
+    logError('startNewQuarter failed:', err);
+  } finally {
+    hideLoading();
+  }
+}
+
+// Copies all active TaskTemplates into QuarterlyAssignments for the working quarter
+// with IsStaging = true. All-or-nothing: if any item fails the batch is halted.
+async function performRollforward() {
+  const quarter = STATE.workingQuarter;
+  const fromQuarter = STATE.activeQuarter;
+  if (!quarter) { showToast('No staging quarter set', 'error'); return; }
+
+  // Show a proper confirmation modal instead of window.confirm.
+  STATE.pendingRollforward = quarter;
+  const rfDetail = document.getElementById('rollforward-confirm-detail');
+  if (rfDetail) rfDetail.textContent =
+    `This will create ~${STATE.templates.length} staging assignments for ${quarter} copied from templates. ` +
+    `Existing staging assignments for ${quarter} will be replaced. You can review before activating.`;
+  showModal('modal-rollforward-confirm');
+}
+
+// Called by the rollforward confirmation modal confirm button.
+async function confirmRollforward() {
+  const quarter = STATE.pendingRollforward;
+  if (!quarter) return;
+  STATE.pendingRollforward = null;
+  const fromQuarter = STATE.activeQuarter;
+
+  showLoading(`Rolling forward to ${quarter}...`);
+  let created = 0;
+  try {
+    // Remove any existing staging rows for this quarter first (clean slate)
+    const existing = await getListItems(
+      CONFIG.lists.quarterlyAssignments,
+      `fields/Quarter eq '${quarter}' and fields/IsStaging eq true`
+    );
+    for (const item of existing) {
+      await graphRequest('DELETE',
+        `/sites/${await getSiteId()}/lists/${CONFIG.lists.quarterlyAssignments}/items/${item.id}`
+      );
+    }
+
+    // Determine filing type for this quarter
+    const filingType = isQuarterQ4(quarter) ? '10-K' : '10-Q';
+    const eligible = STATE.templates.filter(t =>
+      t.IsActive !== false &&
+      (t.FilingType === filingType || t.FilingType === 'Both')
+    );
+
+    // Carry forward assignments from previous quarter if one exists
+    const prevAssignments = fromQuarter
+      ? await getListItems(CONFIG.lists.quarterlyAssignments, `fields/Quarter eq '${fromQuarter}'`)
+      : [];
+    const prevMap = {};
+    prevAssignments.forEach(i => {
+      if (i.fields.TaskTemplateLookupId) prevMap[i.fields.TaskTemplateLookupId] = i.fields;
+    });
+
+    for (const template of eligible) {
+      const prev = prevMap[template._id];
+      // Use 10-K workday numbers for Q4 quarters if they exist on the template,
+      // otherwise fall back to the standard workday numbers.
+      const isQ4 = filingType === '10-K';
+      const prepWD = (isQ4 && template.PreparerWorkday10K)
+        ? template.PreparerWorkday10K
+        : template.PreparerWorkday || null;
+      const revWD  = (isQ4 && template.ReviewerWorkday10K)
+        ? template.ReviewerWorkday10K
+        : template.ReviewerWorkday || null;
+
+      await createListItem(CONFIG.lists.quarterlyAssignments, {
+        Title:        `${quarter} - ${template.TaskName || template.Title || ''}`,
+        Quarter:      quarter,
+        TaskTemplateLookupId: template._id,
+        Preparer:     prev?.Preparer || template.DefaultPreparer || null,
+        Reviewer:     prev?.Reviewer || template.DefaultReviewer || null,
+        SignOffMode:  template.SignOffMode || 'Sequential',
+        Category:     template.Category || '',
+        MatrixItem:   template.MatrixItem || null,
+        MatrixCheckpoint: template.MatrixCheckpoint || null,
+        PreparerWorkday:  prepWD,
+        ReviewerWorkday:  revWD,
+        HasDocumentLink:  template.HasDocumentLink || false,
+        PreparerSignOff:  false,
+        ReviewerSignOff:  false,
+        Status:       'Not Started',
+        IsStaging:    true,
+      });
+      created++;
+
+      // Update progress every 10 items
+      if (created % 10 === 0) {
+        const pct = Math.round((created / eligible.length) * 100);
+        const loadingText = document.getElementById('loading-text');
+        if (loadingText) loadingText.textContent =
+          `Rolling forward... ${created} of ${eligible.length} tasks (${pct}%)`;
+      }
+    }
+
+    await writeAuditLog('Rollforward', {
+      description: `Rolled forward ${created} assignments to ${quarter} from ${fromQuarter || 'templates'}`,
+    });
+    STATE._stagingItems = [];
+    STATE._stagingLoading = false;
+    showToast(`✓ Rolled forward ${created} tasks to ${quarter}`, 'success');
+    renderAdminPanel('rollforward');
+  } catch (err) {
+    showToast(`Rollforward failed after ${created} tasks — check staging assignments in SharePoint`, 'error');
+    logError('confirmRollforward failed:', err);
+  } finally {
+    hideLoading();
+  }
+}
+
+// ============================================================
+// QUARTER ACTIVATION
+// ============================================================
+async function activateQuarter(quarter) {
+  showLoading(`Activating ${quarter}...`);
+  // Declared outside try so catch can safely reference it for the error message.
+  let stagingItems = [];
+  try {
+    stagingItems = await getListItems(
+      CONFIG.lists.quarterlyAssignments,
+      `fields/Quarter eq '${quarter}' and fields/IsStaging eq true`
+    );
+    for (const item of stagingItems) {
+      await updateListItem(CONFIG.lists.quarterlyAssignments, item.id, { IsStaging: false });
+    }
+    await setAppSetting('ActiveQuarter', quarter);
+    STATE.activeQuarter = quarter;
+    STATE.workingQuarter = '';
+    await setAppSetting('WorkingQuarter', '');
+    await writeAuditLog('QuarterActivation', { description: `Activated ${quarter}` });
+    // Reset filters when a new quarter goes live — stale filters from the previous
+    // quarter would hide tasks and cause confusion in the new quarter.
+    STATE.filters.status   = 'all';
+    STATE.filters.category = 'all';
+    STATE.filters.assignee = 'all';
+    clearSavedFilters();
+    await loadAllData();
+    refreshCurrentView();
+    showToast(`✓ ${quarter} is now live`, 'success');
+  } catch (err) {
+    const partialMsg = stagingItems.length
+      ? 'partial update occurred — check QuarterlyAssignments list in SharePoint'
+      : 'no changes were made';
+    showToast(`Activation failed — ${partialMsg}`, 'error');
+    logError('Activation failed:', err);
+  }
+  hideLoading();
+}
+
+// ============================================================
+// EXPORTS
+// ============================================================
+function exportSignOffLog() {
+  const quarter = getReadQuarter();
+  const rows = [
+    ['Quarter','Task Name','Category','Sign-Off Type','Signed Off By','Assigned To','Date & Time ET','Sign-Off Workday','Due Workday','On Time / Overdue','Reversal','Reversal Reason'],
+  ];
+
+  // Resolves which workday a given ISO date fell on by matching against the close calendar.
+  function getSignOffWorkday(isoDate) {
+    if (!isoDate) return '';
+    const dateStr = isoDate.substring(0, 10); // YYYY-MM-DD
+    const match = STATE.calendar.find(c => c.Quarter === quarter && c.ActualDate === dateStr);
+    return match ? match.WorkdayNumber : '';
+  }
+
+  STATE.assignments.forEach(a => {
+    if (a.PreparerSignOff) {
+      const dueWD      = Number(a.PreparerWorkday);
+      const signOffWD  = getSignOffWorkday(a.PreparerSignOffDate);
+      const timeliness = typeof signOffWD === 'number' ? (signOffWD <= dueWD ? 'On Time' : 'Overdue') : 'Unknown';
+      rows.push([
+        quarter, a.Title, a.Category, 'Preparer',
+        a.PreparerSignOffBy || a.Preparer, a.Preparer,
+        formatDateET(a.PreparerSignOffDate), signOffWD, dueWD, timeliness, 'No', ''
+      ]);
+    }
+    if (a.ReviewerSignOff) {
+      const dueWD      = Number(a.ReviewerWorkday);
+      const signOffWD  = getSignOffWorkday(a.ReviewerSignOffDate);
+      const timeliness = typeof signOffWD === 'number' ? (signOffWD <= dueWD ? 'On Time' : 'Overdue') : 'Unknown';
+      rows.push([
+        quarter, a.Title, a.Category, 'Reviewer',
+        a.ReviewerSignOffBy || a.Reviewer, a.Reviewer,
+        formatDateET(a.ReviewerSignOffDate), signOffWD, dueWD, timeliness, 'No', ''
+      ]);
+    }
+  });
+  downloadCSV(rows, `Folio-SignOffLog-${quarter}.csv`);
+}
+
+function exportMatrixExcel() {
+  const quarter = getReadQuarter();
+  const rows = [['Item', 'Section', 'Preparer', 'Reviewer', ...CONFIG.matrixCheckpoints]];
+  // Build matrix rows
+  STATE.templates
+    .filter(t => t.MatrixItem)
+    .forEach(t => {
+      const row = [t.MatrixItem, t.MatrixSection, '', ''];
+      CONFIG.matrixCheckpoints.forEach(cp => {
+        const isMatrixOnly = CONFIG.matrixOnlyColumns.includes(cp);
+        if (isMatrixOnly) {
+          const ms = STATE.matrixStatus.find(m => m.MatrixItem === t.MatrixItem);
+          const fm = MATRIX_FIELD_MAP[cp];
+          row.push(ms?.[fm.status] || 'Not Started');
+        } else {
+          const linked = STATE.assignments.find(a => a.MatrixItem === t.MatrixItem && a.MatrixCheckpoint === cp);
+          if (!linked) row.push('N/A');
+          else {
+            const cpFields = getSignOffFields(getCheckpointRole(cp));
+            row.push(linked[cpFields.signOff] ? 'Yes' : '');
+          }
+        }
+      });
+      rows.push(row);
+    });
+  downloadCSV(rows, `Folio-Matrix-${quarter}.csv`);
+}
+
+
+
+function downloadCSV(rows, filename) {
+  const csv = rows.map(row => row.map(v => `"${String(v || '').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
 
-// ── FEATURE 7 — TEAM SUMMARY REPORT ──────────────────────────
-
-function switchReportTab(tab) {
-  const qContent = document.getElementById('report-content');
-  const tContent = document.getElementById('team-summary-content');
-  const qTab = document.getElementById('report-tab-quarter');
-  const tTab = document.getElementById('report-tab-team');
-  if (tab === 'quarter') {
-    if (qContent) qContent.style.display = '';
-    if (tContent) tContent.style.display = 'none';
-    if (qTab) qTab.classList.add('report-tab-active');
-    if (tTab) tTab.classList.remove('report-tab-active');
-  } else {
-    if (qContent) qContent.style.display = 'none';
-    if (tContent) tContent.style.display = '';
-    if (qTab) qTab.classList.remove('report-tab-active');
-    if (tTab) tTab.classList.add('report-tab-active');
-    renderTeamSummary();
-  }
+function renderAllTasksCards() {
+  const wrap = document.getElementById('all-tasks-cards-wrap');
+  if (!wrap) return;
+  const filtered = getFilteredAssignments();
+  wrap.innerHTML = filtered.map(a => renderTaskCard(a, STATE.currentUser?.Email, isTaskOverdue(a))).join('');
+  attachCardEvents();
 }
-function renderTeamSummary() {
-  const quarter = document.getElementById('report-quarter')?.value || 'Q1';
-  const year    = parseInt(document.getElementById('report-year')?.value || new Date().getFullYear());
-  const tasks   = getTasks().filter(t => t.quarter===quarter && t.year===year && t.status!=='Not Applicable');
-  const el      = document.getElementById('team-summary-content');
-  if (!el) return;
 
-  const users = getUsers().filter(u => {
-    const uid = u._spId || u.id;
-    return tasks.some(t => t.ownerId===uid || t.reviewerId===uid || t.reviewer2Id===uid);
+// ============================================================
+// SETUP SCREEN
+// ============================================================
+function renderSetupScreen() {
+  renderEmojiPicker('emoji-grid', CONFIG.emojiOptions[0], (emoji) => {
+    if (!STATE.currentUser) STATE.currentUser = {};
+    STATE.currentUser.Emoji = emoji;
+    updateSetupPreview();
+  });
+  renderColorPicker('color-grid', CONFIG.colorOptions[0].hex, (color) => {
+    if (!STATE.currentUser) STATE.currentUser = {};
+    STATE.currentUser.Color = color;
+    updateSetupPreview();
   });
 
-  if (!users.length) { el.innerHTML = '<p class="text-muted" style="padding:16px">No team members assigned to tasks this quarter.</p>'; return; }
-
-  const rows = users.map(u => {
-    const uid  = u._spId || u.id;
-    const prep = tasks.filter(t => t.ownerId===uid);
-    const rev1 = tasks.filter(t => t.reviewerId===uid && t.ownerId!==uid);
-    const rev2 = tasks.filter(t => t.reviewer2Id===uid && t.ownerId!==uid && t.reviewerId!==uid);
-    const all  = [...new Set([...prep, ...rev1, ...rev2])];
-    const complete = all.filter(t => t.status==='Complete').length;
-    const overdue  = all.filter(t => deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
-    const rfr      = all.filter(t => t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
-    const inprog   = all.filter(t => t.status==='In Progress').length;
-    const pct      = all.length ? Math.round(complete/all.length*100) : 0;
-    return `<tr>
-      <td><div class="owner-chip"><div class="mini-avatar">${initials(u.name)}</div>${escHtml(u.name)}</div></td>
-      <td style="text-align:center">${prep.length}</td>
-      <td style="text-align:center">${rev1.length + rev2.length}</td>
-      <td style="text-align:center">${all.length}</td>
-      <td style="text-align:center;color:var(--green-600)">${complete}</td>
-      <td style="text-align:center;color:var(--blue)">${inprog}</td>
-      <td style="text-align:center;color:var(--purple)">${rfr}</td>
-      <td style="text-align:center;color:${overdue>0?'var(--red-500)':'inherit'};font-weight:${overdue>0?'600':'400'}">${overdue||'—'}</td>
-      <td><div style="display:flex;align-items:center;gap:8px">
-        <div style="flex:1;background:#EEF1F6;border-radius:4px;height:6px;overflow:hidden">
-          <div style="width:${pct}%;height:100%;background:var(--blue);border-radius:4px"></div>
-        </div>
-        <span style="font-size:11px;color:var(--gray-500);min-width:30px">${pct}%</span>
-      </div></td>
-    </tr>`;
-  }).join('');
-
-  el.innerHTML = `
-    <table class="report-team-table">
-      <thead><tr>
-        <th>Team Member</th>
-        <th>Prep</th>
-        <th>Review</th>
-        <th>Total</th>
-        <th>Complete</th>
-        <th>In Progress</th>
-        <th>For Review</th>
-        <th>Overdue</th>
-        <th>Progress</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
-}
-
-// Exports a per-team-member workload summary for the selected quarter as a .xls file.
-function exportTeamSummary() {
-  const quarter = document.getElementById('report-quarter')?.value || 'Q1';
-  const year    = parseInt(document.getElementById('report-year')?.value || new Date().getFullYear());
-  const tasks   = getTasks().filter(t => t.quarter===quarter && t.year===year && t.status!=='Not Applicable');
-  const users   = getUsers().filter(u => {
-    const uid = u._spId || u.id;
-    return tasks.some(t => t.ownerId===uid || t.reviewerId===uid || t.reviewer2Id===uid);
+  document.getElementById('setup-name')?.addEventListener('input', (e) => {
+    if (!STATE.currentUser) STATE.currentUser = {};
+    STATE.currentUser.Title = e.target.value;
+    updateSetupPreview();
   });
 
-  const header = ['Name','Role','Prep Tasks','Review Tasks','Total','Complete','In Progress','For Review','Overdue','% Complete'];
-  const rows   = users.map(u => {
-    const userId = u._spId || u.id;
-    const prep = tasks.filter(t => t.ownerId===userId);
-    const rev  = tasks.filter(t => (t.reviewerId===userId||t.reviewer2Id===userId) && t.ownerId!==userId);
-    const all  = [...new Set([...prep, ...rev])];
-    const complete = all.filter(t => t.status==='Complete').length;
-    const overdue  = all.filter(t => deadlineStatus(t.dueDate,t.status,t.workdayNum,t.quarter,t.year)==='overdue').length;
-    const rfr      = all.filter(t => t.status==='Ready for Review 1'||t.status==='Ready for Review 2').length;
-    const inprog   = all.filter(t => t.status==='In Progress').length;
-    const pct      = all.length ? Math.round(complete/all.length*100) : 0;
-    return [u.name, u.role, prep.length, rev.length, all.length, complete, inprog, rfr, overdue, pct+'%'];
-  });
-
-  const sheetHtml = (header, rows) => `<table>
-    <thead><tr>${header.map(h=>`<th style="background:#0f2140;color:#fff;font-weight:bold">${h}</th>`).join('')}</tr></thead>
-    <tbody>${rows.map((r,i)=>`<tr style="background:${i%2?'#f7f9fc':'#fff'}">${r.map(c=>`<td>${escHtml(String(c||''))}</td>`).join('')}</tr>`).join('')}</tbody>
-  </table>`;
-
-  const wb = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
-<head><meta charset="UTF-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>
-  <x:ExcelWorksheet><x:Name>Team Summary</x:Name><x:WorksheetOptions><x:Selected/></x:WorksheetOptions></x:ExcelWorksheet>
-</x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
-<style>td,th{border:1px solid #dde3ed;padding:6px 10px;font-size:12px;font-family:Calibri,sans-serif}table{border-collapse:collapse}</style>
-</head><body>${sheetHtml(header, rows)}</body></html>`;
-
-  const blob = new Blob([wb], { type: 'application/vnd.ms-excel;charset=utf-8' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url; a.download = `TeamSummary_${quarter}_${year}.xls`;
-  a.click(); URL.revokeObjectURL(url);
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ── BULK EDIT ────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-function toggleBulkSelectAll(checkbox, tbodyId) {
-  const tbody = document.getElementById(tbodyId);
-  if (!tbody) return;
-  tbody.querySelectorAll('.bulk-check').forEach(cb => cb.checked = checkbox.checked);
-  updateBulkBar();
-}
-
-function updateBulkBar() {
-  const checked = document.querySelectorAll('.bulk-check:checked').length;
-  const bar     = document.getElementById('bulk-bar');
-  if (!bar) return;
-  bar.classList.toggle('hidden', checked === 0);
-  const lbl = document.getElementById('bulk-count-label');
-  if (lbl) lbl.textContent = `${checked} task${checked!==1?'s':''} selected`;
-}
-
-function getSelectedTaskSpIds() {
-  return [...document.querySelectorAll('.bulk-check:checked')].map(cb => cb.dataset.spid);
-}
-
-function openBulkEdit() {
-  const spIds = getSelectedTaskSpIds();
-  if (!spIds.length) return;
-  const ownerOpts = getAssignableUsers().map(u =>
-    `<option value="${u._spId||u.id}">${escHtml(u.name)}</option>`).join('');
-  document.getElementById('modal-title').textContent = `Bulk Edit — ${spIds.length} tasks`;
-  document.getElementById('modal-body').innerHTML = `
-    <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
-      Leave a field blank to keep existing values unchanged.
-    </p>
-    <div class="form-group"><label>Reassign Preparer (Owner)</label>
-      <select id="bulk-owner"><option value="">— Keep existing —</option>${ownerOpts}</select></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="form-group"><label>Reassign Reviewer 1</label>
-        <select id="bulk-reviewer"><option value="">— Keep existing —</option><option value="__clear__">Clear reviewer</option>${ownerOpts}</select></div>
-      <div class="form-group"><label>Reassign Reviewer 2</label>
-        <select id="bulk-reviewer2"><option value="">— Keep existing —</option><option value="__clear__">Clear reviewer</option>${ownerOpts}</select></div>
-    </div>
-    <div class="form-group"><label>Shift Due Dates by (days)</label>
-      <input type="number" id="bulk-shift" placeholder="e.g. 7 or -3" /></div>
-    <div class="form-group"><label>Set Status</label>
-      <select id="bulk-status">
-        <option value="">— Keep existing —</option>
-        ${STATUS_ORDER.map(s=>`<option>${s}</option>`).join('')}
-      </select></div>
-    <div class="modal-footer">
-      <button class="btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn-primary" onclick="applyBulkEdit()">Apply to ${spIds.length} tasks</button>
-    </div>`;
-  openModal();
-}
-
-async function applyBulkEdit() {
-  const spIds     = getSelectedTaskSpIds();
-  const owner     = document.getElementById('bulk-owner').value;
-  const reviewer  = document.getElementById('bulk-reviewer')?.value;
-  const reviewer2 = document.getElementById('bulk-reviewer2')?.value;
-  const shift     = parseInt(document.getElementById('bulk-shift').value);
-  const status    = document.getElementById('bulk-status').value;
-  if (!owner && !reviewer && !reviewer2 && isNaN(shift) && !status) {
-    showToast('Please set at least one field to change.', 'warning'); return;
-  }
-  closeAllModals();
-  showLoadingOverlay(true, `Updating ${spIds.length} tasks…`);
-  try {
-    for (const spId of spIds) {
-      const task   = _tasks.find(t => t._spId === spId); if(!task) continue;
-      const fields = {};
-      if (owner)    { fields.OwnerId    = owner;    task.ownerId    = owner; }
-      if (reviewer) {
-        const rv = reviewer==='__clear__' ? '' : reviewer;
-        fields.ReviewerId  = rv; task.reviewerId  = rv;
-      }
-      if (reviewer2) {
-        const rv2 = reviewer2==='__clear__' ? '' : reviewer2;
-        fields.Reviewer2Id = rv2; task.reviewer2Id = rv2;
-      }
-      if (!isNaN(shift) && shift !== 0 && task.dueDate) {
-        const newDate  = addDays(task.dueDate, shift);
-        fields.DueDate = newDate; task.dueDate = newDate;
-      }
-      if (status) {
-        const prev   = task.status;
-        fields.Status = status; task.status = status;
-        await writeSignOff(spId, 'task', task.name, prev, status);
-      }
-      if (Object.keys(fields).length) await updateListItem(LISTS.tasks, spId, fields);
+  document.getElementById('setup-emoji-custom')?.addEventListener('input', (e) => {
+    if (e.target.value.trim()) {
+      if (!STATE.currentUser) STATE.currentUser = {};
+      STATE.currentUser.Emoji = e.target.value.trim();
+      updateSetupPreview();
     }
-    await refreshData();
-  } catch(e) { showToast('Bulk edit failed: ' + e.message, 'error'); }
-  finally { showLoadingOverlay(false); }
+  });
+
+  document.getElementById('btn-save-setup')?.addEventListener('click', completeSetup);
 }
+
+function updateSetupPreview() {
+  const badge = document.getElementById('preview-badge');
+  if (!badge || !STATE.currentUser) return;
+  const hex = STATE.currentUser.Color || '#75787B';
+  badge.style.background = hex + '22';
+  badge.style.color = hex;
+  badge.textContent = `${STATE.currentUser.Emoji || '?'} ${STATE.currentUser.Title || 'You'}`;
+}
+
+async function completeSetup() {
+  const name = document.getElementById('setup-name')?.value?.trim();
+  if (!name) { showToast('Please enter your name', 'error'); return; }
+  STATE.currentUser.Title = name;
+
+  try {
+    await updateListItem(CONFIG.lists.users, STATE.currentUser._id, {
+      Title: name,
+      Emoji: STATE.currentUser.Emoji,
+      Color: STATE.currentUser.Color,
+    });
+    showApp();
+  } catch (err) {
+    showToast('Failed to save profile — please try again', 'error');
+    logError('Setup save failed:', err);
+  }
+}
+
+// ============================================================
+// SCREEN MANAGEMENT
+// ============================================================
+function showScreen(screenId) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+  document.getElementById(screenId)?.classList.remove('hidden');
+}
+
+async function showApp() {
+  showScreen('screen-app');
+
+  // Show correct nav items based on role
+  document.querySelectorAll('.nav-matrix-link').forEach(el => {
+    el.classList.toggle('hidden', !STATE.isFinalReviewer);
+  });
+  document.querySelectorAll('.nav-admin-link').forEach(el => {
+    el.classList.toggle('hidden', !STATE.isAdmin);
+  });
+  // Hide "New Comment" button for non-reviewers — reviewers and admins only
+  const newRCBtn = document.getElementById('btn-new-rc');
+  if (newRCBtn) newRCBtn.classList.toggle('hidden', !STATE.isFinalReviewer && !STATE.isAdmin);
+
+  updateNavAvatar();
+
+  // Load all data
+  showLoading('Loading your tasks...');
+  try {
+    await loadTemplates();
+    if (STATE.activeQuarter) {
+      await loadAllData();
+    }
+  } catch (err) {
+    logError('Initial data load failed:', err);
+    showStaleBanner(true);
+  }
+  hideLoading();
+
+  updateWDIndicator();
+
+  // Populate the quarter picker now that we know which quarters exist.
+  populateQuarterPicker();
+
+  // Restore persisted filters for this user+quarter, then sync all toolbar
+  // controls to match (status buttons, selects, search input).
+  restoreFilters();
+  syncFilterUI();
+
+  if (!STATE.activeQuarter) {
+    // no-quarter is not a routed view — renderMyTasks handles the placeholder display.
+    showView('my-tasks');
+  } else {
+    showView('my-tasks');
+  }
+
+  startPolling();
+}
+
+// escapeHtml moved to top-of-file utilities section
+
+// ============================================================
+// FILTER PERSISTENCE
+// ============================================================
+// Persists STATUS, CATEGORY, and ASSIGNEE filters per user per quarter in
+// localStorage. Search and RC filters are intentionally not persisted —
+// they are momentary query states, not recurring preferences.
+// Key format: folio:filters:{email}:{quarter}
+
+function filterStorageKey() {
+  const email   = STATE.currentUser?.Email || 'unknown';
+  const quarter = STATE.activeQuarter || 'none';
+  return `folio:filters:${email}:${quarter}`;
+}
+
+function saveFilters() {
+  if (!STATE.currentUser?.Email || !STATE.activeQuarter) return;
+  try {
+    const toSave = {
+      status:   STATE.filters.status,
+      category: STATE.filters.category,
+      assignee: STATE.filters.assignee,
+      sort:     STATE.filters.sort,
+      sortDir:  STATE.filters.sortDir,
+    };
+    localStorage.setItem(filterStorageKey(), JSON.stringify(toSave));
+  } catch (err) {
+    // localStorage may be unavailable in some corporate environments — fail silently.
+    logError('saveFilters failed:', err);
+  }
+}
+
+function restoreFilters() {
+  if (!STATE.currentUser?.Email || !STATE.activeQuarter) return;
+  try {
+    const raw = localStorage.getItem(filterStorageKey());
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved.status)   STATE.filters.status   = saved.status;
+    if (saved.category) STATE.filters.category = saved.category;
+    if (saved.assignee) STATE.filters.assignee = saved.assignee;
+    if (saved.sort)     STATE.filters.sort      = saved.sort;
+    if (saved.sortDir)  STATE.filters.sortDir   = saved.sortDir;
+    log('Filters restored for', STATE.activeQuarter, saved);
+  } catch (err) {
+    logError('restoreFilters failed:', err);
+  }
+}
+
+// Clears persisted filters for the current user+quarter — called when quarter changes.
+function clearSavedFilters() {
+  try {
+    localStorage.removeItem(filterStorageKey());
+  } catch (err) { /* silent */ }
+}
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+async function init() {
+  log('Folio v' + CONFIG.version + ' initializing...');
+
+  // Populate version spans from CONFIG so there is a single source of truth.
+  document.querySelectorAll('[id^="app-version"]').forEach(el => { el.textContent = CONFIG.version; });
+
+  // Validate config
+  if (CONFIG.clientId === 'YOUR_APPLICATION_CLIENT_ID') {
+    document.body.innerHTML = `
+      <div style="padding:40px;font-family:Arial;max-width:600px;margin:0 auto">
+        <h2 style="color:#C8102E">Configuration Required</h2>
+        <p>Please fill in your CONFIG values in app.js before deploying:</p>
+        <ul>
+          <li>clientId — your Azure App Registration Client ID</li>
+          <li>tenantId — your Azure Directory (Tenant) ID</li>
+          <li>redirectUri — the full URL to this index.html on SharePoint</li>
+          <li>siteUrl — your SharePoint site URL</li>
+        </ul>
+        <p>See Section 4 of the Build Guide for details.</p>
+      </div>`;
+    return;
+  }
+
+  // Initialize MSAL
+  msalInstance = new msal.PublicClientApplication(msalConfig);
+  await msalInstance.initialize();
+
+  // Handle redirect response
+  const redirectResult = await msalInstance.handleRedirectPromise();
+  if (redirectResult) {
+    currentAccount = redirectResult.account;
+    msalInstance.setActiveAccount(currentAccount);
+  }
+
+  // Check for existing session
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) {
+    currentAccount = accounts[0];
+    msalInstance.setActiveAccount(currentAccount);
+  }
+
+  // Attach global events
+  attachGlobalEvents();
+
+  if (currentAccount) {
+    // Already signed in
+    showScreen('screen-app');
+    showLoading('Loading Folio...');
+    try {
+      await loadActiveQuarter();
+      const email = currentAccount.username;
+      const isReturning = await loadCurrentUser(email);
+
+      // Update last login
+      if (STATE.currentUser?._id) {
+        updateListItem(CONFIG.lists.users, STATE.currentUser._id, {
+          LastLogin: new Date().toISOString()
+        }).catch(() => {});
+      }
+
+      if (!isReturning || !STATE.currentUser.Emoji) {
+        hideLoading();
+        renderSetupScreen();
+        showScreen('screen-profile-setup');
+      } else {
+        hideLoading();
+        await showApp();
+      }
+    } catch (err) {
+      hideLoading();
+      logError('Init failed:', err);
+      showScreen('screen-signin');
+    }
+  } else {
+    showScreen('screen-signin');
+    document.getElementById('btn-signin')?.addEventListener('click', () => {
+      msalInstance.loginRedirect(loginRequest);
+    });
+  }
+}
+
+// ============================================================
+// START
+// ============================================================
+document.addEventListener('DOMContentLoaded', init);
