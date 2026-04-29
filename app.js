@@ -606,7 +606,7 @@ function isViewingHistory() {
 // Use these helpers everywhere quarter context matters:
 // getReadQuarter()  — the quarter currently being displayed (may be historical)
 // getWriteQuarter() — the live quarter all writes must target (never historical)
-function getReadQuarter()  { return getReadQuarter(); }
+function getReadQuarter()  { return STATE.viewingQuarter || STATE.activeQuarter; }
 function getWriteQuarter() { return STATE.activeQuarter; }
 
 // Loads all data for the viewing quarter (historical or live).
