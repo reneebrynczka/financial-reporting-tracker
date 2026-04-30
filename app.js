@@ -99,6 +99,31 @@ const MATRIX_FIELD_MAP = {
 };
 
 // ============================================================
+// DOMAIN CONSTANTS — single source of truth for magic strings
+// ============================================================
+// Use these instead of raw strings in logic/comparisons/writes.
+// HTML option values and UI labels stay as literals since they
+// are presentation layer, not domain logic.
+
+const STATUS = {
+  NOT_STARTED: 'Not Started',
+  IN_PROGRESS: 'In Progress',
+  PREPARED:    'Prepared',
+  COMPLETE:    'Complete',
+};
+
+const SIGN_OFF_MODE = {
+  SEQUENTIAL:    'Sequential',
+  PREPARER_ONLY: 'Preparer Only',
+};
+
+const ROLE = {
+  ADMIN:          'Admin',
+  FINAL_REVIEWER: 'FinalReviewer',
+  TEAM_MEMBER:    'TeamMember',
+};
+
+// ============================================================
 // MSAL SETUP
 // ============================================================
 const msalConfig = {
@@ -166,11 +191,12 @@ const STATE = {
   pendingCalendarEdit:    null,   // calendar row ID being edited
   pendingUserEdit:        null,   // user email being edited
   suggestions:            [],         // TaskSuggestions (loaded when admin panel opens)
-  pendingCascade:      null,  // {quarter, wdNumber, shift, newDate}
-  pendingRollforward:  null,  // quarter name awaiting rollforward confirm
-  pendingWDEdit:       null,  // {assignmentId} awaiting workday edit confirm
-  _auditEntries:       [],    // Loaded on-demand when audit log panel opens
-  _auditFilter:        { type: 'All', person: '', quarter: '' }, // Audit log filter state
+  pendingCascade:         null,   // {quarter, fromWD, shiftDays, subsequent}
+  pendingRollforward:     null,   // quarter name awaiting rollforward confirm
+  pendingWDEdit:          null,   // {assignmentId} awaiting workday edit confirm
+  _auditEntries:          [],     // Loaded on-demand when audit log panel opens
+  _auditFilter:           { type: 'All', person: '', quarter: '' }, // Audit log filter state
+  _matrixUpdateInFlight:  false,  // Guard against double-clicks on matrix cells
 };
 
 // ============================================================
@@ -317,12 +343,12 @@ function isTaskOverdue(assignment) {
   if (assignment.IsSkipped) return false;  // Skipped tasks are never overdue
   const wd = getTodaysWorkday(STATE.activeQuarter);
   if (!wd || typeof wd !== 'number') return false;
-  const role = assignment.SignOffMode === 'Preparer Only' ? 'preparer' :
+  const role = assignment.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY ? 'preparer' :
     !assignment.PreparerSignOff ? 'preparer' : 'reviewer';
   const dueWD = role === 'preparer'
     ? Number(assignment.PreparerWorkday)
     : Number(assignment.ReviewerWorkday);
-  return wd > dueWD && assignment.Status !== 'Complete';
+  return wd > dueWD && assignment.Status !== STATUS.COMPLETE;
 }
 
 // ============================================================
@@ -390,6 +416,27 @@ async function graphRequest(method, endpoint, body = null, retries = 3) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Converts a raw Graph API error into a user-friendly message.
+// Called by catch blocks throughout the app to surface actionable guidance.
+function classifyGraphError(err) {
+  const msg = String(err?.message || '');
+  if (msg.includes('403'))             return 'Permission denied — check Azure API permissions are granted';
+  if (msg.includes('404'))             return 'Item not found — a list column may have been renamed';
+  if (msg.includes('400'))             return 'Bad request — a list column name may not match the schema';
+  if (msg.includes('503') ||
+      msg.includes('502') ||
+      msg.includes('504'))             return 'SharePoint is temporarily unavailable — please try again';
+  if (msg.includes('AADSTS700016'))    return 'App not found — check clientId in CONFIG';
+  if (msg.includes('AADSTS50011'))     return 'Redirect URI mismatch — check Azure app registration';
+  if (msg.includes('AADSTS7000215'))   return 'Client secret expired — regenerate in Azure Portal';
+  if (msg.includes('AADSTS'))          return 'Authentication error — try signing out and back in';
+  if (msg.includes('getSiteId') ||
+      msg.includes('siteId'))          return 'SharePoint site not found — check siteUrl in CONFIG';
+  if (msg.includes('NetworkError') ||
+      msg.includes('Failed to fetch')) return 'Network error — check your internet connection';
+  return 'Unexpected error — check the browser console for details (F12)';
+}
+
 // ============================================================
 // SHAREPOINT — SITE ID
 // ============================================================
@@ -455,6 +502,18 @@ async function getAppSetting(key) {
   return match ? match.fields.SettingValue : null;
 }
 
+async function getAppSettings(...keys) {
+  // Batch version — loads the list once and returns an object with all requested keys.
+  // Use instead of multiple sequential getAppSetting() calls to halve round trips.
+  const items = await getListItems(CONFIG.lists.appSettings);
+  const result = {};
+  keys.forEach(key => {
+    const match = items.find(i => i.fields.Title === key);
+    result[key] = match ? match.fields.SettingValue : null;
+  });
+  return result;
+}
+
 async function setAppSetting(key, value) {
   const items = await getListItems(CONFIG.lists.appSettings);
   const match = items.find(i => i.fields.Title === key);
@@ -463,6 +522,18 @@ async function setAppSetting(key, value) {
   } else {
     await createListItem(CONFIG.lists.appSettings, { Title: key, SettingValue: value });
   }
+}
+
+async function setAppSettings(kvPairs) {
+  // Batch version — loads the list once and writes all key/value pairs.
+  // Use instead of multiple sequential setAppSetting() calls.
+  const items = await getListItems(CONFIG.lists.appSettings);
+  await Promise.all(Object.entries(kvPairs).map(([key, value]) => {
+    const match = items.find(i => i.fields.Title === key);
+    return match
+      ? updateListItem(CONFIG.lists.appSettings, match.id, { SettingValue: value })
+      : createListItem(CONFIG.lists.appSettings, { Title: key, SettingValue: value });
+  }));
 }
 
 // ============================================================
@@ -492,8 +563,9 @@ async function writeAuditLog(actionType, details) {
 // DATA LOADING
 // ============================================================
 async function loadActiveQuarter() {
-  STATE.activeQuarter  = await getAppSetting('ActiveQuarter');
-  STATE.workingQuarter = await getAppSetting('WorkingQuarter');
+  const settings = await getAppSettings('ActiveQuarter', 'WorkingQuarter');
+  STATE.activeQuarter  = settings['ActiveQuarter'];
+  STATE.workingQuarter = settings['WorkingQuarter'];
   // viewingQuarter starts equal to activeQuarter on every login.
   // It diverges only when the user browses a historical quarter.
   STATE.viewingQuarter = STATE.activeQuarter;
@@ -510,7 +582,7 @@ async function loadCurrentUser(email) {
     const created = await createListItem(CONFIG.lists.users, {
       Title: email.split('@')[0],
       Email: email,
-      Role: 'TeamMember',
+      Role: ROLE.TEAM_MEMBER,
       IsActive: true,
       NotifyOnAssignment:       false,
       NotifyOnReviewUnlock:     false,
@@ -520,12 +592,12 @@ async function loadCurrentUser(email) {
     });
     STATE.currentUser = { ...created.fields, _id: created.id };
     // Set role flags for first-login users too (Role defaults to TeamMember on creation)
-    STATE.isAdmin = STATE.currentUser.Role === 'Admin';
-    STATE.isFinalReviewer = STATE.currentUser.Role === 'FinalReviewer' || STATE.isAdmin;
+    STATE.isAdmin = STATE.currentUser.Role === ROLE.ADMIN;
+    STATE.isFinalReviewer = STATE.currentUser.Role === ROLE.FINAL_REVIEWER || STATE.isAdmin;
     return false; // First login
   }
-  STATE.isAdmin = STATE.currentUser.Role === 'Admin';
-  STATE.isFinalReviewer = STATE.currentUser.Role === 'FinalReviewer' || STATE.isAdmin;
+  STATE.isAdmin = STATE.currentUser.Role === ROLE.ADMIN;
+  STATE.isFinalReviewer = STATE.currentUser.Role === ROLE.FINAL_REVIEWER || STATE.isAdmin;
   return true; // Returning user
 }
 
@@ -588,21 +660,26 @@ async function loadRCReplies() { // quarter param removed — filtering done cli
 
 async function loadAllData() {
   if (!STATE.activeQuarter) return;
-  // Load review comments first so loadRCReplies can filter by the loaded comment IDs.
-  await Promise.all([
-    loadAssignments(STATE.activeQuarter),
-    loadCalendar(STATE.activeQuarter),
-    loadMatrixStatus(STATE.activeQuarter),
-    loadReviewComments(STATE.activeQuarter),
-    loadUsers(),
-  ]);
-  // Replies depend on STATE.reviewComments being populated, so load sequentially after.
-  await loadRCReplies();
+  // Delegate to loadViewingQuarterData so both functions stay in sync.
+  // Adding a new data source only requires updating loadViewingQuarterData.
+  await loadViewingQuarterData(STATE.activeQuarter);
 }
 
 // Returns true when the user is browsing a historical quarter.
 function isViewingHistory() {
   return STATE.viewingQuarter && STATE.viewingQuarter !== STATE.activeQuarter;
+}
+
+// Shows a confirmation dialog when an admin is about to write to a past quarter.
+// Returns true if the write should proceed, false if the admin cancelled.
+// Use this as a guard in any write that could target historical data.
+function confirmIfPastQuarter(quarter, action = 'edit this item') {
+  if (!quarter || quarter === STATE.activeQuarter) return true;  // Active quarter — no warning
+  return window.confirm(
+    `⚠️ You are about to ${action} in ${quarter}, which has already closed.\n\n`
+    + `This change will be written to SharePoint and logged to the AuditLog.\n\n`
+    + `Click OK to continue, or Cancel to go back.`
+  );
 }
 
 // Use these helpers everywhere quarter context matters:
@@ -632,6 +709,7 @@ async function switchToQuarter(quarter) {
   showLoading(`Loading ${quarter}...`);
   try {
     STATE.viewingQuarter = quarter;
+    document.title = `Folio — ${quarter}${quarter !== STATE.activeQuarter ? ' (history)' : ''}`;
     await loadViewingQuarterData(quarter);
     updateHistoryBanner();
     updateWDIndicator();
@@ -660,17 +738,26 @@ function updateHistoryBanner() {
 }
 
 // Populates the quarter picker dropdown with all quarters that have assignment data.
+// Derives quarter list from STATE.assignments (already loaded) plus the working quarter
+// so no extra API call is needed.
 async function populateQuarterPicker() {
   const sel = document.getElementById('quarter-picker');
   if (!sel) return;
+  // Note: this function is sometimes called without await (fire-and-forget).
+  // The try/catch inside ensures errors are always logged regardless.
 
-  // Fetch distinct quarters from QuarterlyAssignments.
-  // We use a small select to avoid loading all items — just fetch the field.
   try {
-    const items = await getListItems(CONFIG.lists.quarterlyAssignments);
-    const quarters = [...new Set(
-      items.map(i => i.fields?.Quarter).filter(Boolean)
-    )].sort().reverse(); // newest first
+    // Collect all known quarters from loaded assignments plus active/working quarters.
+    // If no assignments loaded yet (first load), fall back to a lightweight API call.
+    let quarters;
+    if (STATE.assignments.length) {
+      const fromAssignments = [...new Set(STATE.assignments.map(a => a.Quarter).filter(Boolean))];
+      const extras = [STATE.activeQuarter, STATE.workingQuarter].filter(Boolean);
+      quarters = [...new Set([...fromAssignments, ...extras])].sort().reverse();
+    } else {
+      const items = await getListItems(CONFIG.lists.quarterlyAssignments);
+      quarters = [...new Set(items.map(i => i.fields?.Quarter).filter(Boolean))].sort().reverse();
+    }
 
     const current = getReadQuarter();
     sel.innerHTML = quarters.map(q =>
@@ -703,10 +790,10 @@ function startPolling() {
       await loadAllData();
       refreshCurrentView();
       updateWDIndicator();
-      populateQuarterPicker();
+      await populateQuarterPicker();
       showStaleBanner(false);
     } catch (err) {
-      logError('Poll failed:', err);
+      logError('Poll failed:', err, '|', classifyGraphError(err));
       showStaleBanner(true);
     }
   }, CONFIG.pollIntervalMs);
@@ -745,7 +832,7 @@ async function performSignOff(assignmentId, role) {
     [f.signOff]:    true,
     [f.signOffDate]:now,
     [f.signOffBy]:  userEmail,
-    Status: role === 'preparer' && assignment.SignOffMode !== 'Preparer Only' ? 'Prepared' : 'Complete',
+    Status: role === 'preparer' && assignment.SignOffMode !== SIGN_OFF_MODE.PREPARER_ONLY ? STATUS.PREPARED : STATUS.COMPLETE,
   };
 
   // Snapshot the fields we are about to overwrite so we can restore them exactly on failure.
@@ -772,7 +859,7 @@ async function performSignOff(assignmentId, role) {
     // Restore full snapshot — covers all fields set above, not just a subset.
     Object.assign(assignment, snapshot);
     refreshCurrentView();
-    showToast('Sign-off failed — please try again', 'error');
+    showToast(`Sign-off failed — ${classifyGraphError(err)}`, 'error');
     logError('Sign-off failed:', err);
   }
 }
@@ -803,13 +890,13 @@ async function performReversal(assignmentId, role, reason) {
       fields.ReviewerSignOffDate = null;
       fields.ReviewerSignOffBy   = null;
     }
-    fields.Status = 'Not Started';
+    fields.Status = STATUS.NOT_STARTED;
   } else {
     prevValue = `Reviewer signed off by ${assignment.ReviewerSignOffBy} on ${assignment.ReviewerSignOffDate}`;
     fields.ReviewerSignOff     = false;
     fields.ReviewerSignOffDate = null;
     fields.ReviewerSignOffBy   = null;
-    fields.Status = 'Prepared';
+    fields.Status = STATUS.PREPARED;
   }
 
   // Snapshot before optimistic update so we can restore on failure.
@@ -832,7 +919,7 @@ async function performReversal(assignmentId, role, reason) {
     // Restore full snapshot so UI reflects actual SharePoint state.
     Object.assign(assignment, snapshot);
     refreshCurrentView();
-    showToast('Reversal failed — please try again', 'error');
+    showToast(`Reversal failed — ${classifyGraphError(err)}`, 'error');
     logError('Reversal failed:', err);
   }
 }
@@ -840,12 +927,9 @@ async function performReversal(assignmentId, role, reason) {
 // ============================================================
 // MATRIX STATUS UPDATE
 // ============================================================
-// Guards against double-clicks while a matrix write is in flight.
-let _matrixUpdateInFlight = false;
-
 async function performMatrixUpdate(matrixItem, column, newStatus) {
-  if (_matrixUpdateInFlight) return;
-  _matrixUpdateInFlight = true;
+  if (STATE._matrixUpdateInFlight) return;
+  STATE._matrixUpdateInFlight = true;
 
   const existing = STATE.matrixStatus.find(
     m => m.MatrixItem === matrixItem && m.Quarter === STATE.activeQuarter
@@ -855,7 +939,7 @@ async function performMatrixUpdate(matrixItem, column, newStatus) {
   const userEmail = STATE.currentUser.Email;
 
   const fm = MATRIX_FIELD_MAP[column];
-  if (!fm) { _matrixUpdateInFlight = false; return; }
+  if (!fm) { STATE._matrixUpdateInFlight = false; return; }
 
   const fields = {
     [fm.status]: newStatus,
@@ -902,7 +986,7 @@ async function performMatrixUpdate(matrixItem, column, newStatus) {
     showToast('Update failed — please try again', 'error');
     logError('Matrix update failed:', err);
   } finally {
-    _matrixUpdateInFlight = false;
+    STATE._matrixUpdateInFlight = false;
   }
 }
 
@@ -1006,8 +1090,8 @@ function updateWDIndicator() {
 function filterMyAssignments() {
   const email = STATE.currentUser?.Email;
   if (!email) return [];
-  return STATE.assignments.filter(a => !a.IsSkipped &&
-    a.Preparer === email || a.Reviewer === email
+  return STATE.assignments.filter(a =>
+    !a.IsSkipped && (a.Preparer === email || a.Reviewer === email)
   );
 }
 
@@ -1045,9 +1129,13 @@ function renderMyTasks() {
     // router has no case for it. Keeping STATE.currentView = 'my-tasks' means the next
     // refreshCurrentView() call will re-run renderMyTasks(), which will re-check the
     // quarter and show this placeholder again if still needed.
-    document.querySelectorAll('.view').forEach(v => { v.classList.remove('active'); v.style.display = 'none'; });
+    // Special case: no-quarter is not a routed view so we manage classes directly.
+    document.querySelectorAll('.view').forEach(v => {
+      v.classList.remove('active');
+      v.classList.add('hidden');
+    });
     const noQ = document.getElementById('view-no-quarter');
-    if (noQ) { noQ.classList.add('active'); noQ.style.display = 'block'; }
+    if (noQ) { noQ.classList.remove('hidden'); noQ.classList.add('active'); }
     return;
   }
 
@@ -1056,9 +1144,9 @@ function renderMyTasks() {
   const tomorrowWD  = getTomorrowWorkday(quarter);
   const todayWD     = typeof wd === 'number' ? wd : -1;
 
-  const overdue    = tasks.filter(t => isTaskOverdue(t) && t.Status !== 'Complete');
-  const waiting    = tasks.filter(t => !isTaskOverdue(t) && t.Status !== 'Complete' && isLocked(t, email));
-  const active     = tasks.filter(t => !isTaskOverdue(t) && t.Status !== 'Complete' && !isLocked(t, email));
+  const overdue    = tasks.filter(t => isTaskOverdue(t) && t.Status !== STATUS.COMPLETE);
+  const waiting    = tasks.filter(t => !isTaskOverdue(t) && t.Status !== STATUS.COMPLETE && isLocked(t, email));
+  const active     = tasks.filter(t => !isTaskOverdue(t) && t.Status !== STATUS.COMPLETE && !isLocked(t, email));
   const dueToday   = active.filter(t => getDueWD(t, email) === todayWD);
   // Second condition (getDueWD !== todayWD) is always true when first is true since tomorrowWD !== todayWD.
   const dueTomorrow = tomorrowWD !== null
@@ -1084,7 +1172,7 @@ function renderMyTasks() {
 }
 
 function isLocked(assignment, email) {
-  if (assignment.SignOffMode === 'Preparer Only') return false;
+  if (assignment.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY) return false;
   if (assignment.Reviewer === email && !assignment.PreparerSignOff) return true;
   return false;
 }
@@ -1096,9 +1184,8 @@ function getDueWD(assignment, email) {
   if (assignment.Reviewer === email && !assignment.ReviewerSignOff) {
     return Number(assignment.ReviewerWorkday);
   }
-  // Fallback: called only from renderMyTasks where tasks are pre-filtered to the
-  // current user's assignments, so this branch fires only for completed tasks.
-  // Returning PreparerWorkday is safe — completed tasks don't appear in active buckets.
+  // Fallback: fires for completed tasks or when viewing someone else's task in All Tasks.
+  // PreparerWorkday is the primary due date shown in the table for management view.
   return Number(assignment.PreparerWorkday);
 }
 
@@ -1252,7 +1339,8 @@ function syncFilterUI() {
 function renderAllTasks() {
   const quarter = getReadQuarter();
   const sub = document.getElementById('all-tasks-sub');
-  if (sub) sub.textContent = `${quarter || '—'} · ${STATE.assignments.length} tasks · ${getCompletionPct()}% complete`;
+  const activeCount = STATE.assignments.filter(a => !a.IsSkipped).length;
+  if (sub) sub.textContent = `${quarter || '—'} · ${activeCount} tasks · ${getCompletionPct()}% complete`;
 
   populateCategoryFilter();
   populateAssigneeFilter();
@@ -1269,6 +1357,7 @@ function renderAllTasks() {
   let lastCategory = null;
 
   filtered.forEach(a => {
+    if (a.IsSkipped) return;  // Don't show skipped tasks in All Tasks at all
     if (groupByCategory && a.Category !== lastCategory) {
       const headerRow = tbody.insertRow();
       headerRow.className = 'category-header';
@@ -1277,7 +1366,6 @@ function renderAllTasks() {
       lastCategory = a.Category;
     }
     const row = tbody.insertRow();
-    if (a.IsSkipped) { row.classList.add('skipped-row'); return; }
     if (isTaskOverdue(a)) row.classList.add('overdue-row');
     row.dataset.id = a._id;
     row.addEventListener('click', () => openTaskPanel(a._id));
@@ -1307,45 +1395,47 @@ function renderSortHeaders() {
 }
 
 function renderStatusBadge(assignment) {
-  const s = assignment.Status || 'Not Started';
+  const s = assignment.Status || STATUS.NOT_STARTED;
 
   // Overdue takes priority over all other states.
   if (isTaskOverdue(assignment)) {
     return `<span class="status-badge status-overdue">⚠ Overdue</span>`;
   }
 
-  // Reviewer step locked — preparer has not signed off yet.
-  // Surfaces as Locked in RC cards so reviewers know they cannot act yet.
-  if (assignment.SignOffMode !== 'Preparer Only' &&
+  // Reviewer step locked — preparer has not signed off yet but reviewer is assigned.
+  // Only show Locked when there IS a reviewer waiting — not for unassigned sequential tasks.
+  if (assignment.SignOffMode !== SIGN_OFF_MODE.PREPARER_ONLY &&
+      assignment.Reviewer &&
       !assignment.PreparerSignOff &&
       !assignment.ReviewerSignOff) {
     return `<span class="status-badge status-notstarted">Locked</span>`;
   }
 
   const map = {
-    'Complete':    ['status-complete',   '✓ Complete'],
-    'Prepared':    ['status-prepared',   '→ Ready for review'],
-    'In Progress': ['status-progress',   'In progress'],
-    'Not Started': ['status-notstarted', 'Not started'],
+       [STATUS.COMPLETE]:    ['status-complete',   '✓ Complete'],
+       [STATUS.PREPARED]:    ['status-prepared',   '→ Ready for review'],
+       [STATUS.IN_PROGRESS]: ['status-progress',   'In progress'],
+       [STATUS.NOT_STARTED]: ['status-notstarted', 'Not started'],
   };
-  const [cls, label] = map[s] || map['Not Started'];
+  const [cls, label] = map[s] || map[STATUS.NOT_STARTED];
   return `<span class="status-badge ${cls}">${label}</span>`;
 }
 
 // Status severity order used when sorting by status or overdue-first.
-const STATUS_ORDER = { 'Overdue': 0, 'In Progress': 1, 'Not Started': 2, 'Prepared': 3, 'Complete': 4 };
+const STATUS_ORDER = { 'Overdue': 0, [STATUS.IN_PROGRESS]: 1, [STATUS.NOT_STARTED]: 2, [STATUS.PREPARED]: 3, [STATUS.COMPLETE]: 4 };
 
 function getEffectiveStatus(a) {
-  return isTaskOverdue(a) ? 'Overdue' : (a.Status || 'Not Started');
+  return isTaskOverdue(a) ? 'Overdue' : (a.Status || STATUS.NOT_STARTED);
 }
 
 function getFilteredAssignments() {
   const f = STATE.filters;
 
   const filtered = STATE.assignments.filter(a => {
-    if (f.status === 'unsigned' && a.Status === 'Complete') return false;
+    if (a.IsSkipped) return false;  // Skipped tasks never appear in All Tasks
+    if (f.status === 'unsigned' && a.Status === STATUS.COMPLETE) return false;
     if (f.status === 'overdue' && !isTaskOverdue(a)) return false;
-    if (f.status === 'complete' && a.Status !== 'Complete') return false;
+    if (f.status === 'complete' && a.Status !== STATUS.COMPLETE) return false;
     if (f.category !== 'all' && a.Category !== f.category) return false;
     if (f.assignee !== 'all' && a.Preparer !== f.assignee && a.Reviewer !== f.assignee) return false;
     if (f.search && !a.Title?.toLowerCase().includes(f.search.toLowerCase())) return false;
@@ -1389,9 +1479,10 @@ function getFilteredAssignments() {
 }
 
 function getCompletionPct() {
-  if (!STATE.assignments.length) return 0;
-  const complete = STATE.assignments.filter(a => a.Status === 'Complete').length;
-  return Math.round((complete / STATE.assignments.length) * 100);
+  const active = STATE.assignments.filter(a => !a.IsSkipped);
+  if (!active.length) return 0;
+  const complete = active.filter(a => a.Status === STATUS.COMPLETE).length;
+  return Math.round((complete / active.length) * 100);
 }
 
 function getTaskRCCount(assignment) {
@@ -1402,7 +1493,7 @@ function populateCategoryFilter() {
   const sel = document.getElementById('filter-category');
   if (!sel) return;
   const current = sel.value;
-  const cats = [...new Set(STATE.assignments.map(a => a.Category).filter(Boolean))].sort();
+  const cats = [...new Set(STATE.assignments.filter(a => !a.IsSkipped).map(a => a.Category).filter(Boolean))].sort();
   sel.innerHTML = '<option value="all">All categories</option>' +
     cats.map(c => `<option value="${escapeHtml(c)}" ${c === current ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('');
   // Attach listener only once
@@ -1526,7 +1617,7 @@ function openTaskPanel(assignmentId) {
 function renderPanelStatusChain(assignment, email) {
   const chain = document.getElementById('panel-status-chain');
   if (!chain) return;
-  const isPrepOnly = assignment.SignOffMode === 'Preparer Only';
+  const isPrepOnly = assignment.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY;
   const prepDone = assignment.PreparerSignOff;
   const revDone = assignment.ReviewerSignOff;
 
@@ -1557,7 +1648,7 @@ function renderPanelAction(assignment, email) {
     return;
   }
 
-  const isPrepOnly       = assignment.SignOffMode === 'Preparer Only';
+  const isPrepOnly       = assignment.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY;
   const prepDone         = assignment.PreparerSignOff;
   const revDone          = assignment.ReviewerSignOff;
   const isPreparer       = assignment.Preparer === email;
@@ -1830,11 +1921,11 @@ function renderMatrixView() {
           // Matrix-only column — use module-level MATRIX_FIELD_MAP
           const ms = STATE.matrixStatus.find(m => m.MatrixItem === item.name && m.Quarter === quarter);
           const fm = MATRIX_FIELD_MAP[cp];
-          const status = ms?.[fm.status] || 'Not Started';
+          const status = ms?.[fm.status] || STATUS.NOT_STARTED;
           const isFinalReview = cp === 'Final Review';
           const canAct = isFinalReview ? STATE.isFinalReviewer : true;
 
-          if (status === 'Complete') {
+          if (status === STATUS.COMPLETE) {
             const tooltip = `Signed off by ${ms?.[fm.by] || '—'} · ${formatDateET(ms?.[fm.date])}`;
             html += `<td class="cell-done" title="${escapeHtml(tooltip)}">
               <svg width="12" height="12" viewBox="0 0 12 12"><polyline points="2,6 5,9 10,3" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1926,7 +2017,7 @@ function renderDashboard() {
 
   // Metrics
   const total    = STATE.assignments.length;
-  const complete = STATE.assignments.filter(a => a.Status === 'Complete').length;
+  const complete = STATE.assignments.filter(a => a.Status === STATUS.COMPLETE).length;
   const overdue  = STATE.assignments.filter(a => !a.IsSkipped && isTaskOverdue(a)).length;
   const urgentRC = STATE.reviewComments.filter(rc => rc.Priority === 'Urgent' && rc.Status === 'Open').length;
   const pct = total ? Math.round((complete / total) * 100) : 0;
@@ -1943,10 +2034,10 @@ function renderDashboard() {
   // Category progress
   const catBars = document.getElementById('category-bars');
   if (catBars) {
-    const cats = [...new Set(STATE.assignments.map(a => a.Category).filter(Boolean))].sort();
+    const cats = [...new Set(STATE.assignments.filter(a => !a.IsSkipped).map(a => a.Category).filter(Boolean))].sort();
     catBars.innerHTML = cats.map(cat => {
-      const catTasks = STATE.assignments.filter(a => a.Category === cat);
-      const catComplete = catTasks.filter(a => a.Status === 'Complete').length;
+      const catTasks = STATE.assignments.filter(a => a.Category === cat && !a.IsSkipped);
+      const catComplete = catTasks.filter(a => a.Status === STATUS.COMPLETE).length;
       const catPct = catTasks.length ? Math.round((catComplete / catTasks.length) * 100) : 0;
       const danger = catPct < 30;
       return `<div class="prog-row">
@@ -1963,7 +2054,7 @@ function renderDashboard() {
     personBars.innerHTML = STATE.users.map(user => {
       const myTasks = STATE.assignments.filter(a => a.Preparer === user.Email || a.Reviewer === user.Email);
       if (!myTasks.length) return '';
-      const done = myTasks.filter(a => a.Status === 'Complete').length;
+      const done = myTasks.filter(a => a.Status === STATUS.COMPLETE).length;
       const pctUser = Math.round((done / myTasks.length) * 100);
       const danger = pctUser < 30;
       const hex = user.Color || '#75787B';
@@ -2326,7 +2417,7 @@ function renderStagingGrid() {
             style="font-size:11px;width:52px;text-align:center" title="Preparer workday" />
         </td>
         <td>
-          ${item.SignOffMode === 'Preparer Only'
+          ${item.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY
             ? '<span style="font-size:10px;color:var(--slate)">—</span>'
             : `<input type="number" class="staging-select staging-wd" data-id="${item._id}" data-field="ReviewerWorkday"
                 value="${item.ReviewerWorkday || ''}" min="1" max="35"
@@ -2334,8 +2425,8 @@ function renderStagingGrid() {
         </td>
         <td>
           <select class="staging-select staging-mode" data-id="${item._id}" data-field="SignOffMode" style="font-size:11px;width:100%">
-            <option value="Sequential"${item.SignOffMode === 'Sequential' ? ' selected' : ''}>Sequential</option>
-            <option value="Preparer Only"${item.SignOffMode === 'Preparer Only' ? ' selected' : ''}>Prep Only</option>
+            <option value="Sequential"${item.SignOffMode === SIGN_OFF_MODE.SEQUENTIAL ? ' selected' : ''}>Sequential</option>
+            <option value="Preparer Only"${item.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY ? ' selected' : ''}>Prep Only</option>
           </select>
         </td>
         <td>
@@ -2344,7 +2435,7 @@ function renderStagingGrid() {
           </select>
         </td>
         <td>
-          ${item.SignOffMode === 'Preparer Only'
+          ${item.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY
             ? '<span style="font-size:10px;color:var(--slate)">—</span>'
             : `<select class="staging-select" data-id="${item._id}" data-field="Reviewer" style="font-size:11px;max-width:130px">
                 ${blankOpt}${userOpts.replace(`value="${escapeHtml(item.Reviewer)}"`, `value="${escapeHtml(item.Reviewer)}" selected`)}
@@ -2473,7 +2564,7 @@ function renderAdminUsers() {
             <tr>
               <td>${renderBadge(u.Email)}</td>
               <td style="font-size:11px">${escapeHtml(u.Email || '')}</td>
-              <td><span class="cat-tag">${escapeHtml(u.Role || 'TeamMember')}</span></td>
+              <td><span class="cat-tag">${escapeHtml(u.Role || ROLE.TEAM_MEMBER)}</span></td>
               <td style="font-size:11px">${u.LastLogin ? formatDateShort(u.LastLogin) : '—'}</td>
               <td><button class="btn-secondary btn-sm" data-action="edit-user" data-email="${escapeHtml(u.Email)}">Edit role</button></td>
             </tr>`).join('')}
@@ -2729,9 +2820,13 @@ function attachAdminEvents(panelName) {
         const item = STATE._stagingItems.find(i => i._id === id);
         if (item) item[field] = value;
         if (isSkip || field === 'SignOffMode') renderAdminPanel('rollforward');  // Re-render so row reflects new mode
-        showToast(`✓ ${isWD ? field.replace('Workday','') + ' WD' : isSkip ? (value ? 'Task skipped' : 'Task unskipped') : field === 'SignOffMode' ? 'Sign-off mode updated' : field} updated`, 'success');
+        let toastMsg = 'Updated';
+        if (isWD)                    toastMsg = `${field.replace('Workday', '')} WD updated`;
+        else if (isSkip)             toastMsg = value ? 'Task skipped' : 'Task unskipped';
+        else if (field === 'SignOffMode') toastMsg = 'Sign-off mode updated';
+        showToast(`✓ ${toastMsg}`, 'success');
       } catch (err) {
-        showToast(`Failed to update ${field}`, 'error');
+        showToast(`Failed to update ${field} — ${classifyGraphError(err)}`, 'error');
         logError('Staging grid update failed:', err);
       }
     });
@@ -2787,7 +2882,7 @@ function attachAdminEvents(panelName) {
   document.getElementById('btn-sox-confirm')?.addEventListener('click', confirmSOXExport);
   document.getElementById('btn-sox-cancel')?.addEventListener('click', () => hideModal('modal-sox-export'));
   document.getElementById('btn-edit-wd-confirm')?.addEventListener('click', confirmEditWD);
-  document.getElementById('btn-edit-wd-cancel')?.addEventListener('click', () => hideModal('modal-edit-wd'));
+  document.getElementById('btn-edit-wd-cancel')?.addEventListener('click', () => { STATE.pendingWDEdit = null; hideModal('modal-edit-wd'); });
 
   // Audit log filter dropdowns — re-render on change
   ['audit-filter-type','audit-filter-person','audit-filter-quarter'].forEach(id => {
@@ -2951,6 +3046,16 @@ function validateImport() {
       if (status) status.textContent = `❌ Missing required columns: ${missing.join(', ')}`;
       return;
     }
+    // Warn if any Sequential task is missing a ReviewerWorkday — it would never show as overdue
+    const missingRevWD = rows.filter(r =>
+      r.SignOffMode === SIGN_OFF_MODE.SEQUENTIAL && !r.ReviewerWorkday
+    );
+    if (missingRevWD.length) {
+      if (status) status.textContent =
+        `⚠ ${rows.length} tasks ready — ${missingRevWD.length} Sequential task(s) are missing ReviewerWorkday (${missingRevWD.map(r => r.TaskName).join(', ')}). These will never show as overdue for the reviewer.`;
+      if (btnImport) { btnImport.disabled = false; btnImport.dataset.rows = JSON.stringify(rows); }
+      return;
+    }
     if (status) status.textContent = `✓ Validation passed. ${rows.length} tasks ready to import.`;
     if (btnImport) { btnImport.disabled = false; btnImport.dataset.rows = JSON.stringify(rows); }
   };
@@ -2980,7 +3085,7 @@ async function runImport() {
           MatrixCheckpoint:row.MatrixCheckpoint || null,
           MatrixSection:   row.MatrixSection || null,
           FilingType:      row.FilingType || 'Both',
-          SignOffMode:     row.SignOffMode || 'Sequential',
+          SignOffMode:     row.SignOffMode || SIGN_OFF_MODE.SEQUENTIAL,
           PreparerWorkday: Number(row.PreparerWorkday) || 1,
           ReviewerWorkday: row.ReviewerWorkday ? Number(row.ReviewerWorkday) : null,
           DefaultPreparer:     row.DefaultPreparer || null,
@@ -3958,6 +4063,13 @@ async function saveCalendarRowEdit() {
   const row = STATE.calendar.find(c => c._id === calRowId);
   if (!row) return;
 
+  // Warn if editing a calendar row from a past quarter
+  if (!confirmIfPastQuarter(row.Quarter, `edit the calendar for ${row.Quarter}`)) {
+    hideModal('modal-edit-calendar');
+    STATE.pendingCalendarEdit = null;
+    return;
+  }
+
   const newDate      = document.getElementById('edit-cal-date')?.value;
   const newMilestone = document.getElementById('edit-cal-milestone')?.value?.trim() || null;
   const newType      = document.getElementById('edit-cal-milestone-type')?.value || 'Standard';
@@ -4066,6 +4178,14 @@ async function saveCalendarRowEdit() {
 async function confirmCascade() {
   const { quarter, fromWD, shiftDays, subsequent } = STATE.pendingCascade || {};
   if (!subsequent?.length) return;
+
+  // Warn if cascading dates in a past quarter
+  if (!confirmIfPastQuarter(quarter, `cascade shift dates in ${quarter}`)) {
+    hideModal('modal-cascade');
+    STATE.pendingCascade = null;
+    return;
+  }
+
   hideModal('modal-cascade');
   STATE.pendingCascade = null;
 
@@ -4124,7 +4244,7 @@ function openEditWDModal(assignmentId) {
         <input type="number" id="edit-wd-prep" class="field-input" min="1" max="35"
           value="${assignment.PreparerWorkday || ''}" placeholder="WD number" />
       </div>
-      ${assignment.SignOffMode !== 'Preparer Only' ? `
+      ${assignment.SignOffMode !== SIGN_OFF_MODE.PREPARER_ONLY ? `
       <div class="setup-field" style="flex:1">
         <label class="field-label" for="edit-wd-rev">Reviewer Workday</label>
         <input type="number" id="edit-wd-rev" class="field-input" min="1" max="35"
@@ -4153,7 +4273,7 @@ async function confirmEditWD() {
     if (errEl) { errEl.textContent = 'Preparer workday must be between 1 and 35.'; errEl.classList.remove('hidden'); }
     return;
   }
-  if (revWD !== null && assignment.SignOffMode !== 'Preparer Only' && (revWD < 1 || revWD > 35)) {
+  if (revWD !== null && assignment.SignOffMode !== SIGN_OFF_MODE.PREPARER_ONLY && (revWD < 1 || revWD > 35)) {
     if (errEl) { errEl.textContent = 'Reviewer workday must be between 1 and 35.'; errEl.classList.remove('hidden'); }
     return;
   }
@@ -4161,7 +4281,7 @@ async function confirmEditWD() {
   hideModal('modal-edit-wd');
 
   const fields = { PreparerWorkday: prepWD };
-  if (revWD && assignment.SignOffMode !== 'Preparer Only') fields.ReviewerWorkday = revWD;
+  if (revWD && assignment.SignOffMode !== SIGN_OFF_MODE.PREPARER_ONLY) fields.ReviewerWorkday = revWD;
 
   // Snapshot for rollback
   const snapshot = { PreparerWorkday: assignment.PreparerWorkday, ReviewerWorkday: assignment.ReviewerWorkday };
@@ -4183,7 +4303,7 @@ async function confirmEditWD() {
     Object.assign(assignment, snapshot);
     openTaskPanel(assignmentId);
     refreshCurrentView();
-    showToast('Failed to update due dates', 'error');
+    showToast(`Failed to update due dates — ${classifyGraphError(err)}`, 'error');
     logError('confirmEditWD failed:', err);
   }
   STATE.pendingWDEdit = null;
@@ -4290,7 +4410,7 @@ async function confirmReassign() {
     assignment[field] = snapshot;
     openTaskPanel(assignmentId);
     refreshCurrentView();
-    showToast('Reassignment failed — please try again', 'error');
+    showToast(`Reassignment failed — ${classifyGraphError(err)}`, 'error');
     logError('confirmReassign failed:', err);
   }
   STATE.pendingReassign = null;
@@ -4308,7 +4428,7 @@ function openEditUserRoleModal(email) {
   const roleEl = document.getElementById('edit-user-role');
   const activeEl = document.getElementById('edit-user-active');
   if (nameEl) nameEl.textContent = `${user.Emoji || ''} ${user.Title || email}`;
-  if (roleEl) roleEl.value = user.Role || 'TeamMember';
+  if (roleEl) roleEl.value = user.Role || ROLE.TEAM_MEMBER;
   if (activeEl) activeEl.checked = user.IsActive !== false;
   showModal('modal-edit-user');
 }
@@ -4319,7 +4439,7 @@ async function saveUserRoleEdit() {
   const user = STATE.users.find(u => u.Email === email);
   if (!user) return;
 
-  const newRole   = document.getElementById('edit-user-role')?.value || 'TeamMember';
+  const newRole   = document.getElementById('edit-user-role')?.value || ROLE.TEAM_MEMBER;
   const newActive = document.getElementById('edit-user-active')?.checked !== false;
 
   try {
@@ -4337,8 +4457,8 @@ async function saveUserRoleEdit() {
     });
     // Update current user's role flags if they edited themselves
     if (email === STATE.currentUser?.Email) {
-      STATE.isAdmin = newRole === 'Admin';
-      STATE.isFinalReviewer = newRole === 'FinalReviewer' || STATE.isAdmin;
+      STATE.isAdmin = newRole === ROLE.ADMIN;
+      STATE.isFinalReviewer = newRole === ROLE.FINAL_REVIEWER || STATE.isAdmin;
     }
     hideModal('modal-edit-user');
     STATE.pendingUserEdit = null;
@@ -4390,7 +4510,7 @@ async function createUser() {
   const errEl   = document.getElementById('add-user-error');
 
   const email = emailEl?.value?.trim().toLowerCase();
-  const role  = roleEl?.value || 'TeamMember';
+  const role  = roleEl?.value || ROLE.TEAM_MEMBER;
   const name  = nameEl?.value?.trim() || email.split('@')[0];
   const emoji = STATE._addUserEmoji || null;
   const color = STATE._addUserColor || null;
@@ -4501,7 +4621,7 @@ async function confirmSOXExport() {
           'No', '',
         ]);
       }
-      if (a.ReviewerSignOff && a.SignOffMode !== 'Preparer Only') {
+      if (a.ReviewerSignOff && a.SignOffMode !== SIGN_OFF_MODE.PREPARER_ONLY) {
         const signWD = getSignOffWD(a.ReviewerSignOffDate);
         const dueWD  = Number(a.ReviewerWorkday);
         const onBehalf = a.ReviewerSignOffBy && a.ReviewerSignOffBy !== a.Reviewer;
@@ -4524,7 +4644,7 @@ async function confirmSOXExport() {
       if (!a.PreparerSignOff) {
         unsignedRows.push([quarter, a.Title, a.Category, 'Preparer', a.Preparer || 'Unassigned', a.PreparerWorkday || '', a.IsSkipped ? 'Skipped' : (a.Status || ''), skipped]);
       }
-      if (!a.ReviewerSignOff && a.SignOffMode !== 'Preparer Only' && !a.IsSkipped) {
+      if (!a.ReviewerSignOff && a.SignOffMode !== SIGN_OFF_MODE.PREPARER_ONLY && !a.IsSkipped) {
         unsignedRows.push([quarter, a.Title, a.Category, 'Reviewer', a.Reviewer || 'Unassigned', a.ReviewerWorkday || '', a.Status || '', skipped]);
       }
     });
@@ -4824,6 +4944,12 @@ async function saveTemplateEdit() {
   const name = document.getElementById('edit-tpl-name')?.value?.trim();
   if (!name) { showToast('Task name is required', 'error'); return; }
 
+  const signOffMode = document.getElementById('edit-tpl-signoffmode')?.value;
+  const revWDVal    = document.getElementById('edit-tpl-revwd')?.value;
+  if (signOffMode === SIGN_OFF_MODE.SEQUENTIAL && !revWDVal) {
+    showToast('Reviewer Workday is required for Sequential tasks', 'error'); return;
+  }
+
   const prepWD10K = document.getElementById('edit-tpl-prepwd-10k')?.value;
   const revWD10K  = document.getElementById('edit-tpl-revwd-10k')?.value;
 
@@ -4979,13 +5105,19 @@ async function confirmRollforward() {
         ? template.ReviewerWorkday10K
         : template.ReviewerWorkday || null;
 
+      // Warn if a Sequential template has no reviewer workday — the assignment would
+      // never show as overdue for the reviewer. Log it but still create the assignment.
+      if (template.SignOffMode === SIGN_OFF_MODE.SEQUENTIAL && !revWD) {
+        logError(`Rollforward warning: Sequential template '${template.Title}' has no ReviewerWorkday — reviewer step will never show as overdue.`);
+      }
+
       await createListItem(CONFIG.lists.quarterlyAssignments, {
         Title:        `${quarter} - ${template.TaskName || template.Title || ''}`,
         Quarter:      quarter,
         TaskTemplateLookupId: template._id,
         Preparer:     prev?.Preparer || template.DefaultPreparer || null,
         Reviewer:     prev?.Reviewer || template.DefaultReviewer || null,
-        SignOffMode:  template.SignOffMode || 'Sequential',
+        SignOffMode:  template.SignOffMode || SIGN_OFF_MODE.SEQUENTIAL,
         Category:     template.Category || '',
         MatrixItem:   template.MatrixItem || null,
         MatrixCheckpoint: template.MatrixCheckpoint || null,
@@ -4994,7 +5126,7 @@ async function confirmRollforward() {
         HasDocumentLink:  template.HasDocumentLink || false,
         PreparerSignOff:  false,
         ReviewerSignOff:  false,
-        Status:       'Not Started',
+        Status:       STATUS.NOT_STARTED,
         IsStaging:    true,
       });
       created++;
@@ -5038,10 +5170,9 @@ async function activateQuarter(quarter) {
     for (const item of stagingItems) {
       await updateListItem(CONFIG.lists.quarterlyAssignments, item.id, { IsStaging: false });
     }
-    await setAppSetting('ActiveQuarter', quarter);
+    await setAppSettings({ ActiveQuarter: quarter, WorkingQuarter: '' });
     STATE.activeQuarter = quarter;
     STATE.workingQuarter = '';
-    await setAppSetting('WorkingQuarter', '');
     await writeAuditLog('QuarterActivation', { description: `Activated ${quarter}` });
     // Reset filters when a new quarter goes live — stale filters from the previous
     // quarter would hide tasks and cause confusion in the new quarter.
@@ -5117,7 +5248,7 @@ function exportMatrixExcel() {
         if (isMatrixOnly) {
           const ms = STATE.matrixStatus.find(m => m.MatrixItem === t.MatrixItem);
           const fm = MATRIX_FIELD_MAP[cp];
-          row.push(ms?.[fm.status] || 'Not Started');
+          row.push(ms?.[fm.status] || STATUS.NOT_STARTED);
         } else {
           const linked = STATE.assignments.find(a => a.MatrixItem === t.MatrixItem && a.MatrixCheckpoint === cp);
           if (!linked) row.push('N/A');
@@ -5220,6 +5351,7 @@ function showScreen(screenId) {
 
 async function showApp() {
   showScreen('screen-app');
+  document.title = `Folio${STATE.activeQuarter ? ' — ' + STATE.activeQuarter : ''}`;
 
   // Show correct nav items based on role
   document.querySelectorAll('.nav-matrix-link').forEach(el => {
@@ -5398,6 +5530,10 @@ async function init() {
     } catch (err) {
       hideLoading();
       logError('Init failed:', err);
+      // Show classified error on the sign-in screen so the user knows what to do
+      const errMsg = classifyGraphError(err);
+      const errEl = document.getElementById('signin-error');
+      if (errEl) { errEl.textContent = errMsg; errEl.classList.remove('hidden'); }
       showScreen('screen-signin');
     }
   } else {
