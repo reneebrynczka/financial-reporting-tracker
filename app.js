@@ -168,6 +168,7 @@ const STATE = {
   suggestions:            [],         // TaskSuggestions (loaded when admin panel opens)
   pendingCascade:      null,  // {quarter, wdNumber, shift, newDate}
   pendingRollforward:  null,  // quarter name awaiting rollforward confirm
+  pendingWDEdit:       null,  // {assignmentId} awaiting workday edit confirm
   _auditEntries:       [],    // Loaded on-demand when audit log panel opens
   _auditFilter:        { type: 'All', person: '', quarter: '' }, // Audit log filter state
 };
@@ -313,6 +314,7 @@ function getWDIndicatorText(quarter) {
 }
 
 function isTaskOverdue(assignment) {
+  if (assignment.IsSkipped) return false;  // Skipped tasks are never overdue
   const wd = getTodaysWorkday(STATE.activeQuarter);
   if (!wd || typeof wd !== 'number') return false;
   const role = assignment.SignOffMode === 'Preparer Only' ? 'preparer' :
@@ -1004,7 +1006,7 @@ function updateWDIndicator() {
 function filterMyAssignments() {
   const email = STATE.currentUser?.Email;
   if (!email) return [];
-  return STATE.assignments.filter(a =>
+  return STATE.assignments.filter(a => !a.IsSkipped &&
     a.Preparer === email || a.Reviewer === email
   );
 }
@@ -1275,6 +1277,7 @@ function renderAllTasks() {
       lastCategory = a.Category;
     }
     const row = tbody.insertRow();
+    if (a.IsSkipped) { row.classList.add('skipped-row'); return; }
     if (isTaskOverdue(a)) row.classList.add('overdue-row');
     row.dataset.id = a._id;
     row.addEventListener('click', () => openTaskPanel(a._id));
@@ -1445,8 +1448,15 @@ function openTaskPanel(assignmentId) {
   STATE.taskDetailId = assignmentId;
 
   document.getElementById('panel-title').textContent = assignment.Title || '—';
-  document.getElementById('panel-meta').textContent =
-    `${assignment.Category || ''} · Due WD${assignment.PreparerWorkday} · ${resolveWorkday(getReadQuarter(), assignment.PreparerWorkday) ? formatDateShort(resolveWorkday(getReadQuarter(), assignment.PreparerWorkday)) : ''}`;
+  const prepDate = resolveWorkday(getReadQuarter(), assignment.PreparerWorkday);
+  const metaText = `${assignment.Category || ''} · Due WD${assignment.PreparerWorkday}${prepDate ? ' · ' + formatDateShort(prepDate) : ''}`;
+  const metaEl = document.getElementById('panel-meta');
+  if (STATE.isAdmin && !isViewingHistory()) {
+    metaEl.innerHTML = `<span>${escapeHtml(metaText)}</span>`
+      + ` <button class="btn-icon btn-sm" style="margin-left:6px;font-size:10px" data-action="edit-wd" data-id="${assignment._id}">Edit WD</button>`;
+  } else {
+    metaEl.textContent = metaText;
+  }
 
   // Assignment section
   const email = STATE.currentUser?.Email;
@@ -1762,18 +1772,17 @@ function renderMatrixView() {
   const sub = document.getElementById('matrix-sub');
   if (sub) sub.textContent = `${quarter || '—'} · Final reviewer summary`;
 
-  // Get matrix items grouped by section
-  const sections = {
-    'Form 10-Q': [],
-    'MD&A': [],
-  };
-
-  // Get unique matrix items from templates
+  // Build sections dynamically from templates — supports any MatrixSection value.
+  // For Q4 quarters, 'Form 10-Q' is automatically renamed to 'Form 10-K'.
   const filingType = isQuarterQ4(quarter) ? '10-K' : '10-Q';
+  const sections = {};
+
   STATE.templates
     .filter(t => t.MatrixItem && t.MatrixSection && (t.FilingType === filingType || t.FilingType === 'Both'))
     .forEach(t => {
-      const section = t.MatrixSection;
+      // Rename 'Form 10-Q' → 'Form 10-K' in Q4 quarters
+      let section = t.MatrixSection;
+      if (isQuarterQ4(quarter) && section === 'Form 10-Q') section = 'Form 10-K';
       if (!sections[section]) sections[section] = [];
       if (!sections[section].find(i => i.name === t.MatrixItem)) {
         sections[section].push({ name: t.MatrixItem });
@@ -1798,8 +1807,16 @@ function renderMatrixView() {
     items.forEach(item => {
       // Get preparer and reviewer from assignments
       const assignments = STATE.assignments.filter(a => a.MatrixItem === item.name);
-      const preparers = [...new Set(assignments.map(a => a.Preparer).filter(Boolean))];
-      const reviewers = [...new Set(assignments.map(a => a.Reviewer).filter(Boolean))];
+
+      // Hide row entirely if every task-linked assignment is skipped this quarter.
+      // Matrix-only columns (Final Review etc.) don't count — they're independent.
+      const taskLinked = assignments.filter(a =>
+        !CONFIG.matrixOnlyColumns.includes(a.MatrixCheckpoint) && a.MatrixCheckpoint
+      );
+      if (taskLinked.length > 0 && taskLinked.every(a => a.IsSkipped)) return;
+
+      const preparers = [...new Set(assignments.filter(a => !a.IsSkipped).map(a => a.Preparer).filter(Boolean))];
+      const reviewers = [...new Set(assignments.filter(a => !a.IsSkipped).map(a => a.Reviewer).filter(Boolean))];
 
       html += `<tr>
         <td class="item-cell">${escapeHtml(item.name)}</td>
@@ -1837,8 +1854,8 @@ function renderMatrixView() {
             a => a.MatrixItem === item.name && a.MatrixCheckpoint === cp
           );
 
-          if (!linkedAssignment) {
-            html += `<td class="cell-na" title="Not applicable"></td>`;
+          if (!linkedAssignment || linkedAssignment.IsSkipped) {
+            html += `<td class="cell-na" title="${linkedAssignment?.IsSkipped ? 'Skipped this quarter' : 'Not applicable'}"></td>`;
           } else {
             const cpRole = getCheckpointRole(cp);
             const cpFields = getSignOffFields(cpRole);
@@ -1910,7 +1927,7 @@ function renderDashboard() {
   // Metrics
   const total    = STATE.assignments.length;
   const complete = STATE.assignments.filter(a => a.Status === 'Complete').length;
-  const overdue  = STATE.assignments.filter(a => isTaskOverdue(a)).length;
+  const overdue  = STATE.assignments.filter(a => !a.IsSkipped && isTaskOverdue(a)).length;
   const urgentRC = STATE.reviewComments.filter(rc => rc.Priority === 'Urgent' && rc.Status === 'Open').length;
   const pct = total ? Math.round((complete / total) * 100) : 0;
 
@@ -1977,7 +1994,7 @@ function renderDashboard() {
   const overdueTitle = document.getElementById('overdue-summary-title');
   const overdueSub   = document.getElementById('overdue-summary-sub');
   if (overdueTitle) overdueTitle.textContent = `${overdue} overdue task${overdue !== 1 ? 's' : ''}`;
-  const overdueTasks = STATE.assignments.filter(a => isTaskOverdue(a));
+  const overdueTasks = STATE.assignments.filter(a => !a.IsSkipped && isTaskOverdue(a));
   const cats2 = [...new Set(overdueTasks.map(a => a.Category).filter(Boolean))];
   if (overdueSub) overdueSub.textContent = cats2.length ? `Across ${cats2.join(', ')}` : '';
 
@@ -2300,8 +2317,8 @@ function renderStagingGrid() {
   const rows = stagingItems
     .sort((a, b) => (a.Category || '').localeCompare(b.Category || '') || (a.Title || '').localeCompare(b.Title || ''))
     .map(item => `
-      <tr>
-        <td style="font-size:11px;max-width:160px">${escapeHtml(item.Title || '')}</td>
+      <tr class="${item.IsSkipped ? 'staging-skipped' : ''}">
+        <td style="font-size:11px;max-width:160px">${escapeHtml(item.Title || '')}${item.IsSkipped ? ' <span style="font-size:9px;color:var(--slate);font-weight:500">SKIPPED</span>' : ''}</td>
         <td><span class="cat-tag">${escapeHtml(item.Category || '')}</span></td>
         <td>
           <input type="number" class="staging-select staging-wd" data-id="${item._id}" data-field="PreparerWorkday"
@@ -2316,16 +2333,26 @@ function renderStagingGrid() {
                 style="font-size:11px;width:52px;text-align:center" title="Reviewer workday" />`}
         </td>
         <td>
+          <select class="staging-select staging-mode" data-id="${item._id}" data-field="SignOffMode" style="font-size:11px;width:100%">
+            <option value="Sequential"${item.SignOffMode === 'Sequential' ? ' selected' : ''}>Sequential</option>
+            <option value="Preparer Only"${item.SignOffMode === 'Preparer Only' ? ' selected' : ''}>Prep Only</option>
+          </select>
+        </td>
+        <td>
           <select class="staging-select" data-id="${item._id}" data-field="Preparer" style="font-size:11px;max-width:130px">
             ${blankOpt}${userOpts.replace(`value="${escapeHtml(item.Preparer)}"`, `value="${escapeHtml(item.Preparer)}" selected`)}
           </select>
         </td>
         <td>
           ${item.SignOffMode === 'Preparer Only'
-            ? '<span style="font-size:10px;color:var(--slate)">Prep only</span>'
+            ? '<span style="font-size:10px;color:var(--slate)">—</span>'
             : `<select class="staging-select" data-id="${item._id}" data-field="Reviewer" style="font-size:11px;max-width:130px">
                 ${blankOpt}${userOpts.replace(`value="${escapeHtml(item.Reviewer)}"`, `value="${escapeHtml(item.Reviewer)}" selected`)}
               </select>`}
+        </td>
+        <td style="text-align:center">
+          <input type="checkbox" class="staging-select staging-skip" data-id="${item._id}" data-field="IsSkipped"
+            ${item.IsSkipped ? 'checked' : ''} title="Skip this task for ${STATE.workingQuarter}" />
         </td>
       </tr>`).join('');
 
@@ -2333,20 +2360,22 @@ function renderStagingGrid() {
     <div class="card">
       <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
         Staging grid — ${STATE.workingQuarter}
-        <span style="font-size:11px;font-weight:400;color:var(--slate)">${stagingItems.length} assignments · changes save instantly</span>
+        <span style="font-size:11px;font-weight:400;color:var(--slate)">${stagingItems.length} assignments · ${stagingItems.filter(i => i.IsSkipped).length} skipped · changes save instantly</span>
       </div>
       <p style="font-size:12px;color:var(--slate);margin-bottom:10px">Review and adjust workday numbers, preparers, and reviewers before activating. Changes here only affect the staging quarter.</p>
       <div class="table-wrap">
         <table class="data-table" style="table-layout:fixed;width:100%">
           <colgroup>
-            <col style="width:22%"/><col style="width:12%"/><col style="width:7%"/>
-            <col style="width:7%"/><col style="width:26%"/><col style="width:26%"/>
+            <col style="width:18%"/><col style="width:10%"/><col style="width:6%"/>
+            <col style="width:6%"/><col style="width:10%"/><col style="width:21%"/><col style="width:21%"/><col style="width:8%"/>
           </colgroup>
           <thead><tr>
             <th>Task</th><th>Category</th>
             <th title="Preparer Workday">Prep WD</th>
             <th title="Reviewer Workday">Rev WD</th>
+            <th title="Sign-off mode">Mode</th>
             <th>Preparer</th><th>Reviewer</th>
+            <th title="Skip this quarter">Skip</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -2681,12 +2710,13 @@ function attachAdminEvents(panelName) {
       if (!sel) return;
       const { id, field } = sel.dataset;
 
-      // WD fields are numbers; person fields are strings or null.
-      const isWD = field === 'PreparerWorkday' || field === 'ReviewerWorkday';
-      const raw  = sel.value;
-      const value = isWD
-        ? (raw ? Number(raw) : null)
-        : (raw || null);
+      // WD fields are numbers; skip is boolean; SignOffMode and person fields are strings.
+      const isWD   = field === 'PreparerWorkday' || field === 'ReviewerWorkday';
+      const isSkip = field === 'IsSkipped';
+      const raw    = isSkip ? sel.checked : sel.value;
+      const value  = isWD   ? (raw ? Number(raw) : null)
+                   : isSkip ? Boolean(raw)
+                   : (raw || null);  // SignOffMode, Preparer, Reviewer all stored as strings
 
       // Validate WD range
       if (isWD && value !== null && (value < 1 || value > 35)) {
@@ -2698,7 +2728,8 @@ function attachAdminEvents(panelName) {
         await updateListItem(CONFIG.lists.quarterlyAssignments, id, { [field]: value });
         const item = STATE._stagingItems.find(i => i._id === id);
         if (item) item[field] = value;
-        showToast(`✓ ${isWD ? field.replace('Workday','') + ' WD' : field} updated`, 'success');
+        if (isSkip || field === 'SignOffMode') renderAdminPanel('rollforward');  // Re-render so row reflects new mode
+        showToast(`✓ ${isWD ? field.replace('Workday','') + ' WD' : isSkip ? (value ? 'Task skipped' : 'Task unskipped') : field === 'SignOffMode' ? 'Sign-off mode updated' : field} updated`, 'success');
       } catch (err) {
         showToast(`Failed to update ${field}`, 'error');
         logError('Staging grid update failed:', err);
@@ -2755,6 +2786,8 @@ function attachAdminEvents(panelName) {
   document.getElementById('btn-export-sox')?.addEventListener('click', () => openSOXExportModal());
   document.getElementById('btn-sox-confirm')?.addEventListener('click', confirmSOXExport);
   document.getElementById('btn-sox-cancel')?.addEventListener('click', () => hideModal('modal-sox-export'));
+  document.getElementById('btn-edit-wd-confirm')?.addEventListener('click', confirmEditWD);
+  document.getElementById('btn-edit-wd-cancel')?.addEventListener('click', () => hideModal('modal-edit-wd'));
 
   // Audit log filter dropdowns — re-render on change
   ['audit-filter-type','audit-filter-person','audit-filter-quarter'].forEach(id => {
@@ -3605,6 +3638,10 @@ function attachCardEvents() {
       if (action === 'signoff-behalf') {
         openSignOffBehalfModal(id, el.dataset.role);
       }
+
+      if (action === 'edit-wd') {
+        openEditWDModal(id);
+      }
     });
 
     // Keyboard activation for non-button interactive elements (cards, RC task links)
@@ -4066,6 +4103,93 @@ async function confirmCascade() {
 }
 
 // ============================================================
+// EDIT WORKDAY DUE DATE (admin only, live quarter)
+// ============================================================
+function openEditWDModal(assignmentId) {
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
+
+  STATE.pendingWDEdit = { assignmentId };
+
+  const titleEl = document.getElementById('modal-edit-wd-title');
+  const bodyEl  = document.getElementById('modal-edit-wd-body');
+
+  if (titleEl) titleEl.textContent = 'Edit Due Dates';
+  if (bodyEl) bodyEl.innerHTML = `
+    <p style="font-size:13px;font-weight:500;margin-bottom:4px">${escapeHtml(assignment.Title || '')}</p>
+    <p style="font-size:11px;color:var(--slate);margin-bottom:12px">${escapeHtml(assignment.Category || '')} · ${escapeHtml(assignment.SignOffMode || '')}</p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <div class="setup-field" style="flex:1">
+        <label class="field-label" for="edit-wd-prep">Preparer Workday</label>
+        <input type="number" id="edit-wd-prep" class="field-input" min="1" max="35"
+          value="${assignment.PreparerWorkday || ''}" placeholder="WD number" />
+      </div>
+      ${assignment.SignOffMode !== 'Preparer Only' ? `
+      <div class="setup-field" style="flex:1">
+        <label class="field-label" for="edit-wd-rev">Reviewer Workday</label>
+        <input type="number" id="edit-wd-rev" class="field-input" min="1" max="35"
+          value="${assignment.ReviewerWorkday || ''}" placeholder="WD number" />
+      </div>` : ''}
+    </div>
+    <p style="font-size:11px;color:var(--slate);margin-top:8px">Changes apply to this quarter only. The template workday is unchanged.</p>
+    <p id="edit-wd-error" class="modal-desc hidden" style="color:var(--red);margin-top:4px"></p>`;
+
+  showModal('modal-edit-wd');
+}
+
+async function confirmEditWD() {
+  const { assignmentId } = STATE.pendingWDEdit || {};
+  if (!assignmentId) return;
+
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
+
+  const prepWD = Number(document.getElementById('edit-wd-prep')?.value);
+  const revWD  = document.getElementById('edit-wd-rev')
+    ? Number(document.getElementById('edit-wd-rev').value) : null;
+  const errEl  = document.getElementById('edit-wd-error');
+
+  if (!prepWD || prepWD < 1 || prepWD > 35) {
+    if (errEl) { errEl.textContent = 'Preparer workday must be between 1 and 35.'; errEl.classList.remove('hidden'); }
+    return;
+  }
+  if (revWD !== null && assignment.SignOffMode !== 'Preparer Only' && (revWD < 1 || revWD > 35)) {
+    if (errEl) { errEl.textContent = 'Reviewer workday must be between 1 and 35.'; errEl.classList.remove('hidden'); }
+    return;
+  }
+
+  hideModal('modal-edit-wd');
+
+  const fields = { PreparerWorkday: prepWD };
+  if (revWD && assignment.SignOffMode !== 'Preparer Only') fields.ReviewerWorkday = revWD;
+
+  // Snapshot for rollback
+  const snapshot = { PreparerWorkday: assignment.PreparerWorkday, ReviewerWorkday: assignment.ReviewerWorkday };
+
+  // Optimistic update
+  Object.assign(assignment, fields);
+  openTaskPanel(assignmentId);
+  refreshCurrentView();
+
+  try {
+    await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, fields);
+    await writeAuditLog('TaskEdit', {
+      taskName: assignment.Title,
+      assignmentId,
+      newValue: `Due dates updated: Prep WD${prepWD}${revWD ? ' / Rev WD' + revWD : ''} (was WD${snapshot.PreparerWorkday}${snapshot.ReviewerWorkday ? ' / WD' + snapshot.ReviewerWorkday : ''})`,
+    });
+    showToast('✓ Due dates updated', 'success');
+  } catch (err) {
+    Object.assign(assignment, snapshot);
+    openTaskPanel(assignmentId);
+    refreshCurrentView();
+    showToast('Failed to update due dates', 'error');
+    logError('confirmEditWD failed:', err);
+  }
+  STATE.pendingWDEdit = null;
+}
+
+// ============================================================
 // SIGN OFF ON BEHALF
 // ============================================================
 // Used when a non-reviewer needs to sign the reviewer step during a tight close.
@@ -4394,13 +4518,14 @@ async function confirmSOXExport() {
     });
 
     // ── 2. Unsigned tasks ────────────────────────────────────
-    const unsignedRows = [['Quarter','Task Name','Category','Sign-Off Type','Assigned To','Due WD','Status']];
+    const unsignedRows = [['Quarter','Task Name','Category','Sign-Off Type','Assigned To','Due WD','Status','Skipped']];
     assignments.forEach(a => {
+      const skipped = a.IsSkipped ? 'Yes' : 'No';
       if (!a.PreparerSignOff) {
-        unsignedRows.push([quarter, a.Title, a.Category, 'Preparer', a.Preparer || 'Unassigned', a.PreparerWorkday || '', a.Status || '']);
+        unsignedRows.push([quarter, a.Title, a.Category, 'Preparer', a.Preparer || 'Unassigned', a.PreparerWorkday || '', a.IsSkipped ? 'Skipped' : (a.Status || ''), skipped]);
       }
-      if (!a.ReviewerSignOff && a.SignOffMode !== 'Preparer Only') {
-        unsignedRows.push([quarter, a.Title, a.Category, 'Reviewer', a.Reviewer || 'Unassigned', a.ReviewerWorkday || '', a.Status || '']);
+      if (!a.ReviewerSignOff && a.SignOffMode !== 'Preparer Only' && !a.IsSkipped) {
+        unsignedRows.push([quarter, a.Title, a.Category, 'Reviewer', a.Reviewer || 'Unassigned', a.ReviewerWorkday || '', a.Status || '', skipped]);
       }
     });
 
