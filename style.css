@@ -1128,3 +1128,8 @@ body {
   .admin-layout { flex-direction: column; }
   .admin-sidebar { width: 100%; }
 }
+
+/* ---- SKIPPED TASKS ---------------------------------------- */
+.staging-skipped td { opacity: 0.45; }
+.staging-skipped td:last-child { opacity: 1; } /* Keep skip checkbox visible */
+.skipped-row td { opacity: 0.4; text-decoration: line-through; color: var(--slate); }
