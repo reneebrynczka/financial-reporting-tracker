@@ -20,6 +20,7 @@ const CONFIG = {
   // SharePoint Site
   siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
 
+
   // SharePoint List Names — must match exactly
   lists: {
     taskTemplates:        'TaskTemplates',
@@ -5047,6 +5048,7 @@ async function performRollforward() {
 
   // Show a proper confirmation modal instead of window.confirm.
   STATE.pendingRollforward = quarter;
+  console.log('[Folio DEBUG] pendingRollforward set to:', STATE.pendingRollforward);
   const rfDetail = document.getElementById('rollforward-confirm-detail');
   if (rfDetail) rfDetail.textContent =
     `This will create ~${STATE.templates.length} staging assignments for ${quarter} copied from templates. ` +
@@ -5056,8 +5058,12 @@ async function performRollforward() {
 
 // Called by the rollforward confirmation modal confirm button.
 async function confirmRollforward() {
+  console.log('[Folio DEBUG] confirmRollforward called, pendingRollforward:', STATE.pendingRollforward);
   const quarter = STATE.pendingRollforward;
-  if (!quarter) return;
+  if (!quarter) {
+    console.log('[Folio DEBUG] pendingRollforward is null/empty — returning early');
+    return;
+  }
   STATE.pendingRollforward = null;
   const fromQuarter = STATE.activeQuarter;
 
