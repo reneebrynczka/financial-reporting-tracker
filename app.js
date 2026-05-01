@@ -20,7 +20,6 @@ const CONFIG = {
   // SharePoint Site
   siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
 
-
   // SharePoint List Names — must match exactly
   lists: {
     taskTemplates:        'TaskTemplates',
@@ -3218,8 +3217,15 @@ function trapFocus(modalEl) {
   const first = focusable[0];
   const last  = focusable[focusable.length - 1];
 
-  // Move focus into the modal — prefer the first interactive element.
-  first.focus();
+  // Move focus into the modal — use a small delay so the triggering click
+  // fully resolves before focus moves. Without this, a button that opens a modal
+  // can immediately trigger the modal's first focused button via keyup/click carryover.
+  setTimeout(() => {
+    // Prefer focusing a cancel/secondary button if one exists — avoids accidentally
+    // firing the primary action when Enter/Space is still being held from the trigger click.
+    const cancelBtn = modalEl.querySelector('.btn-secondary, [id*="cancel"]');
+    (cancelBtn || first).focus();
+  }, 50);
 
   // Remove any previous key handler before adding a new one.
   if (_modalKeyHandler) document.removeEventListener('keydown', _modalKeyHandler);
@@ -5048,7 +5054,6 @@ async function performRollforward() {
 
   // Show a proper confirmation modal instead of window.confirm.
   STATE.pendingRollforward = quarter;
-  console.log('[Folio DEBUG] pendingRollforward set to:', STATE.pendingRollforward);
   const rfDetail = document.getElementById('rollforward-confirm-detail');
   if (rfDetail) rfDetail.textContent =
     `This will create ~${STATE.templates.length} staging assignments for ${quarter} copied from templates. ` +
@@ -5058,12 +5063,8 @@ async function performRollforward() {
 
 // Called by the rollforward confirmation modal confirm button.
 async function confirmRollforward() {
-  console.log('[Folio DEBUG] confirmRollforward called, pendingRollforward:', STATE.pendingRollforward);
   const quarter = STATE.pendingRollforward;
-  if (!quarter) {
-    console.log('[Folio DEBUG] pendingRollforward is null/empty — returning early');
-    return;
-  }
+  if (!quarter) return;
   STATE.pendingRollforward = null;
   const fromQuarter = STATE.activeQuarter;
 
