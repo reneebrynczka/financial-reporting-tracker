@@ -2719,38 +2719,16 @@ function renderAdminImport() {
 }
 
 function attachAdminEvents(panelName) {
-  // Overview events
-  const btnRunDiag = document.getElementById('btn-run-diagnostics');
-  if (btnRunDiag) btnRunDiag.addEventListener('click', runDiagnostics);
+  // Note: all modal button listeners are in attachGlobalEvents (run once at startup).
+  // All dynamic button actions use data-action delegation on admin-content.
+  // Only panel-specific input listeners that need re-attaching per render go here.
 
-  // Edit staging button navigates to the rollforward panel where the staging grid lives
-  // btn-edit-staging handled by admin-content delegation
-
-  // btn-activate-quarter and btn-activate-quarter-rf handled by delegation → confirmActivation()
-
-  // All admin-content delegated actions (edit-template, retire-template, edit-cal-row,
-  // edit-user, rc-reply, approve-suggestion, reject-suggestion) are handled by the
-  // unified adminActionsAttached listener below.
-
-  // Rollforward events — handled by admin-content delegation (data-action attributes)
-  // btn-start-new-quarter, btn-rollforward, btn-activate-quarter-rf
-
-  // btn-setup-calendar handled by delegation → openSetupCalendarModal()
-
-  // Template search
-  document.getElementById('template-search')?.addEventListener('input', e => {
-    filterTemplateTable(e.target.value);
-  });
-
-  // New template button — opens edit modal in create mode (no templateId)
-
-  // btn-add-user handled by delegation → openAddUserModal()
-
-
-  // Template edit/retire (delegated from admin-content)
-  // Suggestion approve/reject already uses a delegated listener on admin-content.
-  // We extend the same listener rather than adding another — handled below by
-  // checking additional action values in the existing admin-content click handler.
+  // Template search — use a flag to avoid stacking on repeated renders
+  const templateSearch = document.getElementById('template-search');
+  if (templateSearch && !templateSearch.dataset.listenerAttached) {
+    templateSearch.dataset.listenerAttached = 'true';
+    templateSearch.addEventListener('input', e => filterTemplateTable(e.target.value));
+  }
   // Staging grid — save preparer/reviewer on dropdown change
   const adminContent2 = document.getElementById('admin-content');
   if (adminContent2 && !adminContent2.dataset.stagingEventsAttached) {
@@ -2778,7 +2756,14 @@ function attachAdminEvents(panelName) {
         await updateListItem(CONFIG.lists.quarterlyAssignments, id, { [field]: value });
         const item = STATE._stagingItems.find(i => i._id === id);
         if (item) item[field] = value;
-        if (isSkip || field === 'SignOffMode') renderAdminPanel('rollforward');  // Re-render so row reflects new mode
+        if (isSkip || field === 'SignOffMode') {
+          // Only re-render the staging grid section, not the whole panel
+          const gridContainer = document.getElementById('staging-grid-container');
+          if (gridContainer) {
+            gridContainer.outerHTML = renderStagingGrid();
+            attachAdminEvents('rollforward');
+          }
+        }
         let toastMsg = 'Updated';
         if (isWD)                    toastMsg = `${field.replace('Workday', '')} WD updated`;
         else if (isSkip)             toastMsg = value ? 'Task skipped' : 'Task unskipped';
@@ -3419,6 +3404,34 @@ function attachGlobalEvents() {
   // Profile save
   document.getElementById('btn-save-profile')?.addEventListener('click', saveProfile);
 
+  // ── Modal buttons (static in index.html — wire once at startup) ──────────
+  // New quarter
+  document.getElementById('btn-new-quarter-confirm')?.addEventListener('click', confirmNewQuarter);
+  document.getElementById('btn-new-quarter-cancel')?.addEventListener('click', () => hideModal('modal-new-quarter'));
+  document.getElementById('new-quarter-name')?.addEventListener('keydown', e => { if (e.key === 'Enter') confirmNewQuarter(); });
+  // Rollforward
+  document.getElementById('btn-rollforward-confirm')?.addEventListener('click', confirmRollforward);
+  document.getElementById('btn-rollforward-cancel')?.addEventListener('click', () => { hideModal('modal-rollforward-confirm'); STATE.pendingRollforward = null; });
+  // Reassign
+  document.getElementById('btn-reassign-confirm')?.addEventListener('click', confirmReassign);
+  document.getElementById('btn-reassign-cancel')?.addEventListener('click', () => { hideModal('modal-reassign'); STATE.pendingReassign = null; });
+  // Calendar setup
+  document.getElementById('btn-cal-setup-confirm')?.addEventListener('click', setupCalendarBulk);
+  document.getElementById('btn-cal-setup-cancel')?.addEventListener('click', () => hideModal('modal-cal-setup'));
+  // Cascade
+  document.getElementById('btn-cascade-confirm')?.addEventListener('click', confirmCascade);
+  document.getElementById('btn-cascade-no')?.addEventListener('click', () => { hideModal('modal-cascade'); STATE.pendingCascade = null; showToast('✓ Calendar row updated', 'success'); renderAdminPanel('calendar'); });
+  // Add user
+  document.getElementById('btn-add-user-confirm')?.addEventListener('click', createUser);
+  document.getElementById('btn-add-user-cancel')?.addEventListener('click', () => hideModal('modal-add-user'));
+  document.getElementById('add-user-email')?.addEventListener('keydown', e => { if (e.key === 'Enter') createUser(); });
+  // Retire template
+  document.getElementById('btn-retire-template-confirm')?.addEventListener('click', () => { hideModal('modal-retire-template'); confirmRetireTemplate(); });
+  document.getElementById('btn-retire-template-cancel')?.addEventListener('click', () => { hideModal('modal-retire-template'); STATE.pendingTemplateRetire = null; });
+  // Activate quarter
+  document.getElementById('btn-activate-confirm')?.addEventListener('click', async () => { if (!STATE.pendingActivation) return; hideModal('modal-activate'); await activateQuarter(STATE.pendingActivation); STATE.pendingActivation = null; });
+  document.getElementById('btn-activate-cancel')?.addEventListener('click', () => { hideModal('modal-activate'); STATE.pendingActivation = null; });
+
   // Nav user avatar → profile
   document.getElementById('nav-user-avatar')?.addEventListener('click', () => showView('profile'));
 
@@ -3533,68 +3546,7 @@ function attachGlobalEvents() {
     STATE.pendingSuggestionReject = null;
   });
 
-  // New quarter modal
-  document.getElementById('btn-new-quarter-confirm')?.addEventListener('click', confirmNewQuarter);
-  document.getElementById('btn-new-quarter-cancel')?.addEventListener('click', () => hideModal('modal-new-quarter'));
-  document.getElementById('new-quarter-name')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') confirmNewQuarter();
-  });
-
-  // Rollforward confirm modal
-  document.getElementById('btn-rollforward-confirm')?.addEventListener('click', confirmRollforward);
-  document.getElementById('btn-rollforward-cancel')?.addEventListener('click', () => {
-    hideModal('modal-rollforward-confirm');
-    STATE.pendingRollforward = null;
-  });
-
-  // Reassign modal
-  document.getElementById('btn-reassign-confirm')?.addEventListener('click', confirmReassign);
-  document.getElementById('btn-reassign-cancel')?.addEventListener('click', () => {
-    hideModal('modal-reassign');
-    STATE.pendingReassign = null;
-  });
-
-  // Calendar bulk setup modal
-  document.getElementById('btn-cal-setup-confirm')?.addEventListener('click', setupCalendarBulk);
-  document.getElementById('btn-cal-setup-cancel')?.addEventListener('click', () => hideModal('modal-cal-setup'));
-
-  // Cascade modal
-  document.getElementById('btn-cascade-confirm')?.addEventListener('click', confirmCascade);
-  document.getElementById('btn-cascade-no')?.addEventListener('click', () => {
-    hideModal('modal-cascade');
-    STATE.pendingCascade = null;
-    showToast('✓ Calendar row updated', 'success');
-    renderAdminPanel('calendar');
-  });
-
-  // Add user modal
-  document.getElementById('btn-add-user-confirm')?.addEventListener('click', createUser);
-  document.getElementById('btn-add-user-cancel')?.addEventListener('click', () => hideModal('modal-add-user'));
-  document.getElementById('add-user-email')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') createUser();
-  });
-
-  // Retire template modal
-  document.getElementById('btn-retire-template-confirm')?.addEventListener('click', () => {
-    hideModal('modal-retire-template');
-    confirmRetireTemplate();
-  });
-  document.getElementById('btn-retire-template-cancel')?.addEventListener('click', () => {
-    hideModal('modal-retire-template');
-    STATE.pendingTemplateRetire = null;
-  });
-
-  // Activation modal
-  document.getElementById('btn-activate-confirm')?.addEventListener('click', async () => {
-    if (!STATE.pendingActivation) return;
-    hideModal('modal-activate');
-    await activateQuarter(STATE.pendingActivation);
-    STATE.pendingActivation = null;
-  });
-  document.getElementById('btn-activate-cancel')?.addEventListener('click', () => {
-    hideModal('modal-activate');
-    STATE.pendingActivation = null;
-  });
+  // Modal listeners moved to attachGlobalEvents — wired once at startup
 
   // Waiting toggle
   document.getElementById('waiting-toggle-header')?.addEventListener('click', () => {
