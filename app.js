@@ -20,9 +20,6 @@ const CONFIG = {
   // SharePoint Site
   siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
 
-  // SharePoint Site
-  siteUrl: 'https://YOURTENANT.sharepoint.com/sites/YOURSITE',
-
   // SharePoint List Names — must match exactly
   lists: {
     taskTemplates:        'TaskTemplates',
@@ -1310,7 +1307,7 @@ function renderActiveFilterChips() {
       ${escapeHtml(chip.label)}
       <button class="filter-chip-remove" data-chip="${i}" aria-label="Remove filter: ${escapeHtml(chip.label)}">×</button>
     </span>`).join('') +
-    (chips.length > 1 ? '<button class="filter-chip-clear-all" id="btn-clear-all-filters">Clear all</button>' : '');
+    (chips.length > 1 ? '<button class="filter-chip-clear-all" id="btn-clear-all-filters" data-action="clear-all-filters">Clear all</button>' : '');
 
   // Wire chip remove buttons
   bar.querySelectorAll('.filter-chip-remove').forEach(btn => {
@@ -1322,12 +1319,7 @@ function renderActiveFilterChips() {
   });
 
   // Wire clear all
-  document.getElementById('btn-clear-all-filters')?.addEventListener('click', () => {
-    f.status = 'all'; f.category = 'all'; f.assignee = 'all'; f.search = '';
-    saveFilters();
-    syncFilterUI();
-    renderAllTasks();
-  });
+  // btn-clear-all-filters handled by delegation
 }
 
 // Syncs the toolbar UI controls to match STATE.filters after a programmatic reset.
@@ -2318,14 +2310,14 @@ function renderAdminOverview() {
         </div>
       </div>
       <div style="display:flex;gap:6px">
-        ${STATE.workingQuarter ? `<button class="btn-secondary btn-sm" id="btn-edit-staging">Edit staging</button>
-        <button class="btn-success btn-sm" id="btn-activate-quarter">Activate ${STATE.workingQuarter}</button>` : ''}
+        ${STATE.workingQuarter ? `<button class="btn-secondary btn-sm" id="btn-edit-staging" data-action="edit-staging">Edit staging</button>
+        <button class="btn-success btn-sm" id="btn-activate-quarter" data-action="activate-quarter">Activate ${STATE.workingQuarter}</button>` : ''}
       </div>
     </div>
     <div class="card" style="margin-bottom:12px">
       <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
         System diagnostics
-        <button class="btn-secondary btn-sm" id="btn-run-diagnostics">Run diagnostics</button>
+        <button class="btn-secondary btn-sm" id="btn-run-diagnostics" data-action="run-diagnostics">Run diagnostics</button>
       </div>
       <div class="diag-grid" id="diag-results">
         <div class="diag-item"><div class="diag-dot dot-amber"></div><div class="diag-name">Run diagnostics to check all connections</div></div>
@@ -2363,7 +2355,7 @@ function renderAdminCalendar() {
     <div class="admin-section-title">Close Calendar</div>
     <div class="admin-section-sub">${quarter || 'No active quarter'}</div>
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
-      <button class="btn-primary btn-sm" id="btn-setup-calendar">Setup Calendar…</button>
+      <button class="btn-primary btn-sm" id="btn-setup-calendar" data-action="setup-calendar">Setup Calendar…</button>
       <span style="font-size:11px;color:var(--slate)">${hasRows ? `${STATE.calendar.length} workdays configured` : 'No workdays set up yet — click Setup Calendar to create them'}</span>
     </div>
     <div class="card">
@@ -2512,7 +2504,7 @@ function renderAdminTemplates() {
     <div class="admin-section-title">Task Templates</div>
     <div class="admin-section-sub">${STATE.templates.length} active templates</div>
     <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn-primary btn-sm" id="btn-new-template">+ New Template</button>
+      <button class="btn-primary btn-sm" id="btn-new-template" data-action="new-template">+ New Template</button>
       <input type="text" class="filter-search" id="template-search" placeholder="Search templates..." style="width:200px"/>
     </div>
     <div class="table-wrap">
@@ -2587,7 +2579,7 @@ function renderAdminUsers() {
     <div class="admin-section-title">Users</div>
     <div class="admin-section-sub">${STATE.users.length} active users</div>
     <div style="margin-bottom:12px">
-      <button class="btn-primary btn-sm" id="btn-add-user">+ Add User</button>
+      <button class="btn-primary btn-sm" id="btn-add-user" data-action="add-user">+ Add User</button>
     </div>
     <div class="table-wrap">
       <table class="data-table">
@@ -2685,8 +2677,8 @@ function renderAdminAuditLog() {
         <option value="">All quarters</option>
         ${allQuarters.map(q => `<option value="${escapeHtml(q)}" ${f.quarter===q?'selected':''}>${escapeHtml(q)}</option>`).join('')}
       </select>
-      <button class="btn-secondary btn-sm" id="btn-export-audit-excel">Export CSV</button>
-      <button class="btn-primary btn-sm" id="btn-export-sox">Audit Log Export…</button>
+      <button class="btn-secondary btn-sm" id="btn-export-audit-excel" data-action="export-audit-excel">Export CSV</button>
+      <button class="btn-primary btn-sm" id="btn-export-sox" data-action="export-sox">Audit Log Export…</button>
     </div>
 
     <div class="table-wrap">
@@ -2713,8 +2705,8 @@ function renderAdminImport() {
       <p style="font-size:12px;color:var(--slate);margin-bottom:12px">Upload a CSV file with your task templates. See the Build Guide Section 8 for the required column format.</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <input type="file" id="import-file" accept=".csv" class="field-input" style="width:auto"/>
-        <button class="btn-secondary btn-sm" id="btn-validate-import">Validate</button>
-        <button class="btn-primary btn-sm" id="btn-run-import" disabled>Import</button>
+        <button class="btn-secondary btn-sm" id="btn-validate-import" data-action="validate-import">Validate</button>
+        <button class="btn-primary btn-sm" id="btn-run-import" data-action="run-import" disabled>Import</button>
       </div>
       <div id="import-status" style="margin-top:12px;font-size:12px;color:var(--slate)"></div>
       <div id="import-progress" style="margin-top:8px"></div>
@@ -2727,19 +2719,9 @@ function attachAdminEvents(panelName) {
   if (btnRunDiag) btnRunDiag.addEventListener('click', runDiagnostics);
 
   // Edit staging button navigates to the rollforward panel where the staging grid lives
-  document.getElementById('btn-edit-staging')?.addEventListener('click', () => {
-    renderAdminPanel('rollforward');
-  });
+  // btn-edit-staging handled by admin-content delegation
 
-  const btnActivate = document.getElementById('btn-activate-quarter') || document.getElementById('btn-activate-quarter-rf');
-  if (btnActivate) btnActivate.addEventListener('click', () => {
-    STATE.pendingActivation = STATE.workingQuarter;
-    const titleEl = document.getElementById('activate-modal-title');
-    const descEl  = document.getElementById('activate-modal-desc');
-    if (titleEl) titleEl.textContent = `Activate ${STATE.workingQuarter}?`;
-    if (descEl) descEl.textContent = `This will immediately make ${STATE.workingQuarter} visible to all ${STATE.users.length} team members.`;
-    showModal('modal-activate');
-  });
+  // btn-activate-quarter and btn-activate-quarter-rf handled by delegation → confirmActivation()
 
   // All admin-content delegated actions (edit-template, retire-template, edit-cal-row,
   // edit-user, rc-reply, approve-suggestion, reject-suggestion) are handled by the
@@ -2748,16 +2730,7 @@ function attachAdminEvents(panelName) {
   // Rollforward events — handled by admin-content delegation (data-action attributes)
   // btn-start-new-quarter, btn-rollforward, btn-activate-quarter-rf
 
-  // Calendar setup button
-  document.getElementById('btn-setup-calendar')?.addEventListener('click', () => {
-    const quarterEl = document.getElementById('cal-setup-quarter');
-    const maxWDEl   = document.getElementById('cal-setup-maxwd');
-    const errEl     = document.getElementById('cal-setup-error');
-    if (quarterEl) quarterEl.value = STATE.activeQuarter || '';
-    if (maxWDEl)   maxWDEl.value   = isQuarterQ4(STATE.activeQuarter) ? '35' : '20';
-    if (errEl)     errEl.classList.add('hidden');
-    showModal('modal-cal-setup');
-  });
+  // btn-setup-calendar handled by delegation → openSetupCalendarModal()
 
   // Template search
   document.getElementById('template-search')?.addEventListener('input', e => {
@@ -2765,60 +2738,9 @@ function attachAdminEvents(panelName) {
   });
 
   // New template button — opens edit modal in create mode (no templateId)
-  document.getElementById('btn-new-template')?.addEventListener('click', () => {
-    openEditTemplateModal(null);
-  });
 
-  // Add user button
-  document.getElementById('btn-add-user')?.addEventListener('click', () => {
-    const emailEl = document.getElementById('add-user-email');
-    const nameEl  = document.getElementById('add-user-name');
-    const roleEl  = document.getElementById('add-user-role');
-    const errEl   = document.getElementById('add-user-error');
-    const customEl = document.getElementById('add-user-emoji-custom');
-    if (emailEl)  emailEl.value  = '';
-    if (nameEl)   nameEl.value   = '';
-    if (roleEl)   roleEl.value   = 'TeamMember';
-    if (errEl)    errEl.classList.add('hidden');
-    if (customEl) customEl.value = '';
+  // btn-add-user handled by delegation → openAddUserModal()
 
-    // Reset preview
-    const previewWrap = document.getElementById('add-user-preview-wrap');
-    if (previewWrap) previewWrap.style.display = 'none';
-
-    // Init emoji + color pickers — store selections in closure vars
-    STATE._addUserEmoji = null;
-    STATE._addUserColor = null;
-
-    renderEmojiPicker('add-user-emoji-grid', null, (emoji) => {
-      STATE._addUserEmoji = emoji;
-      const customEl = document.getElementById('add-user-emoji-custom');
-      if (customEl) customEl.value = '';
-      updateAddUserPreview();
-    });
-    renderColorPicker('add-user-color-grid', null, (color) => {
-      STATE._addUserColor = color;
-      updateAddUserPreview();
-    });
-
-    // Custom emoji overrides grid selection
-    document.getElementById('add-user-emoji-custom')?.addEventListener('input', function() {
-      const val = this.value.trim();
-      STATE._addUserEmoji = val || null;
-      if (val) {
-        document.querySelectorAll('#add-user-emoji-grid .emoji-option')
-          .forEach(el => el.classList.remove('selected'));
-      }
-      updateAddUserPreview();
-    });
-
-    // Live preview updates as name/email is typed
-    ['add-user-name', 'add-user-email'].forEach(id => {
-      document.getElementById(id)?.addEventListener('input', updateAddUserPreview);
-    });
-
-    showModal('modal-add-user');
-  });
 
   // Template edit/retire (delegated from admin-content)
   // Suggestion approve/reject already uses a delegated listener on admin-content.
@@ -2872,10 +2794,21 @@ function attachAdminEvents(panelName) {
       if (!btn) return;
       const { action, id, email } = btn.dataset;
 
-      if (action === 'start-new-quarter')  startNewQuarter();
-      if (action === 'rollforward')          performRollforward();
-      if (action === 'activate-quarter-rf') confirmActivation();
-      if (action === 'edit-template')      openEditTemplateModal(id);
+      if (action === 'start-new-quarter')   startNewQuarter();
+      if (action === 'rollforward')           performRollforward();
+      if (action === 'activate-quarter-rf')  confirmActivation();
+      if (action === 'activate-quarter')      confirmActivation();
+      if (action === 'edit-staging')          renderAdminPanel('rollforward');
+      if (action === 'run-diagnostics')       runDiagnostics();
+      if (action === 'setup-calendar')        (() => { const quarterEl = document.getElementById('cal-setup-quarter'); const maxWDEl = document.getElementById('cal-setup-maxwd'); const errEl = document.getElementById('cal-setup-error'); if (quarterEl) quarterEl.value = STATE.activeQuarter || ''; if (maxWDEl) maxWDEl.value = isQuarterQ4(STATE.activeQuarter) ? '35' : '20'; if (errEl) errEl.classList.add('hidden'); showModal('modal-cal-setup'); })();
+      if (action === 'new-template')          openEditTemplateModal(null);
+      if (action === 'add-user')              openAddUserModal();
+      if (action === 'export-audit-excel')    exportAuditLog();
+      if (action === 'export-sox')            openSOXExportModal();
+      if (action === 'validate-import')       validateImport();
+      if (action === 'run-import')            runImport();
+      if (action === 'clear-all-filters')     clearAllFilters();
+      if (action === 'edit-template')         openEditTemplateModal(id);
       if (action === 'retire-template')   await retireTemplate(id);
       if (action === 'edit-cal-row')      openEditCalendarRowModal(id);
       if (action === 'edit-user')         openEditUserRoleModal(email);
@@ -2912,8 +2845,7 @@ function attachAdminEvents(panelName) {
   });
 
   // Audit log exports
-  document.getElementById('btn-export-audit-excel')?.addEventListener('click', exportAuditLog);
-  document.getElementById('btn-export-sox')?.addEventListener('click', () => openSOXExportModal());
+  // btn-export-sox handled by delegation
   document.getElementById('btn-sox-confirm')?.addEventListener('click', confirmSOXExport);
   document.getElementById('btn-sox-cancel')?.addEventListener('click', () => hideModal('modal-sox-export'));
   document.getElementById('btn-edit-wd-confirm')?.addEventListener('click', confirmEditWD);
@@ -3403,6 +3335,43 @@ function updateNavAvatar() {
 // ============================================================
 // EVENTS — GLOBAL
 // ============================================================
+function clearAllFilters() {
+  STATE.filters.status   = 'all';
+  STATE.filters.category = 'all';
+  STATE.filters.assignee = 'all';
+  STATE.filters.search   = '';
+  saveFilters();
+  renderAllTasks();
+}
+
+function openAddUserModal() {
+  const emailEl    = document.getElementById('add-user-email');
+  const nameEl     = document.getElementById('add-user-name');
+  const roleEl     = document.getElementById('add-user-role');
+  const errEl      = document.getElementById('add-user-error');
+  const customEl   = document.getElementById('add-user-emoji-custom');
+  const previewWrap = document.getElementById('add-user-preview-wrap');
+  if (emailEl)     emailEl.value  = '';
+  if (nameEl)      nameEl.value   = '';
+  if (roleEl)      roleEl.value   = ROLE.TEAM_MEMBER;
+  if (errEl)       errEl.classList.add('hidden');
+  if (customEl)    customEl.value = '';
+  if (previewWrap) previewWrap.style.display = 'none';
+  STATE._addUserEmoji = null;
+  STATE._addUserColor = null;
+  renderEmojiPicker('add-user-emoji-grid', null, (emoji) => {
+    STATE._addUserEmoji = emoji;
+    const c = document.getElementById('add-user-emoji-custom');
+    if (c) c.value = '';
+    updateAddUserPreview();
+  });
+  renderColorPicker('add-user-color-grid', CONFIG.colorOptions[0].hex, (color) => {
+    STATE._addUserColor = color;
+    updateAddUserPreview();
+  });
+  showModal('modal-add-user');
+}
+
 function attachGlobalEvents() {
   // Nav links
   document.querySelectorAll('.nav-link').forEach(btn => {
