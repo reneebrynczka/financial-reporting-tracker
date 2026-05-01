@@ -2813,50 +2813,25 @@ function attachAdminEvents(panelName) {
     });
   }
 
-  // Template edit modal confirm/cancel
-  document.getElementById('btn-edit-tpl-save')?.addEventListener('click', saveTemplateEdit);
-  document.getElementById('btn-edit-tpl-cancel')?.addEventListener('click', () => {
-    hideModal('modal-edit-template');
-    STATE.pendingTemplateEdit = null;
+  // Template edit modal confirm/cancel — moved to attachGlobalEvents
+  // Calendar edit modal confirm/cancel — moved to attachGlobalEvents
+  // User role modal — moved to attachGlobalEvents
+  // SOX/audit exports — moved to attachGlobalEvents
+  // Import buttons — handled by delegation
+
+  // Audit log filter dropdowns — re-render on change (must stay here, dropdowns are dynamic)
+  ['audit-filter-type','audit-filter-person','audit-filter-quarter'].forEach(filterId => {
+    const el = document.getElementById(filterId);
+    if (el && !el.dataset.listenerAttached) {
+      el.dataset.listenerAttached = 'true';
+      el.addEventListener('change', e => {
+        const field = filterId.replace('audit-filter-', '');
+        STATE._auditFilter[field] = e.target.value;
+        document.getElementById('admin-content').innerHTML = renderAdminAuditLog();
+        attachAdminEvents('auditlog');
+      });
+    }
   });
-
-  // Calendar edit modal confirm/cancel
-  document.getElementById('btn-edit-cal-save')?.addEventListener('click', saveCalendarRowEdit);
-  document.getElementById('btn-edit-cal-cancel')?.addEventListener('click', () => {
-    hideModal('modal-edit-calendar');
-    STATE.pendingCalendarEdit = null;
-  });
-
-  // User role modal confirm/cancel
-  document.getElementById('btn-edit-user-save')?.addEventListener('click', saveUserRoleEdit);
-  document.getElementById('btn-edit-user-cancel')?.addEventListener('click', () => {
-    hideModal('modal-edit-user');
-    STATE.pendingUserEdit = null;
-  });
-
-  // Audit log exports
-  // btn-export-sox handled by delegation
-  document.getElementById('btn-sox-confirm')?.addEventListener('click', confirmSOXExport);
-  document.getElementById('btn-sox-cancel')?.addEventListener('click', () => hideModal('modal-sox-export'));
-  document.getElementById('btn-edit-wd-confirm')?.addEventListener('click', confirmEditWD);
-  document.getElementById('btn-edit-wd-cancel')?.addEventListener('click', () => { STATE.pendingWDEdit = null; hideModal('modal-edit-wd'); });
-
-  // Audit log filter dropdowns — re-render on change
-  ['audit-filter-type','audit-filter-person','audit-filter-quarter'].forEach(id => {
-    document.getElementById(id)?.addEventListener('change', e => {
-      const field = id.replace('audit-filter-', '');
-      STATE._auditFilter[field] = e.target.value;
-      document.getElementById('admin-content').innerHTML = renderAdminAuditLog();
-      attachAdminEvents('auditlog');
-    });
-  });
-
-
-  // Import events
-  const btnValidate = document.getElementById('btn-validate-import');
-  const btnImport   = document.getElementById('btn-run-import');
-  if (btnValidate) btnValidate.addEventListener('click', validateImport);
-  if (btnImport)   btnImport.addEventListener('click', runImport);
 }
 
 // ============================================================
@@ -3411,7 +3386,22 @@ function attachGlobalEvents() {
   // Profile save
   document.getElementById('btn-save-profile')?.addEventListener('click', saveProfile);
 
-  // ── Modal buttons (static in index.html — wire once at startup) ──────────
+  // ── Admin modal buttons ──────────────────────────────────────
+  // Template edit
+  document.getElementById('btn-edit-tpl-save')?.addEventListener('click', saveTemplateEdit);
+  document.getElementById('btn-edit-tpl-cancel')?.addEventListener('click', () => { hideModal('modal-edit-template'); STATE.pendingTemplateEdit = null; });
+  // Calendar edit
+  document.getElementById('btn-edit-cal-save')?.addEventListener('click', saveCalendarRowEdit);
+  document.getElementById('btn-edit-cal-cancel')?.addEventListener('click', () => { hideModal('modal-edit-calendar'); STATE.pendingCalendarEdit = null; });
+  // User role edit
+  document.getElementById('btn-edit-user-save')?.addEventListener('click', saveUserRoleEdit);
+  document.getElementById('btn-edit-user-cancel')?.addEventListener('click', () => { hideModal('modal-edit-user'); STATE.pendingUserEdit = null; });
+  // SOX export
+  document.getElementById('btn-sox-confirm')?.addEventListener('click', confirmSOXExport);
+  document.getElementById('btn-sox-cancel')?.addEventListener('click', () => hideModal('modal-sox-export'));
+  // Edit WD
+  document.getElementById('btn-edit-wd-confirm')?.addEventListener('click', confirmEditWD);
+  document.getElementById('btn-edit-wd-cancel')?.addEventListener('click', () => { STATE.pendingWDEdit = null; hideModal('modal-edit-wd'); });
   // New quarter
   document.getElementById('btn-new-quarter-confirm')?.addEventListener('click', confirmNewQuarter);
   document.getElementById('btn-new-quarter-cancel')?.addEventListener('click', () => hideModal('modal-new-quarter'));
