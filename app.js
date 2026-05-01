@@ -2262,7 +2262,18 @@ function renderAdminPanel(panelName) {
         }
       });
       return; // early return — attachAdminEvents called in callback above
-    case 'users':       content.innerHTML = renderAdminUsers();       break;
+    case 'users':
+      content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading users...</p>';
+      loadUsers().then(() => {
+        const activeBtn = document.querySelector('.sidebar-btn.active');
+        if (activeBtn?.dataset.panel === 'users') {
+          content.innerHTML = renderAdminUsers();
+          attachAdminEvents('users');
+        }
+      }).catch(err => {
+        content.innerHTML = `<p style="color:var(--red);padding:12px">Failed to load users — ${classifyGraphError(err)}</p>`;
+      });
+      return;
     case 'auditlog':
       content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading audit log...</p>';
       loadAuditLogEntries().then(() => {
