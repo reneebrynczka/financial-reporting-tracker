@@ -3079,7 +3079,6 @@ async function runImport() {
       try {
         await createListItem(CONFIG.lists.taskTemplates, {
           Title:           row.TaskName || row.Title || '',
-          TaskName:        row.TaskName || row.Title || '',
           Category:        row.Category || '',
           MatrixItem:      row.MatrixItem || null,
           MatrixCheckpoint:row.MatrixCheckpoint || null,
