@@ -2403,7 +2403,6 @@ function renderStagingGrid() {
   // Load staging items from SharePoint if not already in STATE
   // (STATE.assignments only holds active quarter — staging is a different quarter)
   if (!stagingItems.length) {
-    // Trigger async load and re-render
     if (!STATE._stagingLoading) {
       STATE._stagingLoading = true;
       getListItems(CONFIG.lists.quarterlyAssignments,
@@ -2411,10 +2410,16 @@ function renderStagingGrid() {
       ).then(items => {
         STATE._stagingItems = items.map(i => ({ ...i.fields, _id: i.id }));
         STATE._stagingLoading = false;
-        renderAdminPanel('rollforward');
+        // Only update the staging grid container — don't re-render the whole panel
+        // so the Roll Forward / Activate buttons are never destroyed mid-click.
+        const gridContainer = document.getElementById('staging-grid-container');
+        if (gridContainer) {
+          gridContainer.innerHTML = renderStagingGrid();
+          attachAdminEvents('rollforward');
+        }
       }).catch(() => { STATE._stagingLoading = false; });
     }
-    return `<div class="card">
+    return `<div class="card" id="staging-grid-container">
       <div class="card-title">Staging grid — ${STATE.workingQuarter}</div>
       <p style="font-size:12px;color:var(--slate)">
         ${STATE._stagingLoading ? 'Loading staging assignments...' : 'Click "Roll Forward" to populate staging assignments, then review them here.'}
@@ -2473,7 +2478,7 @@ function renderStagingGrid() {
       </tr>`).join('');
 
   return `
-    <div class="card">
+    <div class="card" id="staging-grid-container">
       <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
         Staging grid — ${STATE.workingQuarter}
         <span style="font-size:11px;font-weight:400;color:var(--slate)">${stagingItems.length} assignments · ${stagingItems.filter(i => i.IsSkipped).length} skipped · changes save instantly</span>
