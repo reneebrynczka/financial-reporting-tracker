@@ -2514,7 +2514,7 @@ function renderAdminTemplates() {
               <td style="font-size:11px">${t.ReviewerWorkday ? 'WD' + t.ReviewerWorkday : '—'}</td>
               <td style="font-size:11px">${t.PreparerWorkday10K ? 'WD' + t.PreparerWorkday10K : '<span style="color:var(--slate)">—</span>'}</td>
               <td style="font-size:11px">${t.ReviewerWorkday10K ? 'WD' + t.ReviewerWorkday10K : '<span style="color:var(--slate)">—</span>'}</td>
-              <td style="font-size:11px">
+              <td style="font-size:11px;white-space:nowrap">
                 <button class="btn-icon btn-sm" data-action="edit-template" data-id="${t._id}">Edit</button>
                 <button class="btn-danger btn-sm" data-action="retire-template" data-id="${t._id}" style="margin-left:4px">Retire</button>
               </td>
