@@ -710,6 +710,12 @@ async function loadViewingQuarterData(quarter) {
   await loadRCReplies();
 }
 
+// Ensures users are always loaded even when no quarter is active.
+// Called at startup and on every poll so badges and dropdowns always render.
+async function ensureUsersLoaded() {
+  if (!STATE.users.length) await loadUsers();
+}
+
 // Switches the viewing context to a different quarter and re-renders.
 async function switchToQuarter(quarter) {
   if (quarter === STATE.viewingQuarter) return;
@@ -5375,6 +5381,7 @@ async function showApp() {
   showLoading('Loading your tasks...');
   try {
     await loadTemplates();
+    await loadUsers();  // Always load users — needed for staging grid and badges regardless of active quarter
     if (STATE.activeQuarter) {
       await loadAllData();
     }
