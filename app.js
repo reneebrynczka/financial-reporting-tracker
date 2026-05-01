@@ -19,6 +19,7 @@ const CONFIG = {
 
   // SharePoint Site
   siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
+
   // SharePoint List Names — must match exactly
   lists: {
     taskTemplates:        'TaskTemplates',
@@ -622,7 +623,7 @@ async function loadTemplates() {
 async function loadAssignments(quarter) {
   const items = await getListItems(
     CONFIG.lists.quarterlyAssignments,
-    `fields/Quarter eq '${quarter}' and fields/IsStaging eq false`
+    `fields/Quarter eq '${quarter}' and fields/IsStaging eq 0`
   );
   STATE.assignments = items.map(i => ({ ...i.fields, _id: i.id }));
   log('Assignments loaded:', STATE.assignments.length);
@@ -2405,7 +2406,7 @@ function renderStagingGrid() {
     if (!STATE._stagingLoading) {
       STATE._stagingLoading = true;
       getListItems(CONFIG.lists.quarterlyAssignments,
-        `fields/Quarter eq '${STATE.workingQuarter}' and fields/IsStaging eq true`
+        `fields/Quarter eq '${STATE.workingQuarter}' and fields/IsStaging eq 1`
       ).then(items => {
         STATE._stagingItems = items.map(i => ({ ...i.fields, _id: i.id }));
         STATE._stagingLoading = false;
@@ -4571,7 +4572,7 @@ async function confirmSOXExport() {
     let assignments = STATE.assignments.filter(a => a.Quarter === quarter);
     if (!assignments.length || quarter !== STATE.activeQuarter) {
       const items = await getListItems(CONFIG.lists.quarterlyAssignments,
-        `fields/Quarter eq '${quarter}' and fields/IsStaging eq false`);
+        `fields/Quarter eq '${quarter}' and fields/IsStaging eq 0`);
       assignments = items.map(i => ({ ...i.fields, _id: i.id }));
     }
 
@@ -5072,7 +5073,7 @@ async function confirmRollforward() {
     // Remove any existing staging rows for this quarter first (clean slate)
     const existing = await getListItems(
       CONFIG.lists.quarterlyAssignments,
-      `fields/Quarter eq '${quarter}' and fields/IsStaging eq true`
+      `fields/Quarter eq '${quarter}' and fields/IsStaging eq 1`
     );
     for (const item of existing) {
       await graphRequest('DELETE',
@@ -5169,7 +5170,7 @@ async function activateQuarter(quarter) {
   try {
     stagingItems = await getListItems(
       CONFIG.lists.quarterlyAssignments,
-      `fields/Quarter eq '${quarter}' and fields/IsStaging eq true`
+      `fields/Quarter eq '${quarter}' and fields/IsStaging eq 1`
     );
     for (const item of stagingItems) {
       await updateListItem(CONFIG.lists.quarterlyAssignments, item.id, { IsStaging: false });
