@@ -602,13 +602,21 @@ async function loadCurrentUser(email) {
 }
 
 async function loadUsers() {
-  const items = await getListItems(CONFIG.lists.users, `fields/IsActive eq 1`);
-  STATE.users = items.map(i => ({ ...i.fields, _id: i.id }));
+  // Load all users without a server-side filter — SharePoint boolean comparisons
+  // are unreliable (eq true vs eq 1 varies by column creation method).
+  // Filter client-side instead — the Users list is always small.
+  const items = await getListItems(CONFIG.lists.users);
+  STATE.users = items
+    .map(i => ({ ...i.fields, _id: i.id }))
+    .filter(u => u.IsActive !== false && u.IsActive !== 0);
 }
 
 async function loadTemplates() {
-  const items = await getListItems(CONFIG.lists.taskTemplates, `fields/IsActive eq 1`);
-  STATE.templates = items.map(i => ({ ...i.fields, _id: i.id }));
+  // Load all templates and filter client-side — avoids SharePoint boolean filter issues.
+  const items = await getListItems(CONFIG.lists.taskTemplates);
+  STATE.templates = items
+    .map(i => ({ ...i.fields, _id: i.id }))
+    .filter(t => t.IsActive !== false && t.IsActive !== 0);
   log('Templates loaded:', STATE.templates.length);
 }
 
