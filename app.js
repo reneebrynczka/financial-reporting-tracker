@@ -1586,7 +1586,7 @@ function openTaskPanel(assignmentId) {
         <div class="rc-card ${rc.Priority === 'Urgent' ? 'urgent' : ''}" style="cursor:default">
           <div class="rc-meta">
             ${renderBadge(rc.CreatedBy)}
-            <span class="rc-meta-text">${formatDateShort(rc.CreatedDate) || '—'}</span>
+            <span class="rc-meta-text">${formatDateET(rc.CreatedDate) || '—'}</span>
             <span class="${rc.Priority === 'Urgent' ? 'badge-urgent' : 'badge-normal'}">${rc.Priority}</span>
           </div>
           <div class="rc-comment-text">"${escapeHtml((rc.CommentText || '').substring(0, 120))}${rc.CommentText?.length > 120 ? '...' : ''}"</div>
@@ -1837,7 +1837,7 @@ function renderRCCard(rc, isResolved = false) {
       <div class="rc-comment-text">"${escapeHtml(rc.CommentText || '')}"</div>
       <div class="rc-meta">
         ${renderBadge(rc.CreatedBy)}
-        <span class="rc-meta-text">${formatDateShort(rc.CreatedDate) || '—'}</span>
+        <span class="rc-meta-text">${formatDateET(rc.CreatedDate) || '—'}</span>
         ${taggedBadges}
       </div>
       ${resNote}
@@ -1856,7 +1856,7 @@ function renderRCReplies(rcId) {
   return replies.map(r => `
     <div class="rc-reply">
       <div class="rc-reply-text">${escapeHtml(r.ReplyText || '')}</div>
-      <div class="rc-reply-meta">${renderBadge(r.CreatedByEmail)} · ${formatDateShort(r.CreatedDate)}${r.TaggedUsers ? ' · Tagged: ' + r.TaggedUsers.split(';').filter(Boolean).map(e => renderBadge(e.trim())).join('') : ''}</div>
+      <div class="rc-reply-meta">${renderBadge(r.CreatedByEmail)} · ${formatDateET(r.CreatedDate)}${r.TaggedUsers ? ' · Tagged: ' + r.TaggedUsers.split(';').filter(Boolean).map(e => renderBadge(e.trim())).join('') : ''}</div>
     </div>`).join('');
 }
 
@@ -2595,7 +2595,7 @@ function renderAdminUsers() {
               <td>${renderBadge(u.Email)}</td>
               <td style="font-size:11px">${escapeHtml(u.Email || '')}</td>
               <td><span class="cat-tag">${escapeHtml(u.Role || ROLE.TEAM_MEMBER)}</span></td>
-              <td style="font-size:11px">${u.LastLogin ? formatDateShort(u.LastLogin) : '—'}</td>
+              <td style="font-size:11px">${u.LastLogin ? formatDateET(u.LastLogin) : '—'}</td>
               <td><button class="btn-secondary btn-sm" data-action="edit-user" data-email="${escapeHtml(u.Email)}">Edit role</button></td>
             </tr>`).join('')}
         </tbody>
@@ -2655,7 +2655,7 @@ function renderAdminAuditLog() {
     ].filter(Boolean).join('  ·  ');
     return `<tr>
       <td style="font-size:11px;white-space:nowrap">
-        <div>${formatDateShort(e.ActionDate)}</div>
+        <div>${formatDateShort(e.ActionDate?.split('T')[0] || e.ActionDate)}</div>
         <div style="font-size:10px;color:var(--slate)">${formatDateET(e.ActionDate).split(',')[1]?.trim() || ''}</div>
         ${e.WorkdayNumber ? `<div style="font-size:10px;color:var(--slate)">WD${e.WorkdayNumber}</div>` : ''}
       </td>
