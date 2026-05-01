@@ -1848,7 +1848,7 @@ function renderRCReplies(rcId) {
   return replies.map(r => `
     <div class="rc-reply">
       <div class="rc-reply-text">${escapeHtml(r.ReplyText || '')}</div>
-      <div class="rc-reply-meta">${renderBadge(r.CreatedByEmail)} · ${formatDateShort(r.CreatedDate)}</div>
+      <div class="rc-reply-meta">${renderBadge(r.CreatedByEmail)} · ${formatDateShort(r.CreatedDate)}${r.TaggedUsers ? ' · Tagged: ' + r.TaggedUsers.split(';').filter(Boolean).map(e => renderBadge(e.trim())).join('') : ''}</div>
     </div>`).join('');
 }
 
@@ -3480,6 +3480,7 @@ function attachGlobalEvents() {
       `<option value="${escapeHtml(t._id)}">${escapeHtml(t.TaskName || t.Title || '')}</option>`
     ).join('');
     showModal('modal-new-rc');
+    renderRCTagPicker();
   });
   document.getElementById('btn-rc-save')?.addEventListener('click', saveReviewComment);
   document.getElementById('btn-rc-cancel')?.addEventListener('click', () => hideModal('modal-new-rc'));
@@ -3774,6 +3775,31 @@ function attachCardEvents() {
 // ============================================================
 // REVIEW COMMENT SAVE
 // ============================================================
+function renderRCTagPicker() {
+  // Renders a multi-select tag picker into the rc-tag-users div.
+  // Called each time the RC modal opens so the user list is always current.
+  const container = document.getElementById('rc-tag-users');
+  if (!container) return;
+  const currentEmail = STATE.currentUser?.Email;
+  const users = STATE.users.filter(u => u.IsActive !== false && u.Email !== currentEmail);
+  if (!users.length) {
+    container.innerHTML = '<span style="font-size:11px;color:var(--slate)">No other users to tag</span>';
+    return;
+  }
+  container.innerHTML = users.map(u =>
+    `<label class="tag-option" style="display:inline-flex;align-items:center;gap:4px;margin:2px 4px 2px 0;cursor:pointer">
+      <input type="checkbox" class="rc-tag-checkbox" value="${escapeHtml(u.Email)}" style="margin:0;cursor:pointer">
+      ${renderBadge(u.Email)}
+    </label>`
+  ).join('');
+}
+
+function getTaggedUsers() {
+  // Returns semicolon-separated emails of checked tag checkboxes.
+  return [...document.querySelectorAll('.rc-tag-checkbox:checked')]
+    .map(cb => cb.value).join(';');
+}
+
 async function saveReviewComment() {
   const taskId = document.getElementById('rc-task-select')?.value;
   const text   = document.getElementById('rc-comment-text')?.value?.trim();
@@ -3793,6 +3819,7 @@ async function saveReviewComment() {
       CreatedDate:         new Date().toISOString(),
       Priority:            priority,
       Status:              'Open',
+      TaggedUsers:         getTaggedUsers() || null,
     });
     STATE.reviewComments.push({ ...created.fields, _id: created.id });
     await writeAuditLog('ReviewCommentCreated', {
@@ -4837,11 +4864,19 @@ function openRCReplyInput(rcId) {
   if (!actionsDiv) return;
   if (actionsDiv.querySelector('.rc-reply-form')) return; // already open
 
+  const replyTagOpts = STATE.users
+    .filter(u => u.IsActive !== false && u.Email !== STATE.currentUser?.Email)
+    .map(u => `<label class="tag-option" style="display:inline-flex;align-items:center;gap:3px;margin:2px;cursor:pointer;">`
+      + `<input type="checkbox" class="reply-tag-checkbox-${rcId}" value="${u.Email}" style="margin:0;cursor:pointer">`
+      + renderBadge(u.Email) + `</label>`).join('');
+
   actionsDiv.insertAdjacentHTML('beforeend', `
-    <div class="rc-reply-form" style="display:flex;gap:6px;margin-top:8px;width:100%">
+    <div class="rc-reply-form" style="margin-top:8px;width:100%">
       <textarea id="reply-text-${rcId}" class="field-textarea" rows="2"
-        placeholder="Type your reply..." style="flex:1;font-size:12px"></textarea>
-      <div style="display:flex;flex-direction:column;gap:4px">
+        placeholder="Type your reply..." style="width:100%;font-size:12px;box-sizing:border-box"></textarea>
+      ${replyTagOpts ? `<div style="margin:4px 0 6px;font-size:11px;color:var(--slate)">Tag teammates (optional):</div>
+      <div style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:6px">${replyTagOpts}</div>` : ''}
+      <div style="display:flex;gap:6px">
         <button class="btn-primary btn-sm" onclick="submitRCReply('${rcId}')">Post</button>
         <button class="btn-secondary btn-sm" onclick="this.closest('.rc-reply-form').remove()">Cancel</button>
       </div>
@@ -4855,12 +4890,15 @@ async function submitRCReply(rcId) {
 
   const now = new Date().toISOString();
   try {
+    const replyTagged = [...document.querySelectorAll(`.reply-tag-checkbox-${rcId}:checked`)]
+      .map(cb => cb.value).join(';');
     const created = await createListItem(CONFIG.lists.reviewCommentReplies, {
       Title:                 `Reply to RC ${rcId}`,
       ReviewCommentLookupId: rcId,
       ReplyText:             text,
       CreatedByEmail:        STATE.currentUser.Email,
       CreatedDate:           now,
+      TaggedUsers:           replyTagged || null,
     });
     // Push into STATE immediately so the reply renders without waiting for next poll.
     // Set ReviewCommentLookupId explicitly since SharePoint may return a numeric lookup ID
