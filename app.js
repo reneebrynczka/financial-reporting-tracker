@@ -19,7 +19,6 @@ const CONFIG = {
 
   // SharePoint Site
   siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
-
   // SharePoint List Names — must match exactly
   lists: {
     taskTemplates:        'TaskTemplates',
@@ -5147,8 +5146,9 @@ async function confirmRollforward() {
     await writeAuditLog('Rollforward', {
       description: `Rolled forward ${created} assignments to ${quarter} from ${fromQuarter || 'templates'}`,
     });
-    STATE._stagingItems = [];
+    STATE._stagingItems   = [];
     STATE._stagingLoading = false;
+    hideModal('modal-rollforward-confirm');
     showToast(`✓ Rolled forward ${created} tasks to ${quarter}`, 'success');
     renderAdminPanel('rollforward');
   } catch (err) {
