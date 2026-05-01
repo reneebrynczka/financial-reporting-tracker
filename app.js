@@ -20,6 +20,9 @@ const CONFIG = {
   // SharePoint Site
   siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
 
+  // SharePoint Site
+  siteUrl: 'https://YOURTENANT.sharepoint.com/sites/YOURSITE',
+
   // SharePoint List Names — must match exactly
   lists: {
     taskTemplates:        'TaskTemplates',
@@ -2392,9 +2395,9 @@ function renderAdminRollforward() {
       <div class="card-title">Current status</div>
       <p style="font-size:13px;margin-bottom:12px">Live quarter: <strong>${STATE.activeQuarter || 'None'}</strong> &nbsp;·&nbsp; Staging: <strong>${STATE.workingQuarter || 'None'}</strong></p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn-primary btn-sm" id="btn-start-new-quarter">Start New Quarter</button>
-        ${STATE.workingQuarter ? `<button class="btn-secondary btn-sm" id="btn-rollforward">Roll Forward from ${STATE.activeQuarter || 'previous'}</button>` : ''}
-        ${STATE.workingQuarter ? `<button class="btn-success btn-sm" id="btn-activate-quarter-rf">Activate ${STATE.workingQuarter}</button>` : ''}
+        <button class="btn-primary btn-sm" id="btn-start-new-quarter" data-action="start-new-quarter">Start New Quarter</button>
+        ${STATE.workingQuarter ? `<button class="btn-secondary btn-sm" id="btn-rollforward" data-action="rollforward">Roll Forward from ${STATE.activeQuarter || 'previous'}</button>` : ''}
+        ${STATE.workingQuarter ? `<button class="btn-success btn-sm" id="btn-activate-quarter-rf" data-action="activate-quarter-rf">Activate ${STATE.workingQuarter}</button>` : ''}
       </div>
     </div>
     ${STATE.workingQuarter ? renderStagingGrid() : ''}`;
@@ -2742,9 +2745,8 @@ function attachAdminEvents(panelName) {
   // edit-user, rc-reply, approve-suggestion, reject-suggestion) are handled by the
   // unified adminActionsAttached listener below.
 
-  // Rollforward events
-  document.getElementById('btn-start-new-quarter')?.addEventListener('click', startNewQuarter);
-  document.getElementById('btn-rollforward')?.addEventListener('click', performRollforward);
+  // Rollforward events — handled by admin-content delegation (data-action attributes)
+  // btn-start-new-quarter, btn-rollforward, btn-activate-quarter-rf
 
   // Calendar setup button
   document.getElementById('btn-setup-calendar')?.addEventListener('click', () => {
@@ -2870,6 +2872,9 @@ function attachAdminEvents(panelName) {
       if (!btn) return;
       const { action, id, email } = btn.dataset;
 
+      if (action === 'start-new-quarter')  startNewQuarter();
+      if (action === 'rollforward')          performRollforward();
+      if (action === 'activate-quarter-rf') confirmActivation();
       if (action === 'edit-template')      openEditTemplateModal(id);
       if (action === 'retire-template')   await retireTemplate(id);
       if (action === 'edit-cal-row')      openEditCalendarRowModal(id);
