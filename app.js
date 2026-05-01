@@ -3192,17 +3192,18 @@ function trapFocus(modalEl) {
   const first = focusable[0];
   const last  = focusable[focusable.length - 1];
 
-  // Move focus into the modal — use a small delay so the triggering click
-  // fully resolves before focus moves. Without this, a button that opens a modal
-  // can immediately trigger the modal's first focused button via keyup/click carryover.
+  // Delay focus AND briefly disable all buttons in the modal to prevent
+  // carryover clicks from the triggering button firing modal actions.
+  const buttons = Array.from(modalEl.querySelectorAll('button'));
+  buttons.forEach(b => { b.disabled = true; });
   setTimeout(() => {
-    // Prefer focusing a cancel/secondary button if one exists — avoids accidentally
-    // firing the primary action when Enter/Space is still being held from the trigger click.
+    buttons.forEach(b => { b.disabled = false; });
+    // Focus the modal title or a non-button element if possible,
+    // otherwise focus the cancel button last to avoid accidental confirms.
     const cancelBtn = modalEl.querySelector('.btn-secondary, [id*="cancel"]');
     (cancelBtn || first).focus();
-  }, 50);
+  }, 150);
 
-  // Remove any previous key handler before adding a new one.
   if (_modalKeyHandler) document.removeEventListener('keydown', _modalKeyHandler);
 
   _modalKeyHandler = (e) => {
@@ -3212,8 +3213,6 @@ function trapFocus(modalEl) {
       return;
     }
     if (e.key !== 'Tab') return;
-
-    // Keep Tab cycling inside the modal.
     if (e.shiftKey) {
       if (document.activeElement === first) { e.preventDefault(); last.focus(); }
     } else {
