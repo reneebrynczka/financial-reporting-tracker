@@ -5061,6 +5061,16 @@ async function performRollforward() {
   showModal('modal-rollforward-confirm');
 }
 
+function confirmActivation() {
+  if (!STATE.workingQuarter) { showToast('No staging quarter to activate', 'error'); return; }
+  STATE.pendingActivation = STATE.workingQuarter;
+  const titleEl = document.getElementById('activate-modal-title');
+  const descEl  = document.getElementById('activate-modal-desc');
+  if (titleEl) titleEl.textContent = `Activate ${STATE.workingQuarter}?`;
+  if (descEl)  descEl.textContent  = `This will immediately make ${STATE.workingQuarter} the live quarter, visible to all ${STATE.users.length} team members. Make sure the staging grid is complete before activating.`;
+  showModal('modal-activate');
+}
+
 // Called by the rollforward confirmation modal confirm button.
 async function confirmRollforward() {
   const quarter = STATE.pendingRollforward;
