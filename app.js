@@ -602,12 +602,12 @@ async function loadCurrentUser(email) {
 }
 
 async function loadUsers() {
-  const items = await getListItems(CONFIG.lists.users, `fields/IsActive eq true`);
+  const items = await getListItems(CONFIG.lists.users, `fields/IsActive eq 1`);
   STATE.users = items.map(i => ({ ...i.fields, _id: i.id }));
 }
 
 async function loadTemplates() {
-  const items = await getListItems(CONFIG.lists.taskTemplates, `fields/IsActive eq true`);
+  const items = await getListItems(CONFIG.lists.taskTemplates, `fields/IsActive eq 1`);
   STATE.templates = items.map(i => ({ ...i.fields, _id: i.id }));
   log('Templates loaded:', STATE.templates.length);
 }
@@ -2239,7 +2239,18 @@ function renderAdminPanel(panelName) {
     case 'overview':    content.innerHTML = renderAdminOverview();    break;
     case 'calendar':    content.innerHTML = renderAdminCalendar();    break;
     case 'rollforward': content.innerHTML = renderAdminRollforward(); break;
-    case 'templates':   content.innerHTML = renderAdminTemplates();   break;
+    case 'templates':
+      content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading templates...</p>';
+      loadTemplates().then(() => {
+        const activeBtn = document.querySelector('.sidebar-btn.active');
+        if (activeBtn?.dataset.panel === 'templates') {
+          content.innerHTML = renderAdminTemplates();
+          attachAdminEvents('templates');
+        }
+      }).catch(err => {
+        content.innerHTML = `<p style="color:var(--red);padding:12px">Failed to load templates — ${classifyGraphError(err)}</p>`;
+      });
+      return;
     case 'suggestions':
       content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading...</p>';
       loadSuggestions().then(() => {
