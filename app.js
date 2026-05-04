@@ -4065,6 +4065,15 @@ function openEditCalendarRowModal(calRowId) {
   if (typeEl)      typeEl.value      = row.MilestoneType || 'Standard';
   if (weekendEl)   weekendEl.checked = !!row.IsWeekend;
 
+  // Auto-update the weekend checkbox when the date changes
+  if (dateEl && weekendEl) {
+    dateEl.addEventListener('change', () => {
+      if (!dateEl.value) return;
+      const d = new Date(dateEl.value + 'T12:00:00');
+      weekendEl.checked = d.getDay() === 0 || d.getDay() === 6;
+    }, { once: true });
+  }
+
   const titleEl = document.getElementById('modal-edit-calendar-title');
   if (titleEl) titleEl.textContent = `Edit WD${row.WorkdayNumber}`;
   showModal('modal-edit-calendar');
