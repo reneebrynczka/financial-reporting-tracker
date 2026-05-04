@@ -4069,11 +4069,17 @@ function openEditCalendarRowModal(calRowId) {
 
   // Auto-update the weekend checkbox when the date changes
   if (dateEl && weekendEl) {
-    dateEl.addEventListener('change', () => {
+    const updateWeekend = () => {
       if (!dateEl.value) return;
       const d = new Date(dateEl.value + 'T12:00:00');
       weekendEl.checked = d.getDay() === 0 || d.getDay() === 6;
-    }, { once: true });
+    };
+    // Remove any previous listener then attach fresh — modal reuses the same elements
+    dateEl.removeEventListener('change', dateEl._weekendHandler);
+    dateEl.removeEventListener('input', dateEl._weekendHandler);
+    dateEl._weekendHandler = updateWeekend;
+    dateEl.addEventListener('change', updateWeekend);
+    dateEl.addEventListener('input', updateWeekend);
   }
 
   const titleEl = document.getElementById('modal-edit-calendar-title');
@@ -4097,7 +4103,10 @@ async function saveCalendarRowEdit() {
   const newDate      = document.getElementById('edit-cal-date')?.value;
   const newMilestone = document.getElementById('edit-cal-milestone')?.value?.trim() || null;
   const newType      = document.getElementById('edit-cal-milestone-type')?.value || 'Standard';
-  const newWeekend   = document.getElementById('edit-cal-weekend')?.checked || false;
+  // Auto-detect weekend from the date itself — don't rely solely on the checkbox
+  const newDateDay   = newDate ? new Date(newDate + 'T12:00:00').getDay() : -1;
+  const newWeekend   = newDateDay === 0 || newDateDay === 6 ||
+                       document.getElementById('edit-cal-weekend')?.checked || false;
 
   if (!newDate) { showToast('Date is required', 'error'); return; }
 
@@ -4128,8 +4137,52 @@ async function saveCalendarRowEdit() {
     await     hideModal('modal-edit-calendar');
     STATE.pendingCalendarEdit = null;
 
-    // If the date changed, calculate the shift in days and offer cascade.
+    // If the date changed, handle cascade or resequence.
     if (prevDate && newDate !== prevDate) {
+      if (newWeekend) {
+        // Weekend workday inserted — resequence all subsequent rows from the day after
+        // the new date, skipping weekends unless they were intentionally set as weekend workdays.
+        const subsequent = STATE.calendar.filter(
+          c => c.Quarter === quarter && Number(c.WorkdayNumber) > Number(row.WorkdayNumber)
+        );
+
+        if (subsequent.length > 0) {
+          showLoading('Resequencing subsequent workdays...');
+          let cursor = new Date(newDate + 'T12:00:00');
+          cursor = new Date(cursor.getTime() + 86400000); // start from day after new date
+
+          try {
+            for (const c of subsequent) {
+              // If this row was intentionally a weekend, just advance by 1 day
+              // Otherwise skip to the next weekday
+              if (!c.IsWeekend) {
+                let cursorET = new Date(cursor.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+                while (cursorET.getDay() === 0 || cursorET.getDay() === 6) {
+                  cursor = new Date(cursor.getTime() + 86400000);
+                  cursorET = new Date(cursor.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+                }
+              }
+              const cursorET = new Date(cursor.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+              const newDateStr = `${cursorET.getFullYear()}-${String(cursorET.getMonth()+1).padStart(2,'0')}-${String(cursorET.getDate()).padStart(2,'0')}`;
+
+              await updateListItem(CONFIG.lists.closeCalendar, c._id, {
+                ActualDate: newDateStr,
+                IsWeekend:  c.IsWeekend, // preserve intentional weekend flags
+              });
+              c.ActualDate = newDateStr;
+              cursor = new Date(cursor.getTime() + 86400000);
+            }
+            showToast(`✓ Resequenced ${subsequent.length} workdays after WD${row.WorkdayNumber}`, 'success');
+          } catch (err) {
+            showToast('Resequence failed — some rows may be unchanged', 'error');
+            logError('Resequence failed:', err);
+          } finally {
+            hideLoading();
+            renderAdminPanel('calendar');
+          }
+          return;
+        }
+      } else {
       // Use T12:00:00 to avoid DST boundary issues in date arithmetic.
       const shiftDays = Math.round(
         (new Date(newDate + 'T12:00:00') - new Date(prevDate + 'T12:00:00')) / (1000 * 60 * 60 * 24)
@@ -4180,8 +4233,9 @@ async function saveCalendarRowEdit() {
           showModal('modal-cascade');
           return; // Cascade modal takes over from here.
         }
-      }
-    }
+      } // end if shiftDays !== 0
+      } // end else (regular weekday cascade)
+    } // end if date changed
 
     showToast('✓ Calendar row updated', 'success');
     renderAdminPanel('calendar');
