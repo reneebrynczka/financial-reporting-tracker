@@ -2796,7 +2796,16 @@ function attachAdminEvents(panelName) {
       if (action === 'activate-quarter')      confirmActivation();
       if (action === 'edit-staging')          renderAdminPanel('rollforward');
       if (action === 'run-diagnostics')       runDiagnostics();
-      if (action === 'setup-calendar')        (() => { const quarterEl = document.getElementById('cal-setup-quarter'); const maxWDEl = document.getElementById('cal-setup-maxwd'); const errEl = document.getElementById('cal-setup-error'); if (quarterEl) quarterEl.value = STATE.activeQuarter || ''; if (maxWDEl) maxWDEl.value = isQuarterQ4(STATE.activeQuarter) ? '35' : '20'; if (errEl) errEl.classList.add('hidden'); showModal('modal-cal-setup'); })();
+      if (action === 'setup-calendar') {
+        const calQuarter = STATE.activeQuarter || STATE.workingQuarter || '';
+        const quarterEl  = document.getElementById('cal-setup-quarter');
+        const maxWDEl    = document.getElementById('cal-setup-maxwd');
+        const errEl      = document.getElementById('cal-setup-error');
+        if (quarterEl) quarterEl.value = calQuarter;
+        if (maxWDEl)   maxWDEl.value   = isQuarterQ4(calQuarter) ? '35' : '20';
+        if (errEl)     errEl.classList.add('hidden');
+        showModal('modal-cal-setup');
+      }
       if (action === 'new-template')          openEditTemplateModal(null);
       if (action === 'add-user')              openAddUserModal();
       if (action === 'export-audit-excel')    exportAuditLog();
