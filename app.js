@@ -3811,12 +3811,7 @@ async function saveReviewComment() {
       TaggedUsers:         getTaggedUsers() || null,
     });
     STATE.reviewComments.push({ ...created.fields, _id: created.id });
-    await writeAuditLog('ReviewCommentCreated', {
-      taskName:    `RC: ${STATE.templates.find(t => t._id === taskId)?.TaskName || taskId}`,
-      newValue:    `Priority: ${priority} — ${text.substring(0, 100)}${text.length > 100 ? '…' : ''}`,
-      assignmentId: taskId,
-    });
-    renderReviewComments();
+        renderReviewComments();
     showToast('✓ Review comment posted', 'success');
   } catch (err) {
     showToast('Failed to post comment', 'error');
@@ -3850,12 +3845,7 @@ async function confirmResolveReviewComment(rcId, note) {
     rc.ResolvedBy = STATE.currentUser.Email;
     rc.ResolvedDate = now;
     rc.ResolutionNote = note;
-    await writeAuditLog('ReviewCommentResolved', {
-      taskName:    rc.Title || '',
-      newValue:    note ? `Resolution: ${note.substring(0, 100)}${note.length > 100 ? '…' : ''}` : 'Resolved — no note',
-      assignmentId: rcId,
-    });
-    renderReviewComments();
+        renderReviewComments();
     showToast('✓ Comment resolved', 'success');
   } catch (err) {
     showToast('Failed to resolve', 'error');
