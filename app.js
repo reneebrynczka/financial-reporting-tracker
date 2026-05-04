@@ -4017,10 +4017,9 @@ async function setupCalendarBulk() {
         WorkdayNumber: wd,
         ActualDate:    dateStr,
         IsWeekend:     false,
-        MilestoneType: 'Standard',
       });
       created.push({ WorkdayNumber: wd, ActualDate: dateStr, IsWeekend: false,
-                     MilestoneLabel: null, MilestoneType: 'Standard', Quarter: quarter });
+                     MilestoneLabel: null, MilestoneType: null, Quarter: quarter });
 
       // Advance by one calendar day for next workday
       current = new Date(current.getTime() + 86400000);
