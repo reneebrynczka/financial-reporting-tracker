@@ -25,6 +25,7 @@ const CONFIG = {
     taskTemplates:        'TaskTemplates',
     quarterlyAssignments: 'QuarterlyAssignments',
     closeCalendar:        'CloseCalendar',
+    calendarMilestones:   'CalendarMilestones',
     appSettings:          'AppSettings',
     users:                'Users',
     auditLog:             'AuditLog',
@@ -155,6 +156,7 @@ const STATE = {
   templates:      [],         // TaskTemplates (cached)
   users:          [],         // Users list (cached)
   calendar:       [],         // CloseCalendar for active quarter
+  milestones:     [],         // CalendarMilestones for active quarter
   matrixStatus:   [],         // MatrixStatus for active quarter
   reviewComments: [],         // ReviewComments for active quarter
   rcReplies:      [],         // ReviewCommentReplies for active quarter
@@ -249,9 +251,7 @@ function milestoneClass(calRow) {
   if (t === 'SVP')      return 'milestone-svp';
   if (t === 'MD')       return 'milestone-md';
   if (t === 'CFO')      return 'milestone-cfo';
-  if (t === 'Standard') return 'milestone-std';
-  // Legacy fallback: IsCustomMilestone = true → SVP style
-  if (calRow.IsCustomMilestone) return 'milestone-svp';
+  return 'milestone-std';  // Default for Standard or null/empty
   return 'milestone-std';
 }
 
@@ -642,6 +642,18 @@ async function loadCalendar(quarter) {
   }).sort((a,b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
 }
 
+async function loadMilestones(quarter) {
+  try {
+    const items = await getListItems(CONFIG.lists.calendarMilestones, `fields/Quarter eq '${quarter}'`);
+    STATE.milestones = items.map(i => ({ ...i.fields, _id: i.id }))
+      .sort((a,b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
+  } catch (err) {
+    // CalendarMilestones list may not exist yet — fail silently
+    STATE.milestones = [];
+    log('CalendarMilestones not available:', err.message);
+  }
+}
+
 async function loadMatrixStatus(quarter) {
   const items = await getListItems(CONFIG.lists.matrixStatus, `fields/Quarter eq '${quarter}'`);
   STATE.matrixStatus = items.map(i => ({ ...i.fields, _id: i.id }));
@@ -713,6 +725,7 @@ async function loadViewingQuarterData(quarter) {
   await Promise.all([
     loadAssignments(quarter),
     loadCalendar(quarter),
+    loadMilestones(quarter),
     loadMatrixStatus(quarter),
     loadReviewComments(quarter),
     loadUsers(),
@@ -2085,8 +2098,12 @@ function renderDashboard() {
   const milestoneList = document.getElementById('milestone-list');
   if (milestoneList) {
     const today = todayET();
-    const upcoming = STATE.calendar
-      .filter(c => c.MilestoneLabel && c.ActualDate >= today)
+    const upcoming = STATE.milestones
+      .map(m => {
+        const calRow = STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber));
+        return { ...m, ActualDate: calRow?.ActualDate };
+      })
+      .filter(m => m.ActualDate && m.ActualDate >= today)
       .slice(0, 5);
     milestoneList.innerHTML = upcoming.map(m => `
       <div class="milestone-row">
@@ -2140,7 +2157,10 @@ function renderCalendarView() {
     if (STATE.workingQuarter && !STATE._calendarLoading) {
       STATE._calendarLoading = true;
       calBody.innerHTML = '<p style="font-size:13px;color:var(--slate)">Loading calendar...</p>';
-      loadCalendar(STATE.workingQuarter).then(() => {
+      Promise.all([
+        loadCalendar(STATE.workingQuarter),
+        loadMilestones(STATE.workingQuarter),
+      ]).then(() => {
         STATE._calendarLoading = false;
         renderCalendarView();
       }).catch(() => {
@@ -2228,9 +2248,10 @@ function renderCalendarView() {
             <span class="cal-day-date">${formatDateShort(dateStr + 'T12:00:00')}</span>
           </div>
           ${calRow.IsWeekend ? '<span class="cal-wknd-flag">Weekend</span>' : ''}
-          ${calRow.MilestoneLabel
-            ? `<span class="cal-ms ${milestoneClass(calRow)}">${escapeHtml(calRow.MilestoneLabel)}</span>`
-            : ''}
+          ${STATE.milestones
+            .filter(m => Number(m.WorkdayNumber) === Number(calRow.WorkdayNumber))
+            .map(m => `<span class="cal-ms ${milestoneClass(m)}">${escapeHtml(m.MilestoneLabel)}</span>`)
+            .join('')}
         </div>`;
       }
 
@@ -2268,7 +2289,10 @@ function renderAdminPanel(panelName) {
     case 'calendar':
       if (!STATE.calendar.length && STATE.workingQuarter) {
         content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading calendar...</p>';
-        loadCalendar(STATE.workingQuarter).then(() => {
+        Promise.all([
+          loadCalendar(STATE.workingQuarter),
+          loadMilestones(STATE.workingQuarter),
+        ]).then(() => {
           content.innerHTML = renderAdminCalendar();
           attachAdminEvents('calendar');
         }).catch(() => {
@@ -2368,7 +2392,10 @@ function renderAdminOverview() {
 
 function renderCalendarPreview() {
   const today = todayET();
-  const items = STATE.calendar.filter(c => c.MilestoneLabel).slice(0, 8);
+  const items = STATE.milestones.map(m => {
+    const calRow = STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber));
+    return { ...m, ActualDate: calRow?.ActualDate };
+  }).slice(0, 8);
   if (!items.length) return '<p style="font-size:11px;color:var(--slate)">No milestones set. Go to Close Calendar to configure.</p>';
   return `<table class="cal-table">
     <thead><tr><th>WD</th><th>Date</th><th>Milestone</th></tr></thead>
@@ -2379,7 +2406,6 @@ function renderCalendarPreview() {
         <td>
           <span class="${milestoneClass(m)}">${escapeHtml(m.MilestoneLabel)}</span>
           ${m.ActualDate === today ? '<span class="today-marker" style="margin-left:4px">Today</span>' : ''}
-          ${m.IsWeekend ? '<span class="weekend-marker" style="margin-left:4px">Weekend</span>' : ''}
         </td>
       </tr>`).join('')}
     </tbody></table>`;
@@ -2398,19 +2424,27 @@ function renderAdminCalendar() {
     <div class="card">
       ${!hasRows ? `<p style="font-size:12px;color:var(--slate);padding:8px 0">No calendar rows yet. Click <strong>Setup Calendar</strong> to create workday rows for this quarter.</p>` : `
       <table class="cal-table">
-        <thead><tr><th>WD</th><th>Date</th><th>Milestone</th><th>Actions</th></tr></thead>
+        <thead><tr><th>WD</th><th>Date</th><th>Milestones</th><th>Actions</th></tr></thead>
         <tbody>
-          ${STATE.calendar.map(c => `
+          ${STATE.calendar.map(c => {
+            const rowMilestones = STATE.milestones.filter(m => Number(m.WorkdayNumber) === Number(c.WorkdayNumber));
+            return `
             <tr ${c.ActualDate === todayET() ? 'class="today-row"' : ''}>
-              <td style="font-weight:500">WD${c.WorkdayNumber}</td>
+              <td style="font-weight:500">WD${c.WorkdayNumber}${c.IsWeekend ? ' <span class="weekend-marker">Weekend</span>' : ''}</td>
               <td style="color:var(--slate)">${formatDateShort(c.ActualDate)}</td>
               <td>
-                ${c.MilestoneLabel ? `<span class="${milestoneClass(c)}">${escapeHtml(c.MilestoneLabel)}</span>` : '—'}
-                ${c.ActualDate === todayET() ? '<span class="today-marker" style="margin-left:4px">Today</span>' : ''}
-                ${c.IsWeekend ? '<span class="weekend-marker" style="margin-left:4px">Weekend</span>' : ''}
+                ${rowMilestones.map(m => `
+                  <span class="${milestoneClass(m)}" style="display:inline-flex;align-items:center;gap:4px;margin:1px">
+                    ${escapeHtml(m.MilestoneLabel)}
+                    <button class="btn-icon" style="font-size:9px;padding:0 3px;line-height:1.4"
+                      data-action="delete-milestone" data-id="${m._id}" title="Remove">✕</button>
+                  </span>`).join('')}
+                <button class="btn-secondary btn-sm" style="margin-left:4px;font-size:10px"
+                  data-action="add-milestone" data-wd="${c.WorkdayNumber}" data-date="${c.ActualDate}">+ Milestone</button>
               </td>
-              <td><button class="btn-secondary btn-sm" data-action="edit-cal-row" data-id="${c._id}">Edit</button></td>
-            </tr>`).join('')}
+              <td><button class="btn-secondary btn-sm" data-action="edit-cal-row" data-id="${c._id}">Edit date</button></td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>`}
     </div>`;
@@ -2847,6 +2881,8 @@ function attachAdminEvents(panelName) {
       if (action === 'edit-template')         openEditTemplateModal(id);
       if (action === 'retire-template')   await retireTemplate(id);
       if (action === 'edit-cal-row')      openEditCalendarRowModal(id);
+      if (action === 'add-milestone')      openAddMilestoneModal(el.dataset.wd, el.dataset.date);
+      if (action === 'delete-milestone')   deleteMilestone(id);
       if (action === 'edit-user')         openEditUserRoleModal(email);
       if (action === 'rc-reply')          openRCReplyInput(id);
       if (action === 'approve-suggestion') await approveSuggestion(id);
@@ -3432,6 +3468,9 @@ function attachGlobalEvents() {
   document.getElementById('btn-save-profile')?.addEventListener('click', saveProfile);
 
   // ── Admin modal buttons ──────────────────────────────────────
+  // Add milestone modal
+  document.getElementById('btn-add-milestone-confirm')?.addEventListener('click', confirmAddMilestone);
+  document.getElementById('btn-add-milestone-cancel')?.addEventListener('click', () => hideModal('modal-add-milestone'));
   // Template edit
   document.getElementById('btn-edit-tpl-save')?.addEventListener('click', saveTemplateEdit);
   document.getElementById('btn-edit-tpl-cancel')?.addEventListener('click', () => { hideModal('modal-edit-template'); STATE.pendingTemplateEdit = null; });
@@ -4111,7 +4150,7 @@ async function saveCalendarRowEdit() {
   if (!newDate) { showToast('Date is required', 'error'); return; }
 
   const prevDate = row.ActualDate;
-  const quarter  = row.Quarter || STATE.activeQuarter;
+  const quarter  = row.Quarter || STATE.activeQuarter || STATE.workingQuarter;
 
   // Snapshot current values for rollback on failure.
   const snapshot = {
@@ -4134,7 +4173,7 @@ async function saveCalendarRowEdit() {
       MilestoneType:  newMilestone ? newType : null,
       IsWeekend:      newWeekend,
     });
-    await     hideModal('modal-edit-calendar');
+    await hideModal('modal-edit-calendar');
     STATE.pendingCalendarEdit = null;
 
     // If the date changed, handle cascade or resequence.
@@ -4244,6 +4283,66 @@ async function saveCalendarRowEdit() {
     Object.assign(row, snapshot);
     showToast('Failed to update calendar row', 'error');
     logError('saveCalendarRowEdit failed:', err);
+  }
+}
+
+// ============================================================
+// CALENDAR MILESTONES
+// ============================================================
+let _pendingMilestoneWD   = null;
+let _pendingMilestoneDate = null;
+
+function openAddMilestoneModal(wd, date) {
+  _pendingMilestoneWD   = wd;
+  _pendingMilestoneDate = date;
+  const labelEl = document.getElementById('milestone-label');
+  const typeEl  = document.getElementById('milestone-type');
+  if (labelEl) labelEl.value = '';
+  if (typeEl)  typeEl.value  = 'Standard';
+  const titleEl = document.getElementById('modal-add-milestone-title');
+  if (titleEl) titleEl.textContent = `Add Milestone — WD${wd} (${formatDateShort(date)})`;
+  showModal('modal-add-milestone');
+}
+
+async function confirmAddMilestone() {
+  const label = document.getElementById('milestone-label')?.value?.trim();
+  const type  = document.getElementById('milestone-type')?.value || 'Standard';
+  if (!label) { showToast('Milestone label is required', 'error'); return; }
+
+  hideModal('modal-add-milestone');
+  try {
+    const quarter = STATE.activeQuarter || STATE.workingQuarter;
+    const created = await createListItem(CONFIG.lists.calendarMilestones, {
+      Title:          `${quarter}-WD${_pendingMilestoneWD}-${label}`,
+      Quarter:        quarter,
+      WorkdayNumber:  Number(_pendingMilestoneWD),
+      MilestoneLabel: label,
+      MilestoneType:  type,
+    });
+    STATE.milestones.push({ ...created.fields, _id: created.id });
+    showToast(`✓ Milestone added`, 'success');
+    renderAdminPanel('calendar');
+  } catch (err) {
+    showToast(`Failed to add milestone — ${classifyGraphError(err)}`, 'error');
+    logError('confirmAddMilestone failed:', err);
+  }
+  _pendingMilestoneWD   = null;
+  _pendingMilestoneDate = null;
+}
+
+async function deleteMilestone(milestoneId) {
+  if (!milestoneId) return;
+  if (!window.confirm('Remove this milestone?')) return;
+  try {
+    await graphRequest('DELETE',
+      `/sites/${await getSiteId()}/lists/${CONFIG.lists.calendarMilestones}/items/${milestoneId}`
+    );
+    STATE.milestones = STATE.milestones.filter(m => m._id !== milestoneId);
+    showToast('✓ Milestone removed', 'success');
+    renderAdminPanel('calendar');
+  } catch (err) {
+    showToast(`Failed to remove milestone — ${classifyGraphError(err)}`, 'error');
+    logError('deleteMilestone failed:', err);
   }
 }
 
@@ -5445,6 +5544,10 @@ async function showApp() {
   try {
     await loadTemplates();
     await loadUsers();  // Always load users — needed for staging grid and badges regardless of active quarter
+    // Load milestones for working quarter if no active quarter yet
+    if (!STATE.activeQuarter && STATE.workingQuarter) {
+      await loadMilestones(STATE.workingQuarter);
+    }
     if (STATE.activeQuarter) {
       await loadAllData();
     }
