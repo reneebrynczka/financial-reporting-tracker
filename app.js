@@ -993,10 +993,6 @@ async function performMatrixUpdate(matrixItem, column, newStatus) {
       });
       STATE.matrixStatus.push({ ...created.fields, _id: created.id });
     }
-    await writeAuditLog('MatrixStatusChange', {
-      taskName: `${matrixItem} — ${column}`,
-      newValue: newStatus,
-    });
     showToast(`✓ ${column} updated to ${newStatus}`, 'success');
   } catch (err) {
     // Revert optimistic update on failure.
@@ -3921,7 +3917,6 @@ async function approveSuggestion(suggestionId) {
       showToast('✓ Suggestion approved — add the new task via Task Templates if needed', 'success');
     }
 
-    await writeAuditLog('SuggestionApproved', { taskName: suggestion.Title });
     renderAdminPanel('suggestions');
   } catch (err) {
     showToast('Failed to approve suggestion', 'error');
@@ -3946,7 +3941,6 @@ async function rejectSuggestion(suggestionId, adminNote) {
     });
     suggestion.Status = 'Rejected';
     suggestion.AdminNote = adminNote;
-    await writeAuditLog('SuggestionRejected', { taskName: suggestion.Title });
     showToast('Suggestion rejected', '');
     renderAdminPanel('suggestions');
   } catch (err) {
@@ -4053,11 +4047,7 @@ async function setupCalendarBulk() {
       STATE.calendar = created;
     }
 
-    await writeAuditLog('CalendarEdit', {
-      taskName: `${quarter} calendar setup`,
-      newValue: `Created ${maxWD} workday rows starting ${startDate}`,
-    });
-
+    await 
     showToast(`✓ ${quarter} calendar created — ${maxWD} workdays from ${formatDateShort(startDate + 'T12:00:00')}`, 'success');
     renderAdminPanel('calendar');
   } catch (err) {
@@ -4134,12 +4124,7 @@ async function saveCalendarRowEdit() {
       MilestoneType:  newMilestone ? newType : null,
       IsWeekend:      newWeekend,
     });
-    await writeAuditLog('CalendarEdit', {
-      taskName:      `WD${row.WorkdayNumber}`,
-      previousValue: prevDate,
-      newValue:      newDate,
-    });
-    hideModal('modal-edit-calendar');
+    await     hideModal('modal-edit-calendar');
     STATE.pendingCalendarEdit = null;
 
     // If the date changed, calculate the shift in days and offer cascade.
@@ -4228,8 +4213,18 @@ async function confirmCascade() {
     for (const c of subsequent) {
       // Shift the date in ET to stay consistent with all other date handling.
       const oldDate  = new Date(c.ActualDate + 'T12:00:00');
-      const shifted  = new Date(oldDate.getTime() + shiftDays * 86400000);
-      const shiftedET = new Date(shifted.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+      let shifted    = new Date(oldDate.getTime() + shiftDays * 86400000);
+      let shiftedET  = new Date(shifted.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+
+      // If the original row was not a weekend but the shifted date lands on one,
+      // advance to the next Monday so weekends stay skipped.
+      if (!c.IsWeekend && (shiftedET.getDay() === 0 || shiftedET.getDay() === 6)) {
+        while (shiftedET.getDay() === 0 || shiftedET.getDay() === 6) {
+          shifted   = new Date(shifted.getTime() + 86400000);
+          shiftedET = new Date(shifted.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+        }
+      }
+
       const newDateStr = `${shiftedET.getFullYear()}-${String(shiftedET.getMonth()+1).padStart(2,'0')}-${String(shiftedET.getDate()).padStart(2,'0')}`;
       const isWeekend  = shiftedET.getDay() === 0 || shiftedET.getDay() === 6;
 
@@ -4241,10 +4236,6 @@ async function confirmCascade() {
       c.IsWeekend  = isWeekend;
       updated++;
     }
-    await writeAuditLog('CalendarEdit', {
-      taskName:  `Cascade from WD${fromWD}`,
-      newValue:  `Shifted ${updated} workdays by ${shiftDays > 0 ? '+' : ''}${shiftDays} days`,
-    });
     showToast(`✓ Cascaded to ${updated} workdays`, 'success');
   } catch (err) {
     showToast(`Cascade failed after ${updated} workdays — remaining rows unchanged`, 'error');
@@ -4326,11 +4317,6 @@ async function confirmEditWD() {
 
   try {
     await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, fields);
-    await writeAuditLog('TaskEdit', {
-      taskName: assignment.Title,
-      assignmentId,
-      newValue: `Due dates updated: Prep WD${prepWD}${revWD ? ' / Rev WD' + revWD : ''} (was WD${snapshot.PreparerWorkday}${snapshot.ReviewerWorkday ? ' / WD' + snapshot.ReviewerWorkday : ''})`,
-    });
     showToast('✓ Due dates updated', 'success');
   } catch (err) {
     Object.assign(assignment, snapshot);
@@ -4483,12 +4469,7 @@ async function saveUserRoleEdit() {
     const prevRole = user.Role;
     user.Role     = newRole;
     user.IsActive = newActive;
-    await writeAuditLog('UserEdit', {
-      taskName:      email,
-      previousValue: `Role: ${prevRole}`,
-      newValue:      `Role: ${newRole}, IsActive: ${newActive}`,
-    });
-    // Update current user's role flags if they edited themselves
+    aw    // Update current user's role flags if they edited themselves
     if (email === STATE.currentUser?.Email) {
       STATE.isAdmin = newRole === ROLE.ADMIN;
       STATE.isFinalReviewer = newRole === ROLE.FINAL_REVIEWER || STATE.isAdmin;
@@ -4575,7 +4556,6 @@ async function createUser() {
       NotifyOnSuggestionUpdate: false,
     });
     STATE.users.push({ ...created.fields, _id: created.id });
-    await writeAuditLog('UserEdit', { taskName: email, newValue: `Pre-added with role: ${role}` });
     const badgeNote = emoji && color ? ` with badge ${emoji}` : '';
     showToast(`✓ ${name} added${badgeNote}`, 'success');
     renderAdminPanel('users');
@@ -4799,11 +4779,6 @@ async function confirmSOXExport() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    await writeAuditLog('SOXExport', {
-      description: `SOX report exported for ${quarter} — ${signOffRows.length - 1} sign-offs, ${reversalRows.length - 1} reversals, ${rcRows.length - 1} RCs`,
-      taskName: `SOX Export: ${quarter}`,
-      newValue: `Exported by ${STATE.currentUser?.Email}`,
-    });
 
     showToast(`✓ Audit log export ready — Folio-AuditLog-${quarter}.xlsx`, 'success');
   } catch (err) {
@@ -4943,7 +4918,6 @@ async function confirmRetireTemplate() {
   try {
     await updateListItem(CONFIG.lists.taskTemplates, templateId, { IsActive: false });
     template.IsActive = false;
-    await writeAuditLog('TaskEdit', { taskName: name, newValue: 'IsActive set to false (retired)' });
     showToast(`✓ "${name}" retired`, 'success');
     renderAdminPanel('templates');
   } catch (err) {
@@ -5015,10 +4989,6 @@ async function saveTemplateEdit() {
       // Edit mode — update existing template
       await updateListItem(CONFIG.lists.taskTemplates, templateId, updates);
       Object.assign(t, updates);
-      await writeAuditLog('TaskEdit', {
-        taskName: updates.Title,
-        newValue: `Category: ${updates.Category}, FilingType: ${updates.FilingType}, SignOffMode: ${updates.SignOffMode}, PrepWD: ${updates.PreparerWorkday}`,
-      });
       showToast('✓ Template saved', 'success');
     } else {
       // Create mode — new template
@@ -5027,8 +4997,7 @@ async function saveTemplateEdit() {
         TaskName: name, // TaskName mirrors Title for the app's display logic
       });
       STATE.templates.push({ ...created.fields, _id: created.id });
-      await writeAuditLog('TaskEdit', { taskName: name, newValue: 'New template created' });
-      showToast('✓ Template created', 'success');
+        showToast('✓ Template created', 'success');
     }
     hideModal('modal-edit-template');
     STATE.pendingTemplateEdit = null;
@@ -5073,7 +5042,6 @@ async function confirmNewQuarter() {
     STATE._auditEntries   = [];  // Force reload next time audit log opens
     STATE._auditFilter    = { type: 'All', person: '', quarter: '' };
     STATE.workingQuarter  = quarter;
-    await writeAuditLog('QuarterCreated', { description: `Staging quarter set to ${quarter}` });
     showToast(`✓ ${quarter} created as staging quarter`, 'success');
     renderAdminPanel('rollforward');
   } catch (err) {
@@ -5194,9 +5162,6 @@ async function confirmRollforward() {
       }
     }
 
-    await writeAuditLog('Rollforward', {
-      description: `Rolled forward ${created} assignments to ${quarter} from ${fromQuarter || 'templates'}`,
-    });
     STATE._stagingItems   = [];
     STATE._stagingLoading = false;
     hideModal('modal-rollforward-confirm');
@@ -5228,7 +5193,6 @@ async function activateQuarter(quarter) {
     await setAppSettings({ ActiveQuarter: quarter, WorkingQuarter: '' });
     STATE.activeQuarter = quarter;
     STATE.workingQuarter = '';
-    await writeAuditLog('QuarterActivation', { description: `Activated ${quarter}` });
     // Reset filters when a new quarter goes live — stale filters from the previous
     // quarter would hide tasks and cause confusion in the new quarter.
     STATE.filters.status   = 'all';
