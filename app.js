@@ -2264,11 +2264,10 @@ function renderAdminPanel(panelName) {
       if (!STATE.calendar.length && STATE.workingQuarter) {
         content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading calendar...</p>';
         loadCalendar(STATE.workingQuarter).then(() => {
-          const activeBtn = document.querySelector('.sidebar-btn.active');
-          if (activeBtn?.dataset.panel === 'calendar') {
-            content.innerHTML = renderAdminCalendar();
-            attachAdminEvents('calendar');
-          }
+          content.innerHTML = renderAdminCalendar();
+          attachAdminEvents('calendar');
+        }).catch(() => {
+          content.innerHTML = renderAdminCalendar();
         });
       } else {
         content.innerHTML = renderAdminCalendar();
@@ -2382,7 +2381,7 @@ function renderCalendarPreview() {
 }
 
 function renderAdminCalendar() {
-  const quarter = STATE.activeQuarter;
+  const quarter = STATE.activeQuarter || STATE.workingQuarter;
   const hasRows = STATE.calendar.length > 0;
   return `
     <div class="admin-section-title">Close Calendar</div>
