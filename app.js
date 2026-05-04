@@ -689,10 +689,13 @@ function isViewingHistory() {
 // Returns true if the write should proceed, false if the admin cancelled.
 // Use this as a guard in any write that could target historical data.
 function confirmIfPastQuarter(quarter, action = 'edit this item') {
-  if (!quarter || quarter === STATE.activeQuarter) return true;  // Active quarter — no warning
+  // No warning needed for the active quarter or the current staging/working quarter
+  if (!quarter) return true;
+  if (quarter === STATE.activeQuarter) return true;
+  if (quarter === STATE.workingQuarter) return true;
   return window.confirm(
     `⚠️ You are about to ${action} in ${quarter}, which has already closed.\n\n`
-    + `This change will be written to SharePoint and logged to the AuditLog.\n\n`
+    + `This change will be written to SharePoint.\n\n`
     + `Click OK to continue, or Cancel to go back.`
   );
 }
