@@ -859,6 +859,32 @@
     </div>
   </div>
 
+  <!-- MODAL: ADD MILESTONE -->
+  <div id="modal-add-milestone" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-add-milestone-title">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-add-milestone-title">Add Milestone</div>
+      <div class="modal-body">
+        <div class="setup-field">
+          <label class="field-label" for="milestone-label">Label</label>
+          <input type="text" id="milestone-label" class="field-input" placeholder="e.g. BOD Meeting" maxlength="100" />
+        </div>
+        <div class="setup-field">
+          <label class="field-label" for="milestone-type">Type</label>
+          <select id="milestone-type" class="field-input">
+            <option value="Standard">Standard</option>
+            <option value="SVP">SVP</option>
+            <option value="MD">MD</option>
+            <option value="CFO">CFO</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-add-milestone-confirm">Add</button>
+        <button class="btn-secondary" id="btn-add-milestone-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL: AUDIT LOG EXPORT -->
   <div id="modal-sox-export" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-sox-title">
     <div class="modal-box">
