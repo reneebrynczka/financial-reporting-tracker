@@ -632,8 +632,14 @@ async function loadAssignments(quarter) {
 
 async function loadCalendar(quarter) {
   const items = await getListItems(CONFIG.lists.closeCalendar, `fields/Quarter eq '${quarter}'`);
-  STATE.calendar = items.map(i => ({ ...i.fields, _id: i.id }))
-    .sort((a,b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
+  STATE.calendar = items.map(i => {
+    const row = { ...i.fields, _id: i.id };
+    // Normalize ActualDate to YYYY-MM-DD — SharePoint Date columns return full ISO timestamps
+    if (row.ActualDate && row.ActualDate.includes('T')) {
+      row.ActualDate = row.ActualDate.split('T')[0];
+    }
+    return row;
+  }).sort((a,b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
 }
 
 async function loadMatrixStatus(quarter) {
