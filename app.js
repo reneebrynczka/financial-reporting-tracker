@@ -197,6 +197,7 @@ const STATE = {
   _auditEntries:          [],     // Loaded on-demand when audit log panel opens
   _auditFilter:           { type: 'All', person: '', quarter: '' }, // Audit log filter state
   _matrixUpdateInFlight:  false,  // Guard against double-clicks on matrix cells
+  _calendarLoading:        false,  // Guard against double calendar loads
 };
 
 // ============================================================
@@ -2122,7 +2123,7 @@ function renderCalendarView() {
   const container = document.getElementById('view-calendar');
   if (!container) return;
 
-  const quarter = getReadQuarter();
+  const quarter = getReadQuarter() || STATE.workingQuarter;
   const sub = document.getElementById('calendar-sub');
   if (sub) sub.textContent = `${quarter || '—'} · Close calendar`;
 
@@ -2130,6 +2131,19 @@ function renderCalendarView() {
   if (!calBody) return;
 
   if (!STATE.calendar.length) {
+    // Try loading the calendar for the working quarter if no active quarter yet
+    if (STATE.workingQuarter && !STATE._calendarLoading) {
+      STATE._calendarLoading = true;
+      calBody.innerHTML = '<p style="font-size:13px;color:var(--slate)">Loading calendar...</p>';
+      loadCalendar(STATE.workingQuarter).then(() => {
+        STATE._calendarLoading = false;
+        renderCalendarView();
+      }).catch(() => {
+        STATE._calendarLoading = false;
+        calBody.innerHTML = '<p style="font-size:13px;color:var(--slate)">No calendar rows set up yet. Go to Admin → Close Calendar → Setup Calendar.</p>';
+      });
+      return;
+    }
     calBody.innerHTML = '<p style="font-size:13px;color:var(--slate)">No calendar rows set up yet. Go to Admin → Close Calendar → Setup Calendar.</p>';
     return;
   }
@@ -2246,7 +2260,20 @@ function renderAdminPanel(panelName) {
 
   switch (panelName) {
     case 'overview':    content.innerHTML = renderAdminOverview();    break;
-    case 'calendar':    content.innerHTML = renderAdminCalendar();    break;
+    case 'calendar':
+      if (!STATE.calendar.length && STATE.workingQuarter) {
+        content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading calendar...</p>';
+        loadCalendar(STATE.workingQuarter).then(() => {
+          const activeBtn = document.querySelector('.sidebar-btn.active');
+          if (activeBtn?.dataset.panel === 'calendar') {
+            content.innerHTML = renderAdminCalendar();
+            attachAdminEvents('calendar');
+          }
+        });
+      } else {
+        content.innerHTML = renderAdminCalendar();
+      }
+      break;
     case 'rollforward': content.innerHTML = renderAdminRollforward(); break;
     case 'templates':
       content.innerHTML = '<p style="font-size:12px;color:var(--slate);padding:12px">Loading templates...</p>';
