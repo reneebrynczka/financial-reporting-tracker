@@ -4011,28 +4011,31 @@ async function setupCalendarBulk() {
       );
     }
 
-    // Generate workday dates — each WD is one calendar day after the previous,
-    // skipping nothing (admins sometimes have weekend workdays, so we don't auto-skip).
-    // We mark any weekend dates with IsWeekend = true as a warning flag.
+    // Generate workday dates — skip weekends by default.
+    // Weekends can be added manually via the Edit button on any calendar row
+    // if a specific close requires weekend work.
     let current = new Date(startDate + 'T12:00:00');
     const created = [];
 
     for (let wd = 1; wd <= maxWD; wd++) {
-      // Use ET for date string and weekend detection — consistent with all other date handling.
-      const currentET  = new Date(current.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
-      const dateStr    = `${currentET.getFullYear()}-${String(currentET.getMonth()+1).padStart(2,'0')}-${String(currentET.getDate()).padStart(2,'0')}`;
-      const dayOfWeek  = currentET.getDay(); // 0 = Sun, 6 = Sat
-      const isWeekend  = dayOfWeek === 0 || dayOfWeek === 6;
+      // Skip weekend days — advance until we land on a weekday
+      let currentET = new Date(current.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+      while (currentET.getDay() === 0 || currentET.getDay() === 6) {
+        current = new Date(current.getTime() + 86400000);
+        currentET = new Date(current.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+      }
+
+      const dateStr   = `${currentET.getFullYear()}-${String(currentET.getMonth()+1).padStart(2,'0')}-${String(currentET.getDate()).padStart(2,'0')}`;
 
       await createListItem(CONFIG.lists.closeCalendar, {
         Title:         `${quarter}-WD${wd}`,
         Quarter:       quarter,
         WorkdayNumber: wd,
         ActualDate:    dateStr,
-        IsWeekend:     isWeekend,
+        IsWeekend:     false,
         MilestoneType: 'Standard',
       });
-      created.push({ WorkdayNumber: wd, ActualDate: dateStr, IsWeekend: isWeekend,
+      created.push({ WorkdayNumber: wd, ActualDate: dateStr, IsWeekend: false,
                      MilestoneLabel: null, MilestoneType: 'Standard', Quarter: quarter });
 
       // Advance by one calendar day for next workday
