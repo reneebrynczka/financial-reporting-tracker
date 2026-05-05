@@ -2008,6 +2008,36 @@ function renderPanelAction(assignment, email) {
   attachCardEvents();
 }
 
+function renderMyTasksTable() {
+  const email = STATE.currentUser?.Email;
+  const tasks = filterMyAssignments();
+  const tbody = document.getElementById('my-tasks-tbody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+  tasks.forEach(a => {
+    const isMyPreparer = a.Preparer === email && !a.PreparerSignOff;
+    const isMyReviewer = a.Reviewer === email && a.PreparerSignOff && !a.ReviewerSignOff;
+    const role = isMyPreparer ? 'Preparer' : isMyReviewer ? 'Reviewer' : 'Observer';
+    const dueWD = getDueWD(a, email);
+    const dueDate = resolveWorkday(getReadQuarter(), dueWD);
+    const overdue = isTaskOverdue(a);
+
+    const row = tbody.insertRow();
+    if (overdue) row.classList.add('overdue-row');
+    row.style.cursor = 'pointer';
+    row.addEventListener('click', () => openTaskPanel(a._id));
+    row.innerHTML = `
+      <td style="font-weight:500;font-size:12px">${escapeHtml(a.Title || '')}</td>
+      <td><span class="cat-tag">${escapeHtml(a.Category || '')}</span></td>
+      <td style="font-size:11px">${role}</td>
+      <td style="font-size:11px;color:var(--slate)">${a.PreparerWorkday ? 'WD' + a.PreparerWorkday : '—'}</td>
+      <td style="font-size:11px;color:var(--slate)">${a.ReviewerWorkday ? 'WD' + a.ReviewerWorkday : '—'}</td>
+      <td>${renderStatusBadge(a)}</td>
+      <td style="font-size:11px;color:${overdue ? 'var(--red)' : 'var(--slate)'}">${dueDate ? formatDateShort(dueDate) + ' (WD' + dueWD + ')' : '—'}</td>`;
+  });
+}
+
 function closeTaskPanel() {
   document.getElementById('task-panel')?.classList.add('hidden');
   document.getElementById('panel-overlay')?.classList.add('hidden');
@@ -4060,7 +4090,7 @@ function attachGlobalEvents() {
     renderAllTasks();
   });
 
-  // Table/card view toggle
+  // Table/card view toggle — All Tasks
   document.getElementById('btn-table-view')?.addEventListener('click', () => {
     document.getElementById('btn-table-view').classList.add('active');
     document.getElementById('btn-card-view').classList.remove('active');
@@ -4073,6 +4103,21 @@ function attachGlobalEvents() {
     document.getElementById('all-tasks-table-wrap')?.classList.add('hidden');
     document.getElementById('all-tasks-cards-wrap')?.classList.remove('hidden');
     renderAllTasksCards();
+  });
+
+  // Table/card view toggle — My Tasks
+  document.getElementById('btn-my-tasks-cards')?.addEventListener('click', () => {
+    document.getElementById('btn-my-tasks-cards').classList.add('active');
+    document.getElementById('btn-my-tasks-table').classList.remove('active');
+    document.getElementById('my-tasks-card-view')?.classList.remove('hidden');
+    document.getElementById('my-tasks-table-view')?.classList.add('hidden');
+  });
+  document.getElementById('btn-my-tasks-table')?.addEventListener('click', () => {
+    document.getElementById('btn-my-tasks-table').classList.add('active');
+    document.getElementById('btn-my-tasks-cards').classList.remove('active');
+    document.getElementById('my-tasks-card-view')?.classList.add('hidden');
+    document.getElementById('my-tasks-table-view')?.classList.remove('hidden');
+    renderMyTasksTable();
   });
 
   // Export sign-off log
