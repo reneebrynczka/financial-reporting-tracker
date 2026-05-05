@@ -4372,7 +4372,7 @@ async function confirmAddMilestone() {
   hideModal('modal-add-milestone');
   try {
     const milestoneFields = {
-      Title:          `${quarter}-${_pendingMilestoneDate}-${label}`,
+      Title:          `${quarter} | WD${_pendingMilestoneWD || '?'} | ${label}`,
       Quarter:        quarter,
       MilestoneDate:  _pendingMilestoneDate,
       MilestoneLabel: label,
