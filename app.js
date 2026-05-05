@@ -20,7 +20,6 @@ const CONFIG = {
   // SharePoint Site
   siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
 
-
   // SharePoint List Names — must match exactly
   lists: {
     taskTemplates:        'TaskTemplates',
@@ -2502,7 +2501,8 @@ function renderCalendarView() {
       const dateStr = toETDateStr(cursor);
       const calRow  = byDate[dateStr];
       const isToday = dateStr === today;
-      const isPast  = dateStr < today;
+      const isActive = getReadQuarter() === STATE.activeQuarter;
+      const isPast  = isActive && dateStr < today;
 
       const dayMilestones = STATE.milestones.filter(m => (m.MilestoneDate || '') === dateStr);
       if (!calRow) {
