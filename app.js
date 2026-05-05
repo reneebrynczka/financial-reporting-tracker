@@ -2099,10 +2099,10 @@ function renderDashboard() {
   if (milestoneList) {
     const today = todayET();
     const upcoming = STATE.milestones
-      .map(m => {
-        const calRow = STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber));
-        return { ...m, ActualDate: calRow?.ActualDate };
-      })
+      .map(m => ({
+        ...m,
+        ActualDate: m.MilestoneDate || STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber))?.ActualDate,
+      }))
       .filter(m => m.ActualDate && m.ActualDate >= today)
       .slice(0, 5);
     milestoneList.innerHTML = upcoming.map(m => `
@@ -2392,10 +2392,10 @@ function renderAdminOverview() {
 
 function renderCalendarPreview() {
   const today = todayET();
-  const items = STATE.milestones.map(m => {
-    const calRow = STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber));
-    return { ...m, ActualDate: calRow?.ActualDate };
-  }).slice(0, 8);
+  const items = STATE.milestones.map(m => ({
+    ...m,
+    ActualDate: m.MilestoneDate || STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber))?.ActualDate,
+  })).slice(0, 8);
   if (!items.length) return '<p style="font-size:11px;color:var(--slate)">No milestones set. Go to Close Calendar to configure.</p>';
   return `<table class="cal-table">
     <thead><tr><th>WD</th><th>Date</th><th>Milestone</th></tr></thead>
@@ -2414,39 +2414,96 @@ function renderCalendarPreview() {
 function renderAdminCalendar() {
   const quarter = STATE.activeQuarter || STATE.workingQuarter;
   const hasRows = STATE.calendar.length > 0;
+
+  // Build a full date-range view — every calendar day from first WD to last WD,
+  // including non-workday days so milestones can be added on any date.
+  let fullDayRows = '';
+  if (hasRows) {
+    const firstDate = new Date(STATE.calendar[0].ActualDate + 'T12:00:00');
+    const lastDate  = new Date(STATE.calendar[STATE.calendar.length - 1].ActualDate + 'T12:00:00');
+    const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const today     = todayET();
+
+    // Build a lookup: dateStr → calendar row
+    const calByDate = {};
+    STATE.calendar.forEach(c => { calByDate[c.ActualDate] = c; });
+
+    // Build a lookup: dateStr → milestones using MilestoneDate field
+    const milestonesByDate = {};
+    STATE.milestones.forEach(m => {
+      const dateKey = m.MilestoneDate || (() => {
+        // Fallback: derive date from WorkdayNumber for older records without MilestoneDate
+        const calRow = STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber));
+        return calRow?.ActualDate;
+      })();
+      if (dateKey) {
+        if (!milestonesByDate[dateKey]) milestonesByDate[dateKey] = [];
+        milestonesByDate[dateKey].push(m);
+      }
+    });
+
+    const rows = [];
+    let cursor = new Date(firstDate);
+    while (cursor <= lastDate) {
+      const etDate  = new Date(cursor.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+      const dateStr = `${etDate.getFullYear()}-${String(etDate.getMonth()+1).padStart(2,'0')}-${String(etDate.getDate()).padStart(2,'0')}`;
+      const dow     = etDate.getDay();
+      const dowName = DAY_NAMES[dow];
+      const calRow  = calByDate[dateStr];
+      const isToday = dateStr === today;
+      const milestones = milestonesByDate[dateStr] || [];
+      const isNonWorkday = !calRow;
+
+      // For non-workday rows, milestones attach to the nearest preceding WD
+      // We use a virtual WD number for the add-milestone button
+      const nearestWD = calRow ? calRow.WorkdayNumber
+        : STATE.calendar.filter(c => c.ActualDate < dateStr).pop()?.WorkdayNumber || 0;
+
+      rows.push(`
+        <tr style="${isNonWorkday ? 'opacity:0.55;background:var(--light-gray)' : ''}${isToday ? ';background:var(--blue-tint,#EEF3FF)' : ''}">
+          <td style="font-weight:${isNonWorkday ? '400' : '600'};color:${isNonWorkday ? 'var(--slate)' : 'inherit'}">
+            ${calRow ? `WD${calRow.WorkdayNumber}${calRow.IsWeekend ? ' <span class="weekend-marker">Wknd</span>' : ''}` : '—'}
+          </td>
+          <td style="color:var(--slate);white-space:nowrap">
+            <span style="font-size:10px;color:${dow===0||dow===6?'var(--red)':'var(--slate)'};margin-right:4px">${dowName}</span>
+            ${formatDateShort(dateStr)}
+          </td>
+          <td>
+            ${milestones.map(m => `
+              <span class="${milestoneClass(m)}" style="display:inline-flex;align-items:center;gap:4px;margin:1px">
+                ${escapeHtml(m.MilestoneLabel)}
+                <button class="btn-icon" style="font-size:9px;padding:0 3px;line-height:1.4"
+                  data-action="delete-milestone" data-id="${m._id}" title="Remove">✕</button>
+              </span>`).join('')}
+            <button class="btn-secondary btn-sm" style="margin-left:4px;font-size:10px"
+              data-action="add-milestone" data-wd="${nearestWD}" data-date="${dateStr}">+ Milestone</button>
+          </td>
+          <td>
+            ${calRow
+              ? `<button class="btn-secondary btn-sm" data-action="edit-cal-row" data-id="${calRow._id}">Edit date</button>`
+              : '<span style="font-size:11px;color:var(--slate)">Non-workday</span>'}
+          </td>
+        </tr>`);
+
+      cursor = new Date(cursor.getTime() + 86400000);
+    }
+    fullDayRows = rows.join('');
+  }
+
   return `
     <div class="admin-section-title">Close Calendar</div>
     <div class="admin-section-sub">${quarter || 'No active quarter'}</div>
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
       <button class="btn-primary btn-sm" id="btn-setup-calendar" data-action="setup-calendar">Setup Calendar…</button>
-      <span style="font-size:11px;color:var(--slate)">${hasRows ? `${STATE.calendar.length} workdays configured` : 'No workdays set up yet — click Setup Calendar to create them'}</span>
+      <span style="font-size:11px;color:var(--slate)">${hasRows ? `${STATE.calendar.length} workdays · all days shown` : 'No workdays set up yet — click Setup Calendar to create them'}</span>
     </div>
     <div class="card">
-      ${!hasRows ? `<p style="font-size:12px;color:var(--slate);padding:8px 0">No calendar rows yet. Click <strong>Setup Calendar</strong> to create workday rows for this quarter.</p>` : `
-      <table class="cal-table">
-        <thead><tr><th>WD</th><th>Date</th><th>Milestones</th><th>Actions</th></tr></thead>
-        <tbody>
-          ${STATE.calendar.map(c => {
-            const rowMilestones = STATE.milestones.filter(m => Number(m.WorkdayNumber) === Number(c.WorkdayNumber));
-            return `
-            <tr ${c.ActualDate === todayET() ? 'class="today-row"' : ''}>
-              <td style="font-weight:500">WD${c.WorkdayNumber}${c.IsWeekend ? ' <span class="weekend-marker">Weekend</span>' : ''}</td>
-              <td style="color:var(--slate)">${formatDateShort(c.ActualDate)}</td>
-              <td>
-                ${rowMilestones.map(m => `
-                  <span class="${milestoneClass(m)}" style="display:inline-flex;align-items:center;gap:4px;margin:1px">
-                    ${escapeHtml(m.MilestoneLabel)}
-                    <button class="btn-icon" style="font-size:9px;padding:0 3px;line-height:1.4"
-                      data-action="delete-milestone" data-id="${m._id}" title="Remove">✕</button>
-                  </span>`).join('')}
-                <button class="btn-secondary btn-sm" style="margin-left:4px;font-size:10px"
-                  data-action="add-milestone" data-wd="${c.WorkdayNumber}" data-date="${c.ActualDate}">+ Milestone</button>
-              </td>
-              <td><button class="btn-secondary btn-sm" data-action="edit-cal-row" data-id="${c._id}">Edit date</button></td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>`}
+      ${!hasRows
+        ? `<p style="font-size:12px;color:var(--slate);padding:8px 0">No calendar rows yet. Click <strong>Setup Calendar</strong> to create workday rows for this quarter.</p>`
+        : `<table class="cal-table">
+            <thead><tr><th>WD</th><th>Date</th><th>Milestones</th><th>Actions</th></tr></thead>
+            <tbody>${fullDayRows}</tbody>
+           </table>`}
     </div>`;
 }
 
@@ -2881,7 +2938,7 @@ function attachAdminEvents(panelName) {
       if (action === 'edit-template')         openEditTemplateModal(id);
       if (action === 'retire-template')   await retireTemplate(id);
       if (action === 'edit-cal-row')      openEditCalendarRowModal(id);
-      if (action === 'add-milestone')      openAddMilestoneModal(el.dataset.wd, el.dataset.date);
+      if (action === 'add-milestone')      openAddMilestoneModal(btn.dataset.wd, btn.dataset.date);
       if (action === 'delete-milestone')   deleteMilestone(id);
       if (action === 'edit-user')         openEditUserRoleModal(email);
       if (action === 'rc-reply')          openRCReplyInput(id);
@@ -4300,7 +4357,7 @@ function openAddMilestoneModal(wd, date) {
   if (labelEl) labelEl.value = '';
   if (typeEl)  typeEl.value  = 'Standard';
   const titleEl = document.getElementById('modal-add-milestone-title');
-  if (titleEl) titleEl.textContent = `Add Milestone — WD${wd} (${formatDateShort(date)})`;
+  if (titleEl) titleEl.textContent = `Add Milestone — ${formatDateShort(date)}${wd ? ' (WD' + wd + ')' : ''}`;
   showModal('modal-add-milestone');
 }
 
@@ -4313,9 +4370,10 @@ async function confirmAddMilestone() {
   try {
     const quarter = STATE.activeQuarter || STATE.workingQuarter;
     const created = await createListItem(CONFIG.lists.calendarMilestones, {
-      Title:          `${quarter}-WD${_pendingMilestoneWD}-${label}`,
+      Title:          `${quarter}-${_pendingMilestoneDate}-${label}`,
       Quarter:        quarter,
-      WorkdayNumber:  Number(_pendingMilestoneWD),
+      WorkdayNumber:  _pendingMilestoneWD ? Number(_pendingMilestoneWD) : 0,
+      MilestoneDate:  _pendingMilestoneDate,
       MilestoneLabel: label,
       MilestoneType:  type,
     });
