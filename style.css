@@ -872,14 +872,14 @@ body {
   z-index: 2;
   letter-spacing: 0.2px;
 }
-/* Separator before matrix-only columns */
+/* Separator before matrix-only columns — thin top border only, no extra width */
 .matrix-table th.matrix-only-col {
   background: #1a2d8a;
-  border-left: 2px solid rgba(255,255,255,0.25);
+  border-left: 1px solid rgba(255,255,255,0.2);
 }
 .matrix-table th.final-col {
   background: #0C447C;
-  border-left: 2px solid rgba(255,255,255,0.35);
+  border-left: 1px solid rgba(255,255,255,0.3);
 }
 .matrix-table th.left-align { text-align: left; padding-left: 12px; }
 .matrix-table td {
@@ -890,13 +890,11 @@ body {
   height: 34px;
   text-align: center;
 }
-/* Matrix-only column separator */
+/* Matrix-only column subtle background tint — no extra border width */
 .matrix-table td.matrix-only-td {
-  border-left: 2px solid #D0D5E8;
   background: #FAFBFF;
 }
 .matrix-table td.final-td {
-  border-left: 2px solid #C8D8EC;
   background: #F5F9FF;
 }
 .matrix-table td.item-cell {
