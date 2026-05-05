@@ -1043,15 +1043,12 @@ body {
 .cal-table tr.today-row td { background: var(--blue-light); }
 /* ---- MILESTONE PILLS ------------------------------------- */
 /* Standard: navy blue — meetings, mailouts, filings, press release */
-.milestone-std    { background: #E6F1FB; color: #0C447C;  font-size: 10px; padding: 2px 7px; border-radius: 8px; }
-/* SVP: warm gray — deliverables available to SVP */
-.milestone-svp    { background: #F1EFE8; color: #444441;  font-size: 10px; padding: 2px 7px; border-radius: 8px; }
-/* MD: teal — deliverables available to MD */
-.milestone-md     { background: #E1F5EE; color: #085041;  font-size: 10px; padding: 2px 7px; border-radius: 8px; }
-/* CFO: purple — deliverables available to CFO */
-.milestone-cfo    { background: #EEEDFE; color: #3C3489;  font-size: 10px; padding: 2px 7px; border-radius: 8px; }
-/* Legacy alias — maps old IsCustomMilestone=true to SVP style */
-.milestone-custom { background: #F1EFE8; color: #444441;  font-size: 10px; padding: 2px 7px; border-radius: 8px; }
+.milestone-std    { background: #E6F1FB; color: #0C447C;  font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 8px; white-space: nowrap; }
+.milestone-svp    { background: #FFF3E0; color: #8D4E00;  font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 8px; white-space: nowrap; }
+.milestone-md     { background: #E1F5EE; color: #085041;  font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 8px; white-space: nowrap; }
+.milestone-cfo    { background: #EEEDFE; color: #3C3489;  font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 8px; white-space: nowrap; }
+.milestone-team   { background: #FCE4EC; color: #880E4F;  font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 8px; white-space: nowrap; }
+.milestone-custom { background: #FFF3E0; color: #8D4E00;  font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 8px; white-space: nowrap; }
 
 /* ---- STAGING GRID ---------------------------------------- */
 .staging-select {
@@ -1079,30 +1076,33 @@ body {
 
 /* ---- CLOSE CALENDAR VIEW --------------------------------- */
 .cal-view-wrap { padding: 0 0 32px; }
-.cal-view-legend { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.cal-view-legend { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; align-items: center; }
 .cal-view-legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--color-text-secondary); }
+.cal-month-header { font-size: 13px; font-weight: 600; color: var(--navy); padding: 14px 0 6px; letter-spacing: 0.3px; border-bottom: 1.5px solid var(--mid-gray); margin-bottom: 6px; }
 .cal-dow-header { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; margin-bottom: 4px; }
-.cal-dow-label { font-size: 10px; font-weight: 500; color: var(--color-text-tertiary); text-align: center; padding: 2px 0; }
-.cal-dow-label.wknd { opacity: 0.4; }
+.cal-dow-label { font-size: 10px; font-weight: 600; text-align: center; color: var(--slate); text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 0; }
+.cal-dow-label.wknd { color: #bbb; }
 .cal-week-row { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; margin-bottom: 4px; }
 .cal-day {
-  border: 0.5px solid var(--color-border-tertiary);
-  border-radius: var(--border-radius-md);
-  padding: 8px 9px;
-  min-height: 80px;
+  border: 1px solid var(--mid-gray);
+  border-radius: 6px;
+  padding: 7px 8px;
+  min-height: 76px;
   background: var(--color-background-primary);
+  transition: box-shadow 0.1s;
 }
-.cal-day.empty { background: var(--color-background-secondary); border-color: transparent; min-height: 80px; opacity: 0.3; }
+.cal-day:hover { box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.cal-day.empty { background: var(--color-background-secondary); border-color: transparent; min-height: 76px; opacity: 0.2; }
 .cal-day.past { background: var(--color-background-secondary); }
-.cal-day.today { border: 1.5px solid var(--navy); }
-.cal-day.wknd-wd { border-color: #EF9F27; }
-.cal-day-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
-.cal-day-wd { font-size: 11px; font-weight: 500; color: var(--navy); }
 .cal-day.past .cal-day-wd { color: var(--color-text-tertiary); }
+.cal-day.today { border: 2px solid var(--navy); background: #F0F3FF; }
+.cal-day.wknd-wd { border-color: #EF9F27; background: #FFFBF0; }
+.cal-day-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 5px; }
+.cal-day-wd { font-size: 11px; font-weight: 600; color: var(--navy); }
 .cal-day-date { font-size: 10px; color: var(--color-text-secondary); }
 .cal-today-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--navy); margin-left: 3px; vertical-align: middle; }
-.cal-wknd-flag { font-size: 10px; color: var(--amber); display: block; margin-bottom: 2px; }
-.cal-ms { display: block; font-size: 10px; font-weight: 500; padding: 2px 5px; border-radius: 3px; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.cal-wknd-flag { font-size: 9px; color: #EF9F27; font-weight: 600; letter-spacing: 0.3px; }
+.cal-ms { display: inline-block; margin: 1px 1px 0 0; }
 .today-marker { background: var(--blue); color: var(--white); font-size: 10px; padding: 2px 7px; border-radius: 8px; }
 .weekend-marker { background: var(--red-light); color: var(--red-dark); font-size: 10px; padding: 2px 7px; border-radius: 8px; }
 .suggest-item { display: flex; align-items: flex-start; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--mid-gray); gap: 8px; }
