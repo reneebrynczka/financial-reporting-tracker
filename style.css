@@ -1082,27 +1082,28 @@ body {
 .cal-dow-header { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; margin-bottom: 4px; }
 .cal-dow-label { font-size: 10px; font-weight: 600; text-align: center; color: var(--slate); text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 0; }
 .cal-dow-label.wknd { color: #bbb; }
-.cal-week-row { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; margin-bottom: 4px; }
+.cal-week-row { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; margin-bottom: 8px; }
 .cal-day {
   border: 1px solid var(--mid-gray);
   border-radius: 6px;
-  padding: 7px 8px;
-  min-height: 76px;
+  padding: 8px 9px;
+  min-height: 84px;
   background: var(--color-background-primary);
   transition: box-shadow 0.1s;
 }
 .cal-day:hover { box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
-.cal-day.empty { background: var(--color-background-secondary); border-color: transparent; min-height: 76px; opacity: 0.2; }
-.cal-day.past { background: var(--color-background-secondary); }
+.cal-day.empty { background: var(--color-background-secondary); border: 1px solid #EBEBEB; min-height: 84px; opacity: 0.6; }
+.cal-day.past { background: var(--color-background-secondary); opacity: 0.6; }
 .cal-day.past .cal-day-wd { color: var(--color-text-tertiary); }
-.cal-day.today { border: 2px solid var(--navy); background: #F0F3FF; }
+.cal-day.past .cal-day-date { color: var(--color-text-tertiary); }
+.cal-day.today { border: 2px solid var(--navy); background: #F0F3FF; opacity: 1; }
 .cal-day.wknd-wd { border-color: #EF9F27; background: #FFFBF0; }
-.cal-day-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 5px; }
-.cal-day-wd { font-size: 11px; font-weight: 600; color: var(--navy); }
-.cal-day-date { font-size: 10px; color: var(--color-text-secondary); }
+.cal-day-top { display: flex; flex-direction: column; margin-bottom: 6px; }
+.cal-day-wd { font-size: 14px; font-weight: 700; color: var(--navy); line-height: 1.2; }
+.cal-day-date { font-size: 10px; color: var(--color-text-secondary); margin-top: 1px; }
 .cal-today-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--navy); margin-left: 3px; vertical-align: middle; }
 .cal-wknd-flag { font-size: 9px; color: #EF9F27; font-weight: 600; letter-spacing: 0.3px; }
-.cal-ms { display: inline-block; margin: 1px 1px 0 0; }
+.cal-ms { display: block; margin: 2px 0 0; }
 .today-marker { background: var(--blue); color: var(--white); font-size: 10px; padding: 2px 7px; border-radius: 8px; }
 .weekend-marker { background: var(--red-light); color: var(--red-dark); font-size: 10px; padding: 2px 7px; border-radius: 8px; }
 .suggest-item { display: flex; align-items: flex-start; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--mid-gray); gap: 8px; }
