@@ -172,15 +172,16 @@ const STATE = {
   isReadOnly:      false,
   taskDetailId:   null,       // Currently open task panel assignment ID
   filters: {
-    status:    'all',
-    category:  'all',
-    assignee:  'all',
-    search:    '',
-    rcStatus:  'all',
-    rcPriority:'all',
-    rcQuarter: 'all',
-    sort:      'overdue', // 'overdue' | 'category' | 'prepWD' | 'revWD' | 'status' | 'task'
-    sortDir:   'asc',     // 'asc' | 'desc'
+    status:      'all',
+    category:    'all',
+    assignee:    'all',
+    search:      '',
+    rcStatus:    'all',
+    rcPriority:  'all',
+    rcQuarter:   'all',
+    sort:        'overdue',
+    sortDir:     'asc',
+    showSkipped: false,
   },
   pendingMatrixAction: null,  // {item, column, quarter} — pending matrix update confirmation
   pendingSignoff: null,       // {assignmentId, role}
@@ -1616,12 +1617,10 @@ function renderAllTasks() {
   if (!tbody) return;
 
   tbody.innerHTML = '';
-  // Category group headers only make sense when sorting by category
   const groupByCategory = STATE.filters.sort === 'category';
   let lastCategory = null;
 
   filtered.forEach(a => {
-    if (a.IsSkipped) return;  // Don't show skipped tasks in All Tasks at all
     if (groupByCategory && a.Category !== lastCategory) {
       const headerRow = tbody.insertRow();
       headerRow.className = 'category-header';
@@ -1634,7 +1633,7 @@ function renderAllTasks() {
     row.dataset.id = a._id;
     row.addEventListener('click', () => openTaskPanel(a._id));
     row.innerHTML = `
-      <td style="font-weight:500;font-size:12px">${escapeHtml(a.Title || '')}</td>
+      <td style="font-weight:500;font-size:12px">${escapeHtml(a.Title || '')}${a.IsSkipped ? ' <span style="font-size:9px;background:#F5F5F5;color:var(--slate);padding:1px 5px;border-radius:4px">SKIPPED</span>' : ''}</td>
       <td><span class="cat-tag">${escapeHtml(a.Category || '')}</span></td>
       <td>${renderBadge(a.Preparer)}</td>
       <td>${a.Reviewer ? renderBadge(a.Reviewer) : '<span style="font-size:10px;color:var(--slate)">Preparer only</span>'}</td>
@@ -1643,6 +1642,20 @@ function renderAllTasks() {
       <td>${renderStatusBadge(a)}</td>
       <td style="font-size:10px;color:var(--slate)">${getTaskRCCount(a) || '—'}</td>`;
   });
+
+  // Skipped tasks toggle for admins
+  const skippedCount = STATE.assignments.filter(a => a.IsSkipped).length;
+  const skippedToggleEl = document.getElementById('skipped-tasks-toggle');
+  if (skippedToggleEl) {
+    if (STATE.isAdmin && skippedCount > 0) {
+      skippedToggleEl.style.display = '';
+      skippedToggleEl.innerHTML = `<button class="btn-secondary btn-sm" onclick="STATE.filters.showSkipped=!STATE.filters.showSkipped;renderAllTasks()">
+        ${STATE.filters.showSkipped ? 'Hide skipped tasks' : `Show ${skippedCount} skipped task${skippedCount !== 1 ? 's' : ''}`}
+      </button>`;
+    } else {
+      skippedToggleEl.style.display = 'none';
+    }
+  }
 }
 
 // Updates sort indicator arrows on the table header row.
@@ -1696,7 +1709,8 @@ function getFilteredAssignments() {
   const f = STATE.filters;
 
   const filtered = STATE.assignments.filter(a => {
-    if (a.IsSkipped) return false;  // Skipped tasks never appear in All Tasks
+    // Show skipped only when explicitly requested
+    if (a.IsSkipped && !STATE.filters.showSkipped) return false;
     if (f.status === 'unsigned' && a.Status === STATUS.COMPLETE) return false;
     if (f.status === 'overdue' && !isTaskOverdue(a)) return false;
     if (f.status === 'complete' && a.Status !== STATUS.COMPLETE) return false;
@@ -1975,6 +1989,19 @@ function renderPanelAction(assignment, email) {
     if (!html) {
       html = `<p style="font-size:11px;color:var(--slate)">Task complete.</p>`;
     }
+  }
+
+  // Admin skip/unskip button — always shown at bottom for admins on live quarters
+  if (STATE.isAdmin && !isViewingHistory() && !STATE.isReadOnly) {
+    const isSkipped = assignment.IsSkipped;
+    html += `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--mid-gray)">
+      <button class="btn-${isSkipped ? 'secondary' : 'danger'} btn-sm" 
+        data-action="${isSkipped ? 'unskip-task' : 'skip-task'}" data-id="${assignment._id}"
+        title="${isSkipped ? 'Restore this task to the quarter' : 'Remove this task from the quarter — it will not appear in any view or count'}">
+        ${isSkipped ? '↩ Restore task' : 'Skip this quarter'}
+      </button>
+      ${isSkipped ? '<span style="font-size:10px;color:var(--slate);margin-left:8px">This task is currently skipped</span>' : ''}
+    </div>`;
   }
 
   actionDiv.innerHTML = html;
@@ -4140,6 +4167,24 @@ function attachCardEvents() {
 
       if (action === 'edit-wd') {
         openEditWDModal(id);
+      }
+
+      if (action === 'skip-task' || action === 'unskip-task') {
+        const isSkipping = action === 'skip-task';
+        const assignment = STATE.assignments.find(a => a._id === id);
+        if (!assignment) return;
+        const confirmMsg = isSkipping
+          ? `Skip "${assignment.Title}" for this quarter? It will be hidden from all views and not count toward completion.`
+          : `Restore "${assignment.Title}"? It will reappear in all views.`;
+        if (!window.confirm(confirmMsg)) return;
+        updateListItem(CONFIG.lists.quarterlyAssignments, id, { IsSkipped: isSkipping })
+          .then(() => {
+            assignment.IsSkipped = isSkipping;
+            showToast(isSkipping ? '✓ Task skipped' : '✓ Task restored', 'success');
+            closeTaskPanel();
+            refreshCurrentView();
+          })
+          .catch(err => showToast(`Failed — ${classifyGraphError(err)}`, 'error'));
       }
     });
 
