@@ -125,6 +125,7 @@ const ROLE = {
   ADMIN:          'Admin',
   FINAL_REVIEWER: 'FinalReviewer',
   TEAM_MEMBER:    'TeamMember',
+  READ_ONLY:      'ReadOnly',
 };
 
 // ============================================================
@@ -168,6 +169,7 @@ const STATE = {
   siteId:         null,       // SharePoint site ID (auto-populated)
   isAdmin:        false,
   isFinalReviewer: false,
+  isReadOnly:      false,
   taskDetailId:   null,       // Currently open task panel assignment ID
   filters: {
     status:    'all',
@@ -626,12 +628,14 @@ async function loadCurrentUser(email) {
     });
     STATE.currentUser = { ...created.fields, _id: created.id };
     // Set role flags for first-login users too (Role defaults to TeamMember on creation)
-    STATE.isAdmin = STATE.currentUser.Role === ROLE.ADMIN;
+    STATE.isAdmin        = STATE.currentUser.Role === ROLE.ADMIN;
     STATE.isFinalReviewer = STATE.currentUser.Role === ROLE.FINAL_REVIEWER || STATE.isAdmin;
+    STATE.isReadOnly      = STATE.currentUser.Role === ROLE.READ_ONLY;
     return false; // First login
   }
-  STATE.isAdmin = STATE.currentUser.Role === ROLE.ADMIN;
+  STATE.isAdmin        = STATE.currentUser.Role === ROLE.ADMIN;
   STATE.isFinalReviewer = STATE.currentUser.Role === ROLE.FINAL_REVIEWER || STATE.isAdmin;
+  STATE.isReadOnly      = STATE.currentUser.Role === ROLE.READ_ONLY;
   return true; // Returning user
 }
 
@@ -736,8 +740,27 @@ function canReview() { return STATE.isFinalReviewer || STATE.isAdmin; }
 function canWrite()  { return !isViewingHistory(); }
 // Returns true if the current user can act as reviewer on a specific assignment.
 function canActAsReviewer(assignment) {
-  if (!canReview() || !canWrite()) return false;
-  return assignment.Reviewer === STATE.currentUser?.Email || STATE.isAdmin;
+  if (!canWrite() || STATE.isReadOnly) return false;
+  const email = STATE.currentUser?.Email;
+  // Assigned reviewer can always act regardless of role
+  if (assignment.Reviewer === email) return true;
+  // FinalReviewer and Admin can act on any task
+  return canReview();
+}
+
+// Returns true if the current user can post review comments.
+// FinalReviewers, Admins, and users assigned as reviewer on at least one task can post.
+function canPostReviewComment(taskId) {
+  if (!canWrite() || STATE.isReadOnly) return false;
+  if (canReview()) return true;
+  // TeamMember assigned as reviewer on this specific task
+  if (taskId) {
+    return STATE.assignments.some(
+      a => a.TaskTemplateLookupId === taskId && a.Reviewer === STATE.currentUser?.Email
+    );
+  }
+  // No taskId — allow if user is reviewer on ANY task this quarter
+  return STATE.assignments.some(a => a.Reviewer === STATE.currentUser?.Email);
 }
 
 // Shows a confirmation dialog when an admin is about to write to a past quarter.
@@ -1441,8 +1464,9 @@ function renderTaskCard(assignment, currentEmail, isOverdue = false, isWaiting =
 
   // Rule 3: anyone can sign preparer step
   // Rule 4: reviewer step restricted to assigned reviewer, admin, FinalReviewer
-  const canSignPreparer  = !assignment.PreparerSignOff;
-  const canSignReviewer  = !assignment.ReviewerSignOff && (isReviewer || isAdmin || isFinalReviewer);
+  const canSignPreparer  = !assignment.PreparerSignOff && !STATE.isReadOnly;
+  // Any user assigned as reviewer can sign off — role doesn't restrict the assigned reviewer
+  const canSignReviewer  = !assignment.ReviewerSignOff && (isReviewer || isAdmin || isFinalReviewer) && !STATE.isReadOnly;
   const role = canSignPreparer ? 'preparer'
     : canSignReviewer ? 'reviewer' : null;
   const locked = isLocked(assignment, currentEmail);
@@ -1793,7 +1817,7 @@ function openTaskPanel(assignmentId) {
   const docLink = assignment.HasDocumentLink && assignment.DocumentLink
     ? `<a class="panel-doc-link" href="${escapeHtml(assignment.DocumentLink)}" target="_blank">🔗 Open document</a>`
     : '';
-  const canReassign = STATE.isAdmin && !isViewingHistory();
+  const canReassign = STATE.isAdmin && !isViewingHistory() && !STATE.isReadOnly;
   document.getElementById('panel-assignment').innerHTML = `
     <div class="panel-meta-row"><span class="panel-meta-label">Preparer</span>${prepBadge}${canReassign ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="reassign" data-id="${assignment._id}" data-role="preparer">Reassign</button>` : ''}</div>
     <div class="panel-meta-row"><span class="panel-meta-label">Reviewer</span>${revBadge}${canReassign && assignment.Reviewer ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="reassign" data-id="${assignment._id}" data-role="reviewer">Reassign</button>` : ''}</div>
@@ -1896,12 +1920,12 @@ function renderPanelAction(assignment, email) {
   // RULE 3: Preparer steps — any team member can sign off (always shown).
   // RULE 4: Reviewer steps — restricted to assigned reviewer, admin, FinalReviewer.
   //         Everyone else sees an "on behalf" override button that logs the actual signer.
-  const canSignPreparer  = true;  // open to all
+  const canSignPreparer  = !STATE.isReadOnly;  // ReadOnly users cannot sign off
   const canSignReviewer  = isReviewer || isAdmin || isFinalReviewer;
 
   // Reversals stay restricted — only assigned person or admin can reverse.
-  const canReversePreparer = isPreparer || isAdmin;
-  const canReverseReviewer = isReviewer || isAdmin || isFinalReviewer;
+  const canReversePreparer = (isPreparer || isAdmin) && !STATE.isReadOnly;
+  const canReverseReviewer = (isReviewer || isAdmin || isFinalReviewer) && !STATE.isReadOnly;
 
   const et = formatDateET(new Date().toISOString());
   let html = '';
@@ -2173,7 +2197,7 @@ function renderMatrixView() {
           const fm = MATRIX_FIELD_MAP[cp];
           const status = ms?.[fm.status] || STATUS.NOT_STARTED;
           const isFinalReview = cp === 'Final Review';
-          const canAct = isFinalReview ? STATE.isFinalReviewer : true;
+          const canAct = isFinalReview ? (STATE.isFinalReviewer || STATE.isAdmin) : !STATE.isReadOnly;
 
           const isFinalCell    = cp === 'Final Review';
           const isMatrixOnlyCell = CONFIG.matrixOnlyColumns.includes(cp);
@@ -3853,9 +3877,8 @@ function attachGlobalEvents() {
 
   // Review comment modal
   document.getElementById('btn-new-rc')?.addEventListener('click', () => {
-    // Only reviewers and admins can create review comments.
-    if (!STATE.isFinalReviewer && !STATE.isAdmin) {
-      showToast('Only reviewers and admins can post review comments', 'error');
+    if (!canPostReviewComment()) {
+      showToast('You must be assigned as a reviewer to post review comments', 'error');
       return;
     }
     const sel = document.getElementById('rc-task-select');
@@ -4909,8 +4932,9 @@ async function saveUserRoleEdit() {
     user.IsActive = newActive;
     aw    // Update current user's role flags if they edited themselves
     if (email === STATE.currentUser?.Email) {
-      STATE.isAdmin = newRole === ROLE.ADMIN;
+      STATE.isAdmin        = newRole === ROLE.ADMIN;
       STATE.isFinalReviewer = newRole === ROLE.FINAL_REVIEWER || STATE.isAdmin;
+      STATE.isReadOnly      = newRole === ROLE.READ_ONLY;
     }
     hideModal('modal-edit-user');
     STATE.pendingUserEdit = null;
@@ -5845,14 +5869,20 @@ async function showApp() {
 
   // Show correct nav items based on role
   document.querySelectorAll('.nav-matrix-link').forEach(el => {
-    el.classList.toggle('hidden', !STATE.isFinalReviewer);
+    el.classList.remove('hidden');
   });
   document.querySelectorAll('.nav-admin-link').forEach(el => {
     el.classList.toggle('hidden', !STATE.isAdmin);
   });
   // Hide "New Comment" button for non-reviewers — reviewers and admins only
   const newRCBtn = document.getElementById('btn-new-rc');
-  if (newRCBtn) newRCBtn.classList.toggle('hidden', !STATE.isFinalReviewer && !STATE.isAdmin);
+  // Show New Comment button for FinalReviewers, Admins, and TeamMembers (they may be assigned reviewers)
+  // ReadOnly users never see it
+  if (newRCBtn) newRCBtn.classList.toggle('hidden', STATE.isReadOnly);
+  const suggestBtn = document.getElementById('btn-suggest-change');
+  if (suggestBtn) suggestBtn.classList.toggle('hidden', STATE.isReadOnly);
+  const signoffAllBtn = document.getElementById('btn-signoff-all');
+  if (signoffAllBtn && STATE.isReadOnly) signoffAllBtn.style.display = 'none';
   // Add Task button — admins only, only when a quarter is active
   const addTaskBtn = document.getElementById('btn-add-task-midquarter');
   if (addTaskBtn) addTaskBtn.style.display = STATE.isAdmin && STATE.activeQuarter ? '' : 'none';
