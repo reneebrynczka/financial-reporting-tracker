@@ -1831,15 +1831,17 @@ function openTaskPanel(assignmentId) {
   const email = STATE.currentUser?.Email;
   const prepBadge = renderBadge(assignment.Preparer);
   const revBadge = assignment.Reviewer ? renderBadge(assignment.Reviewer) : '—';
-  const docLink = assignment.HasDocumentLink && assignment.DocumentLink
+  const isTieOut = (assignment.Category || '').toLowerCase().includes('tie');
+  const docLink = isTieOut && assignment.HasDocumentLink && assignment.DocumentLink
     ? `<a class="panel-doc-link" href="${escapeHtml(assignment.DocumentLink)}" target="_blank">🔗 Open document</a>`
     : '';
+  const showDocRow = isTieOut && (docLink || (STATE.isAdmin && !isViewingHistory()));
   const canReassign = STATE.isAdmin && !isViewingHistory() && !STATE.isReadOnly;
   document.getElementById('panel-assignment').innerHTML = `
     <div class="panel-meta-row"><span class="panel-meta-label">Preparer</span>${prepBadge}${canReassign ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="reassign" data-id="${assignment._id}" data-role="preparer">Reassign</button>` : ''}</div>
     <div class="panel-meta-row"><span class="panel-meta-label">Reviewer</span>${revBadge}${canReassign && assignment.Reviewer ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="reassign" data-id="${assignment._id}" data-role="reviewer">Reassign</button>` : ''}</div>
     <div class="panel-meta-row"><span class="panel-meta-label">Sign-off mode</span><span style="font-size:11px">${assignment.SignOffMode || '—'}</span></div>
-    ${(docLink || (STATE.isAdmin && !isViewingHistory())) ? `<div class="panel-meta-row" style="border-bottom:none"><span class="panel-meta-label">Document</span>${docLink || ''}${STATE.isAdmin && !isViewingHistory() ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="edit-doc-link" data-id="${assignment._id}" data-url="${escapeHtml(assignment.DocumentLink || '')}" title="Edit document link">✏️</button>` : ''}</div>` : ''}`;
+    ${showDocRow ? `<div class="panel-meta-row" style="border-bottom:none"><span class="panel-meta-label">Document</span>${docLink || ''}${STATE.isAdmin && !isViewingHistory() ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="edit-doc-link" data-id="${assignment._id}" data-url="${escapeHtml(assignment.DocumentLink || '')}" title="Edit document link">✏️</button>` : ''}</div>` : ''}`;
 
   // Status chain
   renderPanelStatusChain(assignment, email);
