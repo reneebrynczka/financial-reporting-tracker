@@ -2501,7 +2501,9 @@ function renderCalendarView() {
       const dateStr = toETDateStr(cursor);
       const calRow  = byDate[dateStr];
       const isToday = dateStr === today;
-      const isActive = getReadQuarter() === STATE.activeQuarter;
+      // Only dim past days during an active close — not post-close (entire quarter would grey out)
+      const wd = getTodaysWorkday(STATE.activeQuarter);
+      const isActive = wd !== 'post-close' && wd !== 'pre-close' && getReadQuarter() === STATE.activeQuarter;
       const isPast  = isActive && dateStr < today;
 
       const dayMilestones = STATE.milestones.filter(m => (m.MilestoneDate || '') === dateStr);
