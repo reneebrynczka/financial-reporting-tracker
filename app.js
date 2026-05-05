@@ -2167,7 +2167,9 @@ function renderMatrixView() {
           const isFinalReview = cp === 'Final Review';
           const canAct = isFinalReview ? STATE.isFinalReviewer : true;
 
-          const cellClass = isFinal ? 'final-td' : isMatrixOnly ? 'matrix-only-td' : '';
+          const isFinalCell    = cp === 'Final Review';
+          const isMatrixOnlyCell = CONFIG.matrixOnlyColumns.includes(cp);
+          const cellClass = isFinalCell ? 'final-td' : isMatrixOnlyCell ? 'matrix-only-td' : '';
           if (status === STATUS.COMPLETE) {
             const tooltip = `Signed off by ${ms?.[fm.by] || '—'} · ${formatDateET(ms?.[fm.date])}`;
             html += `<td class="cell-done ${cellClass}" title="${escapeHtml(tooltip)}">
