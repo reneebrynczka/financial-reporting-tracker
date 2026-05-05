@@ -252,7 +252,6 @@ function milestoneClass(calRow) {
   if (t === 'MD')       return 'milestone-md';
   if (t === 'CFO')      return 'milestone-cfo';
   return 'milestone-std';  // Default for Standard or null/empty
-  return 'milestone-std';
 }
 
 function escapeHtml(str) {
@@ -734,12 +733,6 @@ async function loadViewingQuarterData(quarter) {
     loadUsers(),
   ]);
   await loadRCReplies();
-}
-
-// Ensures users are always loaded even when no quarter is active.
-// Called at startup and on every poll so badges and dropdowns always render.
-async function ensureUsersLoaded() {
-  if (!STATE.users.length) await loadUsers();
 }
 
 // Switches the viewing context to a different quarter and re-renders.
@@ -4158,12 +4151,8 @@ function openEditCalendarRowModal(calRowId) {
   STATE.pendingCalendarEdit = calRowId;
 
   const dateEl       = document.getElementById('edit-cal-date');
-  const milestoneEl  = document.getElementById('edit-cal-milestone');
-  const typeEl       = document.getElementById('edit-cal-milestone-type');
   const weekendEl    = document.getElementById('edit-cal-weekend');
   if (dateEl)      dateEl.value      = row.ActualDate || '';
-  if (milestoneEl) milestoneEl.value = row.MilestoneLabel || '';
-  if (typeEl)      typeEl.value      = row.MilestoneType || 'Standard';
   if (weekendEl)   weekendEl.checked = !!row.IsWeekend;
 
   // Auto-update the weekend checkbox when the date changes
@@ -4200,8 +4189,6 @@ async function saveCalendarRowEdit() {
   }
 
   const newDate      = document.getElementById('edit-cal-date')?.value;
-  const newMilestone = document.getElementById('edit-cal-milestone')?.value?.trim() || null;
-  const newType      = document.getElementById('edit-cal-milestone-type')?.value || 'Standard';
   // Auto-detect weekend from the date itself — don't rely solely on the checkbox
   const newDateDay   = newDate ? new Date(newDate + 'T12:00:00').getDay() : -1;
   const newWeekend   = newDateDay === 0 || newDateDay === 6 ||
@@ -4214,24 +4201,18 @@ async function saveCalendarRowEdit() {
 
   // Snapshot current values for rollback on failure.
   const snapshot = {
-    ActualDate:     row.ActualDate,
-    MilestoneLabel: row.MilestoneLabel,
-    MilestoneType:  row.MilestoneType,
-    IsWeekend:      row.IsWeekend,
+    ActualDate: row.ActualDate,
+    IsWeekend:  row.IsWeekend,
   };
 
   // Optimistic update — apply immediately so the admin panel reflects the change.
-  row.ActualDate     = newDate;
-  row.MilestoneLabel = newMilestone;
-  row.MilestoneType  = newMilestone ? newType : null;
-  row.IsWeekend      = newWeekend;
+  row.ActualDate = newDate;
+  row.IsWeekend  = newWeekend;
 
   try {
     await updateListItem(CONFIG.lists.closeCalendar, calRowId, {
-      ActualDate:     newDate,
-      MilestoneLabel: newMilestone,
-      MilestoneType:  newMilestone ? newType : null,
-      IsWeekend:      newWeekend,
+      ActualDate: newDate,
+      IsWeekend:  newWeekend,
     });
     await hideModal('modal-edit-calendar');
     STATE.pendingCalendarEdit = null;
@@ -4340,7 +4321,8 @@ async function saveCalendarRowEdit() {
     renderAdminPanel('calendar');
   } catch (err) {
     // Revert optimistic update so the calendar reflects actual SharePoint state.
-    Object.assign(row, snapshot);
+    row.ActualDate = snapshot.ActualDate;
+    row.IsWeekend  = snapshot.IsWeekend;
     showToast('Failed to update calendar row', 'error');
     logError('saveCalendarRowEdit failed:', err);
   }
