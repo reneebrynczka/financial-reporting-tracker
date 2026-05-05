@@ -20,6 +20,7 @@ const CONFIG = {
   // SharePoint Site
   siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
 
+
   // SharePoint List Names — must match exactly
   lists: {
     taskTemplates:        'TaskTemplates',
@@ -2478,11 +2479,22 @@ function renderCalendarView() {
   let cursor = new Date(startMonday);
   let lastMonth = -1;
   while (cursor <= endSunday) {
-    const cursorET = new Date(cursor.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
-    const cursorMonth = cursorET.getMonth();
-    if (cursorMonth !== lastMonth) {
-      lastMonth = cursorMonth;
-      const monthName = cursorET.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: CONFIG.timezone });
+    // Determine the month label from the first actual workday in this week,
+    // not the Monday — avoids showing "March" when WD1 is April 1st.
+    const weekDates = [];
+    for (let d = 0; d < 7; d++) {
+      const dt = new Date(cursor.getTime() + d * 86400000);
+      weekDates.push(toETDateStr(dt));
+    }
+    const firstWorkdayInWeek = weekDates.find(ds => byDate[ds]);
+    const refDateStr = firstWorkdayInWeek || weekDates[0];
+    const refDate = new Date(refDateStr + 'T12:00:00');
+    const refET = new Date(refDate.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+    const refMonth = refET.getMonth();
+
+    if (refMonth !== lastMonth) {
+      lastMonth = refMonth;
+      const monthName = refET.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: CONFIG.timezone });
       html += `<div class="cal-month-header">${monthName}</div>`;
     }
     html += '<div class="cal-week-row">';
@@ -2492,9 +2504,21 @@ function renderCalendarView() {
       const isToday = dateStr === today;
       const isPast  = dateStr < today;
 
+      const dayMilestones = STATE.milestones.filter(m => (m.MilestoneDate || '') === dateStr);
       if (!calRow) {
-        // Non-workday — empty cell
-        html += '<div class="cal-day empty"></div>';
+        if (dayMilestones.length) {
+          // Non-workday but has milestones — show a minimal cell
+          html += `<div class="cal-day" style="opacity:0.85;border-style:dashed">
+            <div class="cal-day-top"><span class="cal-day-date">${formatDateShort(dateStr)}</span></div>
+            ${dayMilestones.map(m => `<span class="cal-ms ${milestoneClass(m)}">${escapeHtml(m.MilestoneLabel)}</span>`).join('')}
+          </div>`;
+        } else {
+          const etD = new Date(cursor.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+          const isWknd = etD.getDay() === 0 || etD.getDay() === 6;
+          html += `<div class="cal-day empty">
+            <div class="cal-day-top"><span class="cal-day-date" style="color:${isWknd ? '#bbb' : 'var(--color-text-tertiary)'}">${formatDateShort(dateStr)}</span></div>
+          </div>`;
+        }
       } else {
         const cls = [
           'cal-day',
@@ -2510,7 +2534,7 @@ function renderCalendarView() {
           </div>
           ${calRow.IsWeekend ? '<span class="cal-wknd-flag">Weekend</span>' : ''}
           ${STATE.milestones
-            .filter(m => Number(m.WorkdayNumber) === Number(calRow.WorkdayNumber))
+            .filter(m => (m.MilestoneDate || '') === dateStr)
             .map(m => `<span class="cal-ms ${milestoneClass(m)}">${escapeHtml(m.MilestoneLabel)}</span>`)
             .join('')}
         </div>`;
