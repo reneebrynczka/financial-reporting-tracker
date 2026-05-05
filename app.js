@@ -70,13 +70,13 @@ const CONFIG = {
     { hex: '#FF7043', label: 'Tangerine' },
     { hex: '#E67300', label: 'Orange' },
     { hex: '#F5A623', label: 'Amber' },
-    { hex: '#7CB900', label: 'Lime' },
+    { hex: '#5A8A00', label: 'Lime' },
     { hex: '#3AB54A', label: 'Green' },
     { hex: '#558B2F', label: 'Olive' },
     { hex: '#00897B', label: 'Teal' },
     { hex: '#00838F', label: 'Petrol' },
     { hex: '#29ABE2', label: 'Sky' },
-    { hex: '#0A1264', label: 'Navy' },
+    { hex: '#2E4DA0', label: 'Navy' },
     { hex: '#5C6BC0', label: 'Indigo' },
     { hex: '#7B61FF', label: 'Purple' },
     { hex: '#8B5CF6', label: 'Lavender' },
@@ -85,7 +85,7 @@ const CONFIG = {
     { hex: '#E86545', label: 'Coral' },
     { hex: '#75787B', label: 'Slate' },
     { hex: '#78909C', label: 'Steel' },
-    { hex: '#78716C', label: 'Warm Grey' },
+    { hex: '#B5651D', label: 'Chestnut' },
   ],
 };
 
@@ -197,6 +197,8 @@ const STATE = {
   _addUserColor:          null,   // Color selected in Add User modal
   pendingCalendarEdit:    null,   // calendar row ID being edited
   pendingUserEdit:        null,   // user email being edited
+  _editUserEmoji:         null,   // emoji selected in edit user modal
+  _editUserColor:         null,   // color selected in edit user modal
   suggestions:            [],         // TaskSuggestions (loaded when admin panel opens)
   pendingCascade:         null,   // {quarter, fromWD, shiftDays, subsequent}
   pendingRollforward:     null,   // quarter name awaiting rollforward confirm
@@ -254,9 +256,10 @@ function formatDateShort(isoString) {
 // Falls back gracefully for legacy IsCustomMilestone boolean rows.
 function milestoneClass(calRow) {
   const t = calRow.MilestoneType;
-  if (t === 'SVP')      return 'milestone-svp';
-  if (t === 'MD')       return 'milestone-md';
-  if (t === 'CFO')      return 'milestone-cfo';
+  if (t === 'SVP')           return 'milestone-svp';
+  if (t === 'MD')            return 'milestone-md';
+  if (t === 'CFO')           return 'milestone-cfo';
+  if (t === 'Team Deadline') return 'milestone-team';
   return 'milestone-std';  // Default for Standard or null/empty
 }
 
@@ -2449,6 +2452,7 @@ function renderCalendarView() {
       <div class="cal-view-legend-item"><span class="milestone-svp" style="padding:2px 8px;border-radius:8px">SVP</span>&nbsp;SVP deliverables</div>
       <div class="cal-view-legend-item"><span class="milestone-md" style="padding:2px 8px;border-radius:8px">MD</span>&nbsp;MD deliverables</div>
       <div class="cal-view-legend-item"><span class="milestone-cfo" style="padding:2px 8px;border-radius:8px">CFO</span>&nbsp;CFO deliverables</div>
+      <div class="cal-view-legend-item"><span class="milestone-team" style="padding:2px 8px;border-radius:8px">Team</span>&nbsp;Team deadlines</div>
     </div>
     <div class="cal-dow-header">
       <div class="cal-dow-label">Mon</div>
@@ -2472,7 +2476,15 @@ function renderCalendarView() {
   };
 
   let cursor = new Date(startMonday);
+  let lastMonth = -1;
   while (cursor <= endSunday) {
+    const cursorET = new Date(cursor.toLocaleString('en-US', { timeZone: CONFIG.timezone }));
+    const cursorMonth = cursorET.getMonth();
+    if (cursorMonth !== lastMonth) {
+      lastMonth = cursorMonth;
+      const monthName = cursorET.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: CONFIG.timezone });
+      html += `<div class="cal-month-header">${monthName}</div>`;
+    }
     html += '<div class="cal-week-row">';
     for (let d = 0; d < 7; d++) {
       const dateStr = toETDateStr(cursor);
@@ -2494,7 +2506,7 @@ function renderCalendarView() {
         html += `<div class="${cls}">
           <div class="cal-day-top">
             <span class="cal-day-wd">WD${calRow.WorkdayNumber}${isToday ? '<span class="cal-today-dot"></span>' : ''}</span>
-            <span class="cal-day-date">${formatDateShort(dateStr + 'T12:00:00')}</span>
+            <span class="cal-day-date">${formatDateShort(dateStr)}</span>
           </div>
           ${calRow.IsWeekend ? '<span class="cal-wknd-flag">Weekend</span>' : ''}
           ${STATE.milestones
@@ -4903,13 +4915,35 @@ function openEditUserRoleModal(email) {
   const user = STATE.users.find(u => u.Email === email);
   if (!user) return;
   STATE.pendingUserEdit = email;
+  STATE._editUserEmoji = user.Emoji || null;
+  STATE._editUserColor = user.Color || CONFIG.colorOptions[0].hex;
 
-  const nameEl = document.getElementById('edit-user-name');
-  const roleEl = document.getElementById('edit-user-role');
+  const nameEl   = document.getElementById('edit-user-name');
+  const roleEl   = document.getElementById('edit-user-role');
   const activeEl = document.getElementById('edit-user-active');
-  if (nameEl) nameEl.textContent = `${user.Emoji || ''} ${user.Title || email}`;
-  if (roleEl) roleEl.value = user.Role || ROLE.TEAM_MEMBER;
-  if (activeEl) activeEl.checked = user.IsActive !== false;
+  const customEl = document.getElementById('edit-user-emoji-custom');
+  if (nameEl)   nameEl.textContent  = `${user.Emoji || ''} ${user.Title || email}`;
+  if (roleEl)   roleEl.value        = user.Role || ROLE.TEAM_MEMBER;
+  if (activeEl) activeEl.checked    = user.IsActive !== false;
+  if (customEl) customEl.value      = '';
+
+  renderEmojiPicker('edit-user-emoji-grid', user.Emoji, (emoji) => {
+    STATE._editUserEmoji = emoji;
+    const c = document.getElementById('edit-user-emoji-custom');
+    if (c) c.value = '';
+  });
+  renderColorPicker('edit-user-color-grid', user.Color || CONFIG.colorOptions[0].hex, (color) => {
+    STATE._editUserColor = color;
+  });
+
+  // Custom emoji input
+  if (customEl) {
+    customEl.oninput = () => {
+      const val = customEl.value.trim();
+      if (val) STATE._editUserEmoji = val;
+    };
+  }
+
   showModal('modal-edit-user');
 }
 
@@ -4921,15 +4955,21 @@ async function saveUserRoleEdit() {
 
   const newRole   = document.getElementById('edit-user-role')?.value || ROLE.TEAM_MEMBER;
   const newActive = document.getElementById('edit-user-active')?.checked !== false;
+  const newEmoji  = STATE._editUserEmoji || user.Emoji || null;
+  const newColor  = STATE._editUserColor || user.Color || null;
 
   try {
     await updateListItem(CONFIG.lists.users, user._id, {
       Role:     newRole,
       IsActive: newActive,
+      Emoji:    newEmoji,
+      Color:    newColor,
     });
     const prevRole = user.Role;
     user.Role     = newRole;
     user.IsActive = newActive;
+    user.Emoji    = newEmoji;
+    user.Color    = newColor;
     // Update current user's role flags if they edited themselves
     if (email === STATE.currentUser?.Email) {
       STATE.isAdmin        = newRole === ROLE.ADMIN;
