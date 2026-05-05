@@ -4379,7 +4379,6 @@ async function confirmAddMilestone() {
       MilestoneType:  type,
     };
     if (_pendingMilestoneWD) milestoneFields.WorkdayNumber = Number(_pendingMilestoneWD);
-    console.log('[Folio DEBUG] Creating milestone with fields:', JSON.stringify(milestoneFields));
     const created = await createListItem(CONFIG.lists.calendarMilestones, milestoneFields);
     STATE.milestones.push({ ...created.fields, _id: created.id });
     showToast(`✓ Milestone added`, 'success');
