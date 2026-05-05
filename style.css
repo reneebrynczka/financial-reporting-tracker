@@ -903,15 +903,11 @@ body {
   font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
-  max-width: 220px;
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--color-text-primary);
-  position: sticky;
-  left: 0;
-  background: var(--white);
-  z-index: 1;
-  border-right: 2px solid var(--mid-gray);
+  border-right: 1px solid var(--mid-gray);
 }
 .matrix-table td.person-cell { font-size: 10px; min-width: 60px; }
 /* Section header rows — subtle grouping, not heavy navy */
