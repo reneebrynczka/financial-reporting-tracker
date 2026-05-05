@@ -2121,7 +2121,7 @@ function renderMatrixView() {
   const checkpoints = CONFIG.matrixCheckpoints;
   let html = `<table class="matrix-table">
     <thead><tr>
-      <th class="left-align" style="min-width:160px;position:sticky;left:0;z-index:3;background:var(--navy)">Item</th>
+      <th class="left-align" style="min-width:160px">Item</th>
       <th class="left-align" style="min-width:70px">Preparer</th>
       <th class="left-align" style="min-width:70px">1st Reviewer</th>
       ${checkpoints.map(cp => {
