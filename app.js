@@ -4369,14 +4369,15 @@ async function confirmAddMilestone() {
   hideModal('modal-add-milestone');
   try {
     const quarter = STATE.activeQuarter || STATE.workingQuarter;
-    const created = await createListItem(CONFIG.lists.calendarMilestones, {
+    const milestoneFields = {
       Title:          `${quarter}-${_pendingMilestoneDate}-${label}`,
       Quarter:        quarter,
-      WorkdayNumber:  _pendingMilestoneWD ? Number(_pendingMilestoneWD) : null,
       MilestoneDate:  _pendingMilestoneDate,
       MilestoneLabel: label,
       MilestoneType:  type,
-    });
+    };
+    if (_pendingMilestoneWD) milestoneFields.WorkdayNumber = Number(_pendingMilestoneWD);
+    const created = await createListItem(CONFIG.lists.calendarMilestones, milestoneFields);
     STATE.milestones.push({ ...created.fields, _id: created.id });
     showToast(`✓ Milestone added`, 'success');
     renderAdminPanel('calendar');
