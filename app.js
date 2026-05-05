@@ -4365,10 +4365,12 @@ async function confirmAddMilestone() {
   const label = document.getElementById('milestone-label')?.value?.trim();
   const type  = document.getElementById('milestone-type')?.value || 'Standard';
   if (!label) { showToast('Milestone label is required', 'error'); return; }
+  if (!_pendingMilestoneDate) { showToast('No date selected — please close and try again', 'error'); return; }
+  const quarter = STATE.activeQuarter || STATE.workingQuarter;
+  if (!quarter) { showToast('No active quarter', 'error'); return; }
 
   hideModal('modal-add-milestone');
   try {
-    const quarter = STATE.activeQuarter || STATE.workingQuarter;
     const milestoneFields = {
       Title:          `${quarter}-${_pendingMilestoneDate}-${label}`,
       Quarter:        quarter,
