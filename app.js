@@ -4370,11 +4370,7 @@ async function confirmAddMilestone() {
   try {
     const quarter = STATE.activeQuarter || STATE.workingQuarter;
     const created = await createListItem(CONFIG.lists.calendarMilestones, {
-      Title:          `${quarter}-${_pendingMilestoneDate}-${label}`,
-      Quarter:        quarter,
-      MilestoneDate:  _pendingMilestoneDate,
-      MilestoneLabel: label,
-      MilestoneType:  type,
+      Title: label,
     });
     STATE.milestones.push({ ...created.fields, _id: created.id });
     showToast(`✓ Milestone added`, 'success');
