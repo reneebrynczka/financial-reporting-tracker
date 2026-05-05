@@ -4372,7 +4372,6 @@ async function confirmAddMilestone() {
     const created = await createListItem(CONFIG.lists.calendarMilestones, {
       Title:          `${quarter}-${_pendingMilestoneDate}-${label}`,
       Quarter:        quarter,
-      WorkdayNumber:  _pendingMilestoneWD ? Number(_pendingMilestoneWD) : 0,
       MilestoneDate:  _pendingMilestoneDate,
       MilestoneLabel: label,
       MilestoneType:  type,
