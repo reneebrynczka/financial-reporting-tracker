@@ -2148,8 +2148,16 @@ function renderMatrixView() {
       );
       if (taskLinked.length > 0 && taskLinked.every(a => a.IsSkipped)) return;
 
-      const preparers = [...new Set(assignments.filter(a => !a.IsSkipped).map(a => a.Preparer).filter(Boolean))];
-      const reviewers = [...new Set(assignments.filter(a => !a.IsSkipped).map(a => a.Reviewer).filter(Boolean))];
+      const preparers = [...new Set(
+        assignments
+          .filter(a => !a.IsSkipped && !a.MatrixCheckpoint?.toLowerCase().includes('xbrl'))
+          .map(a => a.Preparer).filter(Boolean)
+      )];
+      const reviewers = [...new Set(
+        assignments
+          .filter(a => !a.IsSkipped && !a.MatrixCheckpoint?.toLowerCase().includes('xbrl'))
+          .map(a => a.Reviewer).filter(Boolean)
+      )];
 
       html += `<tr>
         <td class="item-cell">${escapeHtml(item.name)}</td>
