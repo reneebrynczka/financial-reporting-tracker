@@ -4930,7 +4930,7 @@ async function saveUserRoleEdit() {
     const prevRole = user.Role;
     user.Role     = newRole;
     user.IsActive = newActive;
-    aw    // Update current user's role flags if they edited themselves
+    // Update current user's role flags if they edited themselves
     if (email === STATE.currentUser?.Email) {
       STATE.isAdmin        = newRole === ROLE.ADMIN;
       STATE.isFinalReviewer = newRole === ROLE.FINAL_REVIEWER || STATE.isAdmin;
