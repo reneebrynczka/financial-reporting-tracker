@@ -2121,14 +2121,14 @@ function renderMatrixView() {
   const checkpoints = CONFIG.matrixCheckpoints;
   let html = `<table class="matrix-table">
     <thead><tr>
-      <th class="left-align" style="min-width:200px;position:sticky;left:0;z-index:3">Item</th>
-      <th class="left-align" style="min-width:80px">Preparer</th>
-      <th class="left-align" style="min-width:80px">1st Reviewer</th>
+      <th class="left-align" style="min-width:160px;position:sticky;left:0;z-index:3;background:var(--navy)">Item</th>
+      <th class="left-align" style="min-width:70px">Preparer</th>
+      <th class="left-align" style="min-width:70px">1st Reviewer</th>
       ${checkpoints.map(cp => {
         const isMatrixOnly = CONFIG.matrixOnlyColumns.includes(cp);
         const isFinal = cp === 'Final Review';
         const cls = isFinal ? 'final-col' : isMatrixOnly ? 'matrix-only-col' : '';
-        return `<th class="${cls}" style="min-width:64px" title="${escapeHtml(cp)}">${escapeHtml(cp)}</th>`;
+        return `<th class="${cls}" style="min-width:52px" title="${escapeHtml(cp)}">${escapeHtml(cp)}</th>`;
       }).join('')}
     </tr></thead>
     <tbody>`;
