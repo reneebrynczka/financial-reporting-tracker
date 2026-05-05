@@ -129,9 +129,14 @@
             <p class="view-sub" id="my-tasks-sub"></p>
           </div>
           <div class="view-actions">
+            <div class="view-toggle-grp">
+              <button class="view-toggle-btn active" id="btn-my-tasks-cards">⊞ Cards</button>
+              <button class="view-toggle-btn" id="btn-my-tasks-table">≡ Table</button>
+            </div>
             <button class="btn-success btn-sm" id="btn-signoff-all" style="display:none" onclick="signOffAll()">Sign off all</button>
           </div>
         </div>
+        <div id="my-tasks-card-view">
         <div id="my-tasks-overdue" class="task-section hidden">
           <div class="section-label overdue-label">OVERDUE <span class="section-count overdue-count" id="overdue-count">0</span></div>
           <div id="overdue-cards"></div>
@@ -158,6 +163,23 @@
             <button class="toggle-btn" id="waiting-toggle">▼ Show</button>
           </div>
           <div id="waiting-cards" class="hidden"></div>
+        </div>
+        </div>
+        <div id="my-tasks-table-view" class="hidden">
+          <div class="data-table-wrap">
+            <table class="data-table" id="my-tasks-table">
+              <thead><tr id="my-tasks-thead">
+                <th style="min-width:200px">Task</th>
+                <th>Category</th>
+                <th>Role</th>
+                <th>Prep WD</th>
+                <th>Rev WD</th>
+                <th>Status</th>
+                <th>Due</th>
+              </tr></thead>
+              <tbody id="my-tasks-tbody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
 
