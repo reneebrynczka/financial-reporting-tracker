@@ -128,9 +128,68 @@ const ROLE = {
   READ_ONLY:      'ReadOnly',
 };
 
+// Domain vocabulary — single source of truth for all business string constants.
+// Use these instead of inline string literals so spelling/casing changes propagate everywhere.
+const PRIORITY = {
+  URGENT: 'Urgent',
+  NORMAL: 'Normal',
+};
+
+const RC_STATUS = {
+  OPEN:     'Open',
+  RESOLVED: 'Resolved',
+};
+
+const FILING = {
+  Q:    '10-Q',
+  K:    '10-K',
+  BOTH: 'Both',
+};
+
+const CHECKPOINT = {
+  SP_PREPARER:     'SP Preparer',
+  SP_1ST_REVIEWER: 'SP 1st Reviewer',
+  LOADED_TO_CLARA: 'Loaded to Clara',
+  FINAL_REVIEW:    'Final Review',
+};
+
+const CATEGORY = {
+  TIE_OUT:    'Tie Out',
+  FINANCIALS: 'Financials',
+  XBRL:       'XBRL',
+};
+
 // ============================================================
-// MSAL SETUP
+// STATE MUTATION HELPERS (Feedback B — single instrumentation point)
+// Use these instead of direct STATE.assignments mutations so that
+// future logging, validation, or optimistic-update guards can be
+// added in one place without touching every call site.
 // ============================================================
+function patchAssignment(id, patch) {
+  const a = STATE.assignments.find(x => x._id === id);
+  if (a) Object.assign(a, patch);
+  return a;
+}
+
+function patchMatrixStatus(id, patch) {
+  const m = STATE.matrixStatus.find(x => x._id === id);
+  if (m) Object.assign(m, patch);
+  return m;
+}
+
+function patchCalendarRow(id, patch) {
+  const c = STATE.calendar.find(x => x._id === id);
+  if (c) Object.assign(c, patch);
+  return c;
+}
+
+function patchUser(id, patch) {
+  const u = STATE.users.find(x => x._id === id);
+  if (u) Object.assign(u, patch);
+  return u;
+}
+
+
 const msalConfig = {
   auth: {
     clientId:    CONFIG.clientId,
@@ -1075,7 +1134,7 @@ async function performMatrixUpdate(matrixItem, column, newStatus) {
     }
     showToast(`✓ ${column} updated to ${newStatus}`, 'success');
     // Log Final Review sign-offs to the audit trail — it's the last checkpoint before filing
-    if (column === 'Final Review') {
+    if (column === CHECKPOINT.FINAL_REVIEW) {
       await writeAuditLog('FinalReview', {
         taskName:  `${matrixItem} — Final Review`,
         newValue:  newStatus,
@@ -1213,8 +1272,7 @@ async function confirmEditDocLink() {
     });
     const assignment = STATE.assignments.find(a => a._id === assignmentId);
     if (assignment) {
-      assignment.DocumentLink    = url;
-      assignment.HasDocumentLink = !!url;
+      patchAssignment(assignmentId, { DocumentLink: url, HasDocumentLink: !!url });
     }
     showToast(url ? '✓ Document link updated' : '✓ Document link removed', 'success');
     openTaskPanel(STATE.taskDetailId);
@@ -1480,7 +1538,7 @@ function renderTaskCard(assignment, currentEmail, isOverdue = false, isWaiting =
   // Check for urgent review comments
   const hasUrgentRC = STATE.reviewComments.some(
     rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId &&
-          rc.Priority === 'Urgent' && rc.Status === 'Open'
+          rc.Priority === PRIORITY.URGENT && rc.Status === RC_STATUS.OPEN
   );
   const rcCount = STATE.reviewComments.filter(
     rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId
@@ -1831,7 +1889,7 @@ function openTaskPanel(assignmentId) {
   const email = STATE.currentUser?.Email;
   const prepBadge = renderBadge(assignment.Preparer);
   const revBadge = assignment.Reviewer ? renderBadge(assignment.Reviewer) : '—';
-  const isTieOut = (assignment.Category || '').toLowerCase().includes('tie');
+  const isTieOut = (assignment.Category || '').toLowerCase() === CATEGORY.TIE_OUT.toLowerCase();
   const docLink = isTieOut && assignment.HasDocumentLink && assignment.DocumentLink
     ? `<a class="panel-doc-link" href="${escapeHtml(assignment.DocumentLink)}" target="_blank">🔗 Open document</a>`
     : '';
@@ -1855,11 +1913,11 @@ function openTaskPanel(assignmentId) {
   if (rcPreview) {
     if (rcs.length) {
       rcPreview.innerHTML = rcs.slice(0,2).map(rc => `
-        <div class="rc-card ${rc.Priority === 'Urgent' ? 'urgent' : ''}" style="cursor:default">
+        <div class="rc-card ${rc.Priority === PRIORITY.URGENT ? 'urgent' : ''}" style="cursor:default">
           <div class="rc-meta">
             ${renderBadge(rc.CreatedBy)}
             <span class="rc-meta-text">${formatDateET(rc.CreatedDate) || '—'}</span>
-            <span class="${rc.Priority === 'Urgent' ? 'badge-urgent' : 'badge-normal'}">${rc.Priority}</span>
+            <span class="${rc.Priority === PRIORITY.URGENT ? 'badge-urgent' : 'badge-normal'}">${rc.Priority}</span>
           </div>
           <div class="rc-comment-text">"${escapeHtml((rc.CommentText || '').substring(0, 120))}${rc.CommentText?.length > 120 ? '...' : ''}"</div>
         </div>`).join('');
@@ -2074,12 +2132,12 @@ function renderReviewComments() {
     : quarter;
   const sub = document.getElementById('rc-sub');
   if (sub) {
-    const urgent  = STATE.reviewComments.filter(rc => rc.Priority === 'Urgent' && rc.Status === 'Open').length;
-    const open    = STATE.reviewComments.filter(rc => rc.Status === 'Open').length;
-    const resolved = STATE.reviewComments.filter(rc => rc.Status === 'Resolved').length;
+    const urgent  = STATE.reviewComments.filter(rc => rc.Priority === PRIORITY.URGENT && rc.Status === RC_STATUS.OPEN).length;
+    const open    = STATE.reviewComments.filter(rc => rc.Status === RC_STATUS.OPEN).length;
+    const resolved = STATE.reviewComments.filter(rc => rc.Status === RC_STATUS.RESOLVED).length;
     sub.textContent = `${quarter || '—'} · ${urgent} urgent · ${open} open · ${resolved} resolved`;
     document.getElementById('rc-urgent-count').textContent = urgent;
-    document.getElementById('rc-open-count').textContent = STATE.reviewComments.filter(rc => rc.Priority === 'Normal' && rc.Status === 'Open').length;
+    document.getElementById('rc-open-count').textContent = STATE.reviewComments.filter(rc => rc.Priority === PRIORITY.NORMAL && rc.Status === RC_STATUS.OPEN).length;
     document.getElementById('rc-resolved-count').textContent = resolved;
   }
 
@@ -2088,9 +2146,9 @@ function renderReviewComments() {
   const resolvedList = document.getElementById('rc-resolved-list');
 
   const allRCs  = rcQuarter ? STATE.reviewComments.filter(rc => rc.Quarter === rcQuarter) : STATE.reviewComments;
-  const urgent  = allRCs.filter(rc => rc.Priority === 'Urgent' && rc.Status === 'Open');
-  const normal  = allRCs.filter(rc => rc.Priority === 'Normal' && rc.Status === 'Open');
-  const resolved = allRCs.filter(rc => rc.Status === 'Resolved');
+  const urgent  = allRCs.filter(rc => rc.Priority === PRIORITY.URGENT && rc.Status === RC_STATUS.OPEN);
+  const normal  = allRCs.filter(rc => rc.Priority === PRIORITY.NORMAL && rc.Status === RC_STATUS.OPEN);
+  const resolved = allRCs.filter(rc => rc.Status === RC_STATUS.RESOLVED);
 
   const urgentSection = document.getElementById('rc-urgent-section');
   if (urgentSection) urgentSection.classList.toggle('hidden', urgent.length === 0);
@@ -2130,7 +2188,7 @@ function renderRCCard(rc, isResolved = false) {
     : '';
 
   return `
-    <div class="rc-card ${rc.Priority === 'Urgent' ? 'urgent' : ''} ${isResolved ? 'resolved' : ''}">
+    <div class="rc-card ${rc.Priority === PRIORITY.URGENT ? 'urgent' : ''} ${isResolved ? 'resolved' : ''}">
       <div class="rc-card-header">
         <div>
           <div class="rc-task-link ${assignmentId ? 'rc-task-link-active' : ''}"
@@ -2143,7 +2201,7 @@ function renderRCCard(rc, isResolved = false) {
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
           <div class="rc-badges">
-            <span class="${rc.Priority === 'Urgent' ? 'badge-urgent' : 'badge-normal'}">${rc.Priority}</span>
+            <span class="${rc.Priority === PRIORITY.URGENT ? 'badge-urgent' : 'badge-normal'}">${rc.Priority}</span>
             <span class="${isResolved ? 'badge-resolved' : 'badge-open'}">${isResolved ? '✓ Resolved' : 'Open'}</span>
           </div>
           ${replyBadge}
@@ -2188,11 +2246,11 @@ function renderMatrixView() {
 
   // Build sections dynamically from templates — supports any MatrixSection value.
   // For Q4 quarters, 'Form 10-Q' is automatically renamed to 'Form 10-K'.
-  const filingType = isQuarterQ4(quarter) ? '10-K' : '10-Q';
+  const filingType = isQuarterQ4(quarter) ? FILING.K : FILING.Q;
   const sections = {};
 
   STATE.templates
-    .filter(t => t.MatrixItem && t.MatrixSection && (t.FilingType === filingType || t.FilingType === 'Both'))
+    .filter(t => t.MatrixItem && t.MatrixSection && (t.FilingType === filingType || t.FilingType === FILING.BOTH))
     .forEach(t => {
       // Rename 'Form 10-Q' → 'Form 10-K' in Q4 quarters
       let section = t.MatrixSection;
@@ -2212,7 +2270,7 @@ function renderMatrixView() {
       <th class="left-align" style="min-width:70px">1st Reviewer</th>
       ${checkpoints.map(cp => {
         const isMatrixOnly = CONFIG.matrixOnlyColumns.includes(cp);
-        const isFinal = cp === 'Final Review';
+        const isFinal = cp === CHECKPOINT.FINAL_REVIEW;
         const cls = isFinal ? 'final-col' : isMatrixOnly ? 'matrix-only-col' : '';
         return `<th class="${cls}" style="min-width:52px" title="${escapeHtml(cp)}">${escapeHtml(cp)}</th>`;
       }).join('')}
@@ -2236,12 +2294,12 @@ function renderMatrixView() {
 
       const preparers = [...new Set(
         assignments
-          .filter(a => !a.IsSkipped && !a.MatrixCheckpoint?.toLowerCase().includes('xbrl'))
+          .filter(a => !a.IsSkipped && !a.MatrixCheckpoint?.toLowerCase().toLowerCase() === CATEGORY.XBRL.toLowerCase())
           .map(a => a.Preparer).filter(Boolean)
       )];
       const reviewers = [...new Set(
         assignments
-          .filter(a => !a.IsSkipped && !a.MatrixCheckpoint?.toLowerCase().includes('xbrl'))
+          .filter(a => !a.IsSkipped && !a.MatrixCheckpoint?.toLowerCase().toLowerCase() === CATEGORY.XBRL.toLowerCase())
           .map(a => a.Reviewer).filter(Boolean)
       )];
 
@@ -2258,10 +2316,10 @@ function renderMatrixView() {
           const ms = STATE.matrixStatus.find(m => m.MatrixItem === item.name && m.Quarter === quarter);
           const fm = MATRIX_FIELD_MAP[cp];
           const status = ms?.[fm.status] || STATUS.NOT_STARTED;
-          const isFinalReview = cp === 'Final Review';
+          const isFinalReview = cp === CHECKPOINT.FINAL_REVIEW;
           const canAct = isFinalReview ? (STATE.isFinalReviewer || STATE.isAdmin) : !STATE.isReadOnly;
 
-          const isFinalCell    = cp === 'Final Review';
+          const isFinalCell    = cp === CHECKPOINT.FINAL_REVIEW;
           const isMatrixOnlyCell = CONFIG.matrixOnlyColumns.includes(cp);
           const cellClass = isFinalCell ? 'final-td' : isMatrixOnlyCell ? 'matrix-only-td' : '';
           if (status === STATUS.COMPLETE) {
@@ -2320,7 +2378,7 @@ function renderMatrixView() {
         item: cell.dataset.item,
         col:  cell.dataset.col,
       };
-      const isNA = cell.dataset.col === 'Final Review' && !STATE.isFinalReviewer;
+      const isNA = cell.dataset.col === CHECKPOINT.FINAL_REVIEW && !STATE.isFinalReviewer;
       const titleEl = document.getElementById('matrix-modal-title');
       const descEl = document.getElementById('matrix-modal-desc');
       const optsEl = document.getElementById('matrix-modal-options');
@@ -2358,7 +2416,7 @@ function renderDashboard() {
   const total    = STATE.assignments.length;
   const complete = STATE.assignments.filter(a => a.Status === STATUS.COMPLETE).length;
   const overdue  = STATE.assignments.filter(a => !a.IsSkipped && isTaskOverdue(a)).length;
-  const urgentRC = STATE.reviewComments.filter(rc => rc.Priority === 'Urgent' && rc.Status === 'Open').length;
+  const urgentRC = STATE.reviewComments.filter(rc => rc.Priority === PRIORITY.URGENT && rc.Status === RC_STATUS.OPEN).length;
   const pct = total ? Math.round((complete / total) * 100) : 0;
 
   const metricGrid = document.getElementById('metric-grid');
@@ -2366,7 +2424,7 @@ function renderDashboard() {
     metricGrid.innerHTML = `
       <div class="metric-card"><div class="metric-label">Overall complete</div><div class="metric-value ${pct > 75 ? 'success' : ''}">${pct}%</div><div class="metric-sub">${complete} of ${total} tasks</div></div>
       <div class="metric-card"><div class="metric-label">Overdue tasks</div><div class="metric-value ${overdue > 0 ? 'danger' : ''}">${overdue}</div><div class="metric-sub">Across all categories</div></div>
-      <div class="metric-card"><div class="metric-label">Urgent comments</div><div class="metric-value ${urgentRC > 0 ? 'danger' : ''}">${urgentRC}</div><div class="metric-sub">${STATE.reviewComments.filter(rc => rc.Status === 'Open').length} open total</div></div>
+      <div class="metric-card"><div class="metric-label">Urgent comments</div><div class="metric-value ${urgentRC > 0 ? 'danger' : ''}">${urgentRC}</div><div class="metric-sub">${STATE.reviewComments.filter(rc => rc.Status === RC_STATUS.OPEN).length} open total</div></div>
       <div class="metric-card"><div class="metric-label">Active quarter</div><div class="metric-value" style="font-size:18px;padding-top:4px">${quarter || '—'}</div><div class="metric-sub">${isQuarterQ4(quarter) ? '10-K · WD1–35' : '10-Q · WD1–20'}</div></div>`;
   }
 
@@ -3503,7 +3561,7 @@ async function runImport() {
           MatrixItem:      row.MatrixItem || null,
           MatrixCheckpoint:row.MatrixCheckpoint || null,
           MatrixSection:   row.MatrixSection || null,
-          FilingType:      row.FilingType || 'Both',
+          FilingType:      row.FilingType || FILING.BOTH,
           SignOffMode:     row.SignOffMode || SIGN_OFF_MODE.SEQUENTIAL,
           PreparerWorkday: Number(row.PreparerWorkday) || 1,
           ReviewerWorkday: row.ReviewerWorkday ? Number(row.ReviewerWorkday) : null,
@@ -4216,6 +4274,10 @@ function attachCardEvents() {
         openEditWDModal(id);
       }
 
+      if (action === 'edit-doc-link') {
+        openEditDocLinkModal(id, btn.dataset.url);
+      }
+
       if (action === 'skip-task' || action === 'unskip-task') {
         const isSkipping = action === 'skip-task';
         const assignment = STATE.assignments.find(a => a._id === id);
@@ -4226,7 +4288,7 @@ function attachCardEvents() {
         if (!window.confirm(confirmMsg)) return;
         updateListItem(CONFIG.lists.quarterlyAssignments, id, { IsSkipped: isSkipping })
           .then(() => {
-            assignment.IsSkipped = isSkipping;
+            patchAssignment(id, { IsSkipped: isSkipping });
             showToast(isSkipping ? '✓ Task skipped' : '✓ Task restored', 'success');
             closeTaskPanel();
             refreshCurrentView();
@@ -4293,7 +4355,7 @@ async function saveReviewComment() {
       CreatedBy:           STATE.currentUser.Email,
       CreatedDate:         new Date().toISOString(),
       Priority:            priority,
-      Status:              'Open',
+      Status:              RC_STATUS.OPEN,
       TaggedUsers:         getTaggedUsers() || null,
     });
     STATE.reviewComments.push({ ...created.fields, _id: created.id });
@@ -4322,12 +4384,12 @@ async function confirmResolveReviewComment(rcId, note) {
   try {
     const now = new Date().toISOString();
     await updateListItem(CONFIG.lists.reviewComments, rcId, {
-      Status:         'Resolved',
+      Status:         RC_STATUS.RESOLVED,
       ResolvedBy:     STATE.currentUser.Email,
       ResolvedDate:   now,
       ResolutionNote: note,
     });
-    rc.Status = 'Resolved';
+    rc.Status = RC_STATUS.RESOLVED;
     rc.ResolvedBy = STATE.currentUser.Email;
     rc.ResolvedDate = now;
     rc.ResolutionNote = note;
@@ -4712,8 +4774,7 @@ async function saveCalendarRowEdit() {
     renderAdminPanel('calendar');
   } catch (err) {
     // Revert optimistic update so the calendar reflects actual SharePoint state.
-    row.ActualDate = snapshot.ActualDate;
-    row.IsWeekend  = snapshot.IsWeekend;
+    patchCalendarRow(calRowId, snapshot);
     showToast('Failed to update calendar row', 'error');
     logError('saveCalendarRowEdit failed:', err);
   }
@@ -5084,10 +5145,7 @@ async function saveUserRoleEdit() {
       Color:    newColor,
     });
     const prevRole = user.Role;
-    user.Role     = newRole;
-    user.IsActive = newActive;
-    user.Emoji    = newEmoji;
-    user.Color    = newColor;
+    patchUser(user._id, { Role: newRole, IsActive: newActive, Emoji: newEmoji, Color: newColor });
     // Update current user's role flags if they edited themselves
     if (email === STATE.currentUser?.Email) {
       STATE.isAdmin        = newRole === ROLE.ADMIN;
@@ -5333,7 +5391,7 @@ async function confirmSOXExport() {
     const totalLate      = signOffRows.slice(1).filter(r => r[10] === 'Late').length;
     const totalReversals = reversalRows.length - 1;
     const totalRCs       = rcRows.length - 1;
-    const totalRCOpen    = STATE.reviewComments.filter(rc => rc.Quarter === quarter && rc.Status === 'Open').length;
+    const totalRCOpen    = STATE.reviewComments.filter(rc => rc.Quarter === quarter && rc.Status === RC_STATUS.OPEN).length;
 
     const summaryRows = [
       ['Folio Audit Log Export', '', '', ''],
@@ -5568,7 +5626,7 @@ function openEditTemplateModal(templateId) {
   const fields = {
     'edit-tpl-name':          t?.TaskName || t?.Title || '',
     'edit-tpl-category':      t?.Category || '',
-    'edit-tpl-filingtype':    t?.FilingType || 'Both',
+    'edit-tpl-filingtype':    t?.FilingType || FILING.BOTH,
     'edit-tpl-signoffmode':   t?.SignOffMode || 'Sequential',
     'edit-tpl-prepwd':        t?.PreparerWorkday || '',
     'edit-tpl-revwd':         t?.ReviewerWorkday || '',
@@ -5601,7 +5659,7 @@ async function saveTemplateEdit() {
   const updates = {
     Title:               name,
     Category:            document.getElementById('edit-tpl-category')?.value || 'Other',
-    FilingType:          document.getElementById('edit-tpl-filingtype')?.value || 'Both',
+    FilingType:          document.getElementById('edit-tpl-filingtype')?.value || FILING.BOTH,
     SignOffMode:         document.getElementById('edit-tpl-signoffmode')?.value || 'Sequential',
     PreparerWorkday:     Number(document.getElementById('edit-tpl-prepwd')?.value) || 1,
     ReviewerWorkday:     document.getElementById('edit-tpl-revwd')?.value
@@ -5727,10 +5785,10 @@ async function confirmRollforward() {
     }
 
     // Determine filing type for this quarter
-    const filingType = isQuarterQ4(quarter) ? '10-K' : '10-Q';
+    const filingType = isQuarterQ4(quarter) ? FILING.K : FILING.Q;
     const eligible = STATE.templates.filter(t =>
       t.IsActive !== false &&
-      (t.FilingType === filingType || t.FilingType === 'Both')
+      (t.FilingType === filingType || t.FilingType === FILING.BOTH)
     );
 
     // Carry forward assignments from previous quarter if one exists
@@ -5746,7 +5804,7 @@ async function confirmRollforward() {
       const prev = prevMap[template._id];
       // Use 10-K workday numbers for Q4 quarters if they exist on the template,
       // otherwise fall back to the standard workday numbers.
-      const isQ4 = filingType === '10-K';
+      const isQ4 = filingType === FILING.K;
       const prepWD = (isQ4 && template.PreparerWorkday10K)
         ? template.PreparerWorkday10K
         : template.PreparerWorkday || null;
