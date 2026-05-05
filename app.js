@@ -342,14 +342,17 @@ function getWDIndicatorText(quarter) {
 
 function isTaskOverdue(assignment) {
   if (assignment.IsSkipped) return false;  // Skipped tasks are never overdue
+  if (assignment.Status === STATUS.COMPLETE) return false;
   const wd = getTodaysWorkday(STATE.activeQuarter);
+  // Post-close: all incomplete tasks are overdue
+  if (wd === 'post-close') return true;
   if (!wd || typeof wd !== 'number') return false;
   const role = assignment.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY ? 'preparer' :
     !assignment.PreparerSignOff ? 'preparer' : 'reviewer';
   const dueWD = role === 'preparer'
     ? Number(assignment.PreparerWorkday)
     : Number(assignment.ReviewerWorkday);
-  return wd > dueWD && assignment.Status !== STATUS.COMPLETE;
+  return wd > dueWD;
 }
 
 // ============================================================
