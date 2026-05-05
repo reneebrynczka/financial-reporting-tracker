@@ -69,6 +69,19 @@ body {
   border-width: 0;
 }
 
+/* ---- SCREEN READER ONLY ----------------------------------- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
 /* ---- FOCUS VISIBLE (keyboard navigation) ------------------ */
 /* Replaces browser default outline removed on inputs/buttons */
 :focus-visible {
@@ -657,8 +670,8 @@ body {
   background: var(--white);
   border: 1px solid var(--mid-gray);
   border-radius: var(--border-radius-lg);
-  padding: 12px 14px;
-  margin-bottom: 8px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
   cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
@@ -670,7 +683,7 @@ body {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 5px;
+  margin-bottom: 3px;
   gap: 8px;
 }
 .task-card-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); line-height: 1.3; }
@@ -685,8 +698,8 @@ body {
   flex-shrink: 0;
 }
 .urgent-rc-badge {
-  background: var(--amber-light);
-  color: var(--amber);
+  background: #FFF0E6;
+  color: #C45000;  /* Distinct orange-amber = urgent/risk, not same as warnings */
   font-size: 10px;
   font-weight: 500;
   padding: 2px 7px;
@@ -697,8 +710,8 @@ body {
 .task-card-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 7px;
+  gap: 6px;
+  margin-bottom: 4px;
   flex-wrap: wrap;
 }
 .cat-tag {
@@ -714,11 +727,27 @@ body {
 .task-card-people {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 9px;
+  gap: 8px;
+  margin-bottom: 6px;
   flex-wrap: wrap;
 }
 .task-card-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* Primary action on task cards — sign off button gets visual dominance */
+.task-card-actions .btn-primary {
+  font-size: 11px;
+  padding: 4px 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+/* Secondary card actions — comments, link — visually quieter */
+.task-card-actions .btn-secondary,
+.task-card-actions .btn-icon {
+  font-size: 11px;
+  padding: 3px 8px;
+  opacity: 0.75;
+}
+.task-card-actions .btn-secondary:hover,
+.task-card-actions .btn-icon:hover { opacity: 1; }
 
 /* ---- ALL TASKS TABLE -------------------------------------- */
 .data-table th.sortable {
@@ -769,7 +798,7 @@ body {
 }
 .status-complete   { background: var(--green-light); color: var(--green); }
 .status-prepared   { background: var(--blue-light); color: var(--blue-dark); }
-.status-progress   { background: var(--amber-light); color: var(--amber); }
+.status-progress   { background: #E8F0FE; color: #3C5BA9; } /* Blue-gray: neutral progress, not risk */
 .status-notstarted { background: var(--light-gray); color: var(--slate); }
 .status-overdue    { background: var(--red-light); color: var(--red-dark); }
 
@@ -817,40 +846,126 @@ body {
 .resolution-note { background: var(--green-light); border-radius: var(--border-radius-md); padding: 6px 10px; margin-top: 8px; font-size: 11px; color: var(--green); }
 
 /* ---- MATRIX ----------------------------------------------- */
-.matrix-scroll-wrap { overflow-x: auto; border-radius: var(--border-radius-lg); }
-.matrix-table { border-collapse: collapse; font-size: 11px; background: var(--white); }
+.matrix-scroll-wrap {
+  overflow-x: auto;
+  border-radius: var(--border-radius-lg);
+  border: 1px solid var(--mid-gray);
+  background: var(--white);
+}
+.matrix-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  background: var(--white);
+  width: 100%;
+}
 .matrix-table th {
   background: var(--navy);
   color: var(--white);
-  padding: 6px 5px;
+  padding: 8px 6px;
   text-align: center;
   font-weight: 500;
   font-size: 10px;
   white-space: nowrap;
-  border-right: 1px solid rgba(255,255,255,0.12);
+  border-right: 1px solid rgba(255,255,255,0.1);
   position: sticky;
   top: 0;
+  z-index: 2;
+  letter-spacing: 0.2px;
 }
-.matrix-table th.final-col { background: var(--blue); }
-.matrix-table th.left-align { text-align: left; padding-left: 10px; }
-.matrix-table td { padding: 5px 5px; border-bottom: 1px solid var(--mid-gray); border-right: 1px solid var(--mid-gray); vertical-align: middle; height: 30px; text-align: center; }
-.matrix-table td.item-cell { text-align: left; padding-left: 10px; font-size: 11px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-.matrix-table td.person-cell { font-size: 10px; }
-.matrix-table tr.section-header td { background: var(--navy); color: var(--white); font-weight: 600; font-size: 11px; text-align: left; padding-left: 10px; letter-spacing: 0.5px; }
-.cell-done { background: #1a7a3a; }
+/* Separator before matrix-only columns */
+.matrix-table th.matrix-only-col {
+  background: #1a2d8a;
+  border-left: 2px solid rgba(255,255,255,0.25);
+}
+.matrix-table th.final-col {
+  background: #0C447C;
+  border-left: 2px solid rgba(255,255,255,0.35);
+}
+.matrix-table th.left-align { text-align: left; padding-left: 12px; }
+.matrix-table td {
+  padding: 0 6px;
+  border-bottom: 1px solid #EAEBEC;
+  border-right: 1px solid #EAEBEC;
+  vertical-align: middle;
+  height: 34px;
+  text-align: center;
+}
+/* Matrix-only column separator */
+.matrix-table td.matrix-only-td {
+  border-left: 2px solid #D0D5E8;
+  background: #FAFBFF;
+}
+.matrix-table td.final-td {
+  border-left: 2px solid #C8D8EC;
+  background: #F5F9FF;
+}
+.matrix-table td.item-cell {
+  text-align: left;
+  padding-left: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-primary);
+  position: sticky;
+  left: 0;
+  background: var(--white);
+  z-index: 1;
+  border-right: 2px solid var(--mid-gray);
+}
+.matrix-table td.person-cell { font-size: 10px; min-width: 60px; }
+/* Section header rows — subtle grouping, not heavy navy */
+.matrix-table tr.section-header td {
+  background: #F0F2F8;
+  color: var(--navy);
+  font-weight: 700;
+  font-size: 10px;
+  text-align: left;
+  padding-left: 12px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  border-bottom: 1px solid #D4D8E8;
+  height: 28px;
+}
+.matrix-table tr.section-header td.item-cell {
+  background: #F0F2F8;
+}
+/* Alternating row tint for readability */
+.matrix-table tbody tr:nth-child(even):not(.section-header) td { background: #FAFAFA; }
+.matrix-table tbody tr:nth-child(even):not(.section-header) td.item-cell { background: #F7F8FA; }
+.matrix-table tbody tr:nth-child(even):not(.section-header) td.matrix-only-td { background: #F5F6FF; }
+.matrix-table tbody tr:nth-child(even):not(.section-header) td.final-td { background: #F2F7FF; }
+.matrix-table tbody tr:hover:not(.section-header) td { background: #EEF1F8; }
+/* Cells */
+.cell-done {
+  background: #2E7D4F !important;
+}
 .cell-done svg { display: inline-block; vertical-align: middle; }
-.cell-na { background: var(--dark-slate); border-color: #3a3c3e; }
-.cell-actionable { background: var(--blue-light); cursor: pointer; border: 2px solid var(--blue); }
-.cell-actionable:hover { background: #B5D4F4; }
+.cell-na {
+  background: #F0F0F0 !important;
+  color: var(--slate);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.cell-actionable {
+  background: #EBF3FF !important;
+  cursor: pointer;
+  border: 1.5px solid #90BBE8 !important;
+}
+.cell-actionable:hover { background: #D4E8FF !important; }
 .cell-empty { background: var(--white); }
-.matrix-table td[title] { cursor: pointer; }
+.matrix-table td[title]:not(.item-cell) { cursor: pointer; }
+/* Legend */
 .matrix-legend { display: flex; gap: 16px; padding: 10px 0; flex-wrap: wrap; }
 .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--slate); }
 .legend-swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
-.swatch-complete { background: #1a7a3a; }
-.swatch-empty { background: var(--white); border: 1px solid var(--mid-gray); }
-.swatch-na { background: var(--dark-slate); }
-.swatch-actionable { background: var(--blue-light); border: 2px solid var(--blue); }
+.swatch-complete  { background: #2E7D4F; }
+.swatch-empty     { background: var(--white); border: 1px solid var(--mid-gray); }
+.swatch-na        { background: #F0F0F0; border: 1px solid var(--mid-gray); }
+.swatch-actionable{ background: #EBF3FF; border: 1.5px solid #90BBE8; }
 .live-indicator { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--slate); }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green-mid); display: inline-block; }
 
@@ -943,6 +1058,18 @@ body {
 .milestone-cfo    { background: #EEEDFE; color: #3C3489;  font-size: 10px; padding: 2px 7px; border-radius: 8px; }
 /* Legacy alias — maps old IsCustomMilestone=true to SVP style */
 .milestone-custom { background: #F1EFE8; color: #444441;  font-size: 10px; padding: 2px 7px; border-radius: 8px; }
+
+/* ---- STAGING GRID ---------------------------------------- */
+.staging-select {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--mid-gray);
+  border-radius: var(--border-radius-md);
+  font-size: 11px;
+  color: var(--dark-slate);
+  background: var(--white);
+}
+.staging-select:focus { border-color: var(--blue); outline: none; }
 
 /* ---- STAGING GRID ---------------------------------------- */
 .staging-select {
@@ -1133,3 +1260,24 @@ body {
 .staging-skipped td { opacity: 0.45; }
 .staging-skipped td:last-child { opacity: 1; } /* Keep skip checkbox visible */
 .skipped-row td { opacity: 0.4; text-decoration: line-through; color: var(--slate); }
+
+/* ---- HISTORY MODE ----------------------------------------- */
+/* When browsing a historical quarter, the entire app gets a subtle
+   desaturation treatment to signal read-only state visually. */
+body.history-mode .view-content,
+body.history-mode .task-card,
+body.history-mode .panel-body,
+body.history-mode .data-table {
+  filter: saturate(0.7);
+}
+body.history-mode .task-card {
+  cursor: default;
+  pointer-events: none;  /* Cards are non-interactive in history */
+}
+body.history-mode .task-card-actions {
+  pointer-events: none;
+  opacity: 0.4;
+}
+/* Keep nav and quarter picker fully interactive */
+body.history-mode .nav-bar,
+body.history-mode .quarter-picker-wrap { filter: none; }
