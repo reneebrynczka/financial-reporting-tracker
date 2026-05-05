@@ -679,7 +679,7 @@
 
   <!-- MODAL: EDIT USER ROLE -->
   <div id="modal-edit-user" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-edit-user-title">
-    <div class="modal-box">
+    <div class="modal-box" style="max-width:480px">
       <div class="modal-title" id="modal-edit-user-title">Edit User</div>
       <div class="modal-body">
         <p class="modal-desc" id="edit-user-name"></p>
@@ -691,6 +691,15 @@
             <option value="ReadOnly">Read Only</option>
             <option value="Admin">Admin</option>
           </select>
+        </div>
+        <div class="setup-field">
+          <label class="field-label">Emoji</label>
+          <div id="edit-user-emoji-grid" class="emoji-grid"></div>
+          <input type="text" id="edit-user-emoji-custom" class="field-input" placeholder="Or type custom emoji" maxlength="4" style="margin-top:6px;width:160px" />
+        </div>
+        <div class="setup-field">
+          <label class="field-label">Color</label>
+          <div id="edit-user-color-grid" class="color-grid"></div>
         </div>
         <div class="setup-field">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
@@ -947,6 +956,7 @@
             <option value="SVP">SVP</option>
             <option value="MD">MD</option>
             <option value="CFO">CFO</option>
+            <option value="Team Deadline">Team Deadline</option>
           </select>
         </div>
       </div>
