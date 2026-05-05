@@ -1410,7 +1410,7 @@ function renderMyTasks() {
   const todayWD     = typeof wd === 'number' ? wd : -1;
 
   const overdue    = tasks.filter(t => isTaskOverdue(t) && t.Status !== STATUS.COMPLETE);
-  const waiting    = tasks.filter(t => !isTaskOverdue(t) && t.Status !== STATUS.COMPLETE && isLocked(t, email));
+  const waiting    = tasks.filter(t => t.Status !== STATUS.COMPLETE && isLocked(t, email));
   const active     = tasks.filter(t => !isTaskOverdue(t) && t.Status !== STATUS.COMPLETE && !isLocked(t, email));
   const dueToday   = active.filter(t => getDueWD(t, email) === todayWD);
   // Second condition (getDueWD !== todayWD) is always true when first is true since tomorrowWD !== todayWD.
