@@ -4418,11 +4418,10 @@ function attachGlobalEvents() {
       return;
     }
 
-    // Populate category filter from active assignments (not templates)
-    // so only categories that have tasks this quarter appear.
-    const catSel = document.getElementById('rc-category-select');
+    const catSel  = document.getElementById('rc-category-select');
     const taskSel = document.getElementById('rc-task-select');
 
+    // Build category list from active assignments this quarter
     const categories = [...new Set(
       STATE.assignments.filter(a => !a.IsSkipped).map(a => a.Category).filter(Boolean)
     )].sort();
@@ -4433,24 +4432,28 @@ function attachGlobalEvents() {
       ).join('');
     }
 
-    // Helper: populate task dropdown for selected category
+    // Populate task dropdown for a given category.
+    // Uses templates to get deduplicated task names with their template IDs.
     const populateRCTasks = (category) => {
       if (!taskSel) return;
-      const tasksForCat = STATE.assignments.filter(a =>
-        !a.IsSkipped && a.Category === category
+      // Get unique template IDs active in this quarter for this category
+      const templateIds = new Set(
+        STATE.assignments.filter(a => !a.IsSkipped && a.Category === category)
+          .map(a => a.TaskTemplateLookupId).filter(Boolean)
       );
-      taskSel.innerHTML = tasksForCat.map(a =>
-        `<option value="${escapeHtml(a.TaskTemplateLookupId)}">${escapeHtml(a.MatrixItem || a.Title || '')}</option>`
+      const templates = STATE.templates.filter(t => templateIds.has(t._id));
+      taskSel.innerHTML = templates.map(t =>
+        `<option value="${escapeHtml(t._id)}">${escapeHtml(t.TaskName || t.Title || '')}</option>`
       ).join('');
     };
 
-    // Populate tasks for first category on open
     if (categories.length) populateRCTasks(categories[0]);
 
-    // Re-populate tasks when category changes
-    if (catSel && !catSel.dataset.rcListenerAttached) {
-      catSel.dataset.rcListenerAttached = 'true';
-      catSel.addEventListener('change', () => populateRCTasks(catSel.value));
+    // Re-populate tasks when category changes — remove old listener first
+    if (catSel) {
+      const newCatSel = catSel.cloneNode(true);
+      catSel.parentNode.replaceChild(newCatSel, catSel);
+      newCatSel.addEventListener('change', () => populateRCTasks(newCatSel.value));
     }
 
     showModal('modal-new-rc');
