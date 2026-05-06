@@ -5261,14 +5261,25 @@ function renderReviewSchedule() {
     if (existingToolbar?.classList.contains('rs-toolbar')) existingToolbar.remove();
   }
 
-  // Collect sections in template order
-  const sections = [];
-  const seen = new Set();
-  STATE.templates.forEach(t => {
-    if (t.MatrixSection && !seen.has(t.MatrixSection)) {
-      seen.add(t.MatrixSection); sections.push(t.MatrixSection);
-    }
-  });
+  // Collect sections and items in template order — exactly mirroring the matrix view.
+  // One row per unique MatrixItem, grouped by MatrixSection.
+  // This prevents duplicate rows when multiple assignments share the same MatrixItem
+  // (e.g. a Prepare Footnote and Review Footnote task both for "Income Taxes").
+  const filingType = isQuarterQ4(quarter) ? FILING.K : FILING.Q;
+  const sections = {};
+  STATE.templates
+    .filter(t =>
+      t.MatrixItem && t.MatrixSection &&
+      (t.FilingType === filingType || t.FilingType === FILING.BOTH)
+    )
+    .forEach(t => {
+      let section = t.MatrixSection;
+      if (isQuarterQ4(quarter) && section === 'Form 10-Q') section = 'Form 10-K';
+      if (!sections[section]) sections[section] = [];
+      if (!sections[section].find(i => i === t.MatrixItem)) {
+        sections[section].push(t.MatrixItem);
+      }
+    });
 
   let html = `
     <div class="rs-table-wrap">
@@ -5284,36 +5295,39 @@ function renderReviewSchedule() {
         </thead>
         <tbody>`;
 
-  sections.forEach(section => {
-    const sectionTasks = tasks.filter(a => {
-      const tpl = STATE.templates.find(t => t._id === a.TaskTemplateLookupId);
-      return tpl?.MatrixSection === section;
-    });
-    if (!sectionTasks.length) return;
+  Object.entries(sections).forEach(([sectionName, matrixItems]) => {
+    if (!matrixItems.length) return;
+    html += `<tr class="rs-section-header"><td colspan="${canEdit ? 5 : 4}">${escapeHtml(sectionName)}</td></tr>`;
 
-    html += `<tr class="rs-section-header"><td colspan="${canEdit ? 5 : 4}">${escapeHtml(section)}</td></tr>`;
+    matrixItems.forEach(matrixItem => {
+      // Find assignments for this MatrixItem — skip if all are skipped (mirrors matrix behavior)
+      const itemAssignments = STATE.assignments.filter(a => a.MatrixItem === matrixItem);
+      const active = itemAssignments.filter(a => !a.IsSkipped);
+      if (itemAssignments.length > 0 && active.length === 0) return;
 
-    sectionTasks.forEach(a => {
-      const frWD  = a.MDFRWorkday  || a.ReviewerWorkday || null;
-      const svpWD = a.SVPWorkday   || (frWD ? nextReviewScheduleWD(frWD, 1) : null);
-      const mdWD  = a.MDWorkday    || (frWD ? nextReviewScheduleWD(frWD, 2) : null);
+      // Use the first active assignment for review schedule dates.
+      // Multiple assignments share the same MatrixItem — the dates are the same across them.
+      const a = active[0] || itemAssignments[0];
+
+      const frWD  = a?.MDFRWorkday  || a?.ReviewerWorkday || null;
+      const svpWD = a?.SVPWorkday   || (frWD ? nextReviewScheduleWD(frWD, 1) : null);
+      const mdWD  = a?.MDWorkday    || (frWD ? nextReviewScheduleWD(frWD, 2) : null);
 
       const frDate  = resolveRSDate(frWD);
       const svpDate = resolveRSDate(svpWD);
       const mdDate  = resolveRSDate(mdWD);
 
-      // Strip quarter prefix from title for cleaner display
-      const title = (a.Title || '')
-        .replace(/^Q\d\s+\d{4}\s*[-–]\s*[^—–]+\s*[-–]\s*/i, '').trim()
-        || a.MatrixItem || a.Title;
+      const frChip  = frDate  !== '—' ? `<span class="rs-date-chip">${frDate}</span>`  : `<span class="rs-date-empty">—</span>`;
+      const svpChip = svpDate !== '—' ? `<span class="rs-date-chip">${svpDate}</span>` : `<span class="rs-date-empty">—</span>`;
+      const mdChip  = mdDate  !== '—' ? `<span class="rs-date-chip">${mdDate}</span>`  : `<span class="rs-date-empty">—</span>`;
 
       html += `
         <tr class="rs-row">
-          <td class="rs-task-name">${escapeHtml(title)}</td>
-          <td class="rs-date-cell ${rsDateClass(frWD)}">${frDate}</td>
-          <td class="rs-date-cell ${rsDateClass(svpWD)}">${svpDate}</td>
-          <td class="rs-date-cell ${rsDateClass(mdWD)}">${mdDate}</td>
-          ${canEdit ? `<td class="rs-edit-cell"><button class="btn-icon btn-sm" data-action="edit-review-schedule" data-id="${a._id}" title="Edit review dates">✏️</button></td>` : ''}
+          <td class="rs-task-name">${escapeHtml(matrixItem)}</td>
+          <td class="rs-date-cell ${rsDateClass(frWD)}">${frChip}</td>
+          <td class="rs-date-cell ${rsDateClass(svpWD)}">${svpChip}</td>
+          <td class="rs-date-cell ${rsDateClass(mdWD)}">${mdChip}</td>
+          ${canEdit && a ? `<td class="rs-edit-cell"><button class="btn-icon btn-sm" data-action="edit-review-schedule" data-id="${a._id}" title="Edit review dates">✏️</button></td>` : (canEdit ? '<td></td>' : '')}
         </tr>`;
     });
   });
