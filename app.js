@@ -782,10 +782,20 @@ async function loadMilestones(quarter) {
   quarter = normalizeQuarter(quarter);
   try {
     const items = await getListItems(CONFIG.lists.calendarMilestones, `fields/Quarter eq '${quarter}'`);
-    STATE.milestones = items.map(i => ({ ...i.fields, _id: i.id }))
-      .sort((a,b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
+    STATE.milestones = items.map(i => {
+      const m = { ...i.fields, _id: i.id };
+      // Normalize MilestoneDate — SharePoint Date columns return full ISO timestamps.
+      // Strip to YYYY-MM-DD so date comparisons work correctly.
+      if (m.MilestoneDate?.includes('T')) m.MilestoneDate = m.MilestoneDate.split('T')[0];
+      return m;
+    }).sort((a, b) => {
+      // Sort by MilestoneDate when available, fall back to WorkdayNumber.
+      const dateA = a.MilestoneDate || '';
+      const dateB = b.MilestoneDate || '';
+      if (dateA && dateB) return dateA.localeCompare(dateB);
+      return Number(a.WorkdayNumber) - Number(b.WorkdayNumber);
+    });
   } catch (err) {
-    // CalendarMilestones list may not exist yet — fail silently
     STATE.milestones = [];
     log('CalendarMilestones not available:', err.message);
   }
@@ -2750,20 +2760,23 @@ function renderDashboard() {
   const milestoneList = document.getElementById('milestone-list');
   if (milestoneList) {
     const today = todayET();
-    const upcoming = STATE.milestones
+    const allMilestones = STATE.milestones
       .map(m => ({
         ...m,
         ActualDate: m.MilestoneDate
           || STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber))?.ActualDate,
       }))
-      .filter(m => m.ActualDate && m.ActualDate >= today)
+      .filter(m => m.ActualDate)
       .sort((a, b) => a.ActualDate.localeCompare(b.ActualDate));
-    milestoneList.innerHTML = upcoming.map(m => `
-      <div class="milestone-row">
+    milestoneList.innerHTML = allMilestones.map(m => {
+      const isPast  = m.ActualDate < today;
+      const isToday = m.ActualDate === today;
+      return `<div class="milestone-row" style="${isPast ? 'opacity:0.5' : ''}">
         ${m.WorkdayNumber ? `<span class="milestone-wd">WD${m.WorkdayNumber}</span>` : `<span class="milestone-wd" style="background:#FCE4EC;color:#880E4F">${m.MilestoneType || 'Deadline'}</span>`}
         <span class="milestone-date">${formatDateShort(m.ActualDate)}</span>
-        <span class="milestone-name">${escapeHtml(m.MilestoneLabel)}${m.ActualDate === today ? ' <span class="milestone-today">Today</span>' : ''}</span>
-      </div>`).join('') || '<p style="font-size:11px;color:var(--slate)">No upcoming milestones.</p>';
+        <span class="milestone-name">${escapeHtml(m.MilestoneLabel)}${isToday ? ' <span class="milestone-today">Today</span>' : ''}</span>
+      </div>`;
+    }).join('') || '<p style="font-size:11px;color:var(--slate)">No milestones set for this quarter.</p>';
   }
 
   // Overdue detail
