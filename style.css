@@ -1163,13 +1163,6 @@ body {
   color: var(--dark-slate);
   border: 1px solid var(--mid-gray);
 }
-.rs-date-past .rs-date-chip {
-  background: transparent;
-  color: var(--slate);
-  border-color: transparent;
-  opacity: 0.55;
-  text-decoration: line-through;
-}
 .rs-date-today .rs-date-chip {
   background: var(--navy);
   color: var(--white);
