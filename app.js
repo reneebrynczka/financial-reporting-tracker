@@ -329,11 +329,11 @@ function formatDateShort(isoString) {
 // Falls back gracefully for legacy IsCustomMilestone boolean rows.
 function milestoneClass(calRow) {
   const t = calRow.MilestoneType;
-  if (t === 'SVP')           return 'milestone-svp';
-  if (t === 'MD')            return 'milestone-md';
-  if (t === 'CFO')           return 'milestone-cfo';
-  if (t === 'Team Deadline') return 'milestone-team';
-  return 'milestone-std';  // Default for Standard or null/empty
+  if (t === 'SVP')                       return 'milestone-svp';
+  if (t === 'MD' || t === 'Controller')  return 'milestone-md';
+  if (t === 'CFO')                       return 'milestone-cfo';
+  if (t === 'Team Deadline')             return 'milestone-team';
+  return 'milestone-std';
 }
 
 function escapeHtml(str) {
@@ -1654,6 +1654,12 @@ function renderMyTasks() {
   if (waitingCards) waitingCards.innerHTML = waiting.map(t => renderTaskCard(t, email, false, true)).join('');
 
   attachCardEvents();
+
+  // If table view is currently active, also update it
+  const tableView = document.getElementById('my-tasks-table-view');
+  if (tableView && !tableView.classList.contains('hidden')) {
+    renderMyTasksTable();
+  }
 }
 
 function isLocked(assignment, email) {
