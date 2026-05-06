@@ -1095,8 +1095,9 @@ body {
   background: var(--white);
   border: 1px solid var(--mid-gray);
   border-radius: var(--border-radius-lg);
-  overflow: hidden;
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: calc(100vh - 180px);
   box-shadow: 0 1px 4px rgba(0,0,0,0.05);
 }
 .rs-table {
@@ -1115,10 +1116,13 @@ body {
   text-transform: uppercase;
   white-space: nowrap;
   border-right: 1px solid rgba(255,255,255,0.07);
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 .rs-th-task  { min-width: 220px; }
 .rs-th-date  { text-align: center !important; width: 160px; }
-.rs-th-edit  { width: 44px; border-right: none !important; }
+.rs-th-edit  { width: 80px; border-right: none !important; }
 .rs-section-header td {
   background: #ECEEF5;
   color: var(--navy);
@@ -1176,7 +1180,8 @@ body {
   font-weight: 600;
 }
 .rs-date-empty { color: var(--slate); font-size: 11px; opacity: 0.5; }
-.rs-edit-cell  { text-align: center; padding: 0 8px !important; }
+.rs-edit-cell { text-align: center; padding: 6px 12px !important; }
+.rs-edit-cell-inner { display: flex; gap: 4px; align-items: center; justify-content: center; }
 .rs-toolbar {
   display: flex;
   align-items: center;
