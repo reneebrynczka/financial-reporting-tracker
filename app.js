@@ -1103,10 +1103,11 @@ async function performSignOff(assignmentId, role) {
     success = true;
     showToast('✓ Signed off', 'success');
 
-    // If the task panel is open for this assignment, re-render it so
-    // the status chain and action buttons update immediately.
-    if (STATE.taskDetailId === assignmentId) {
-      openTaskPanel(assignmentId);
+    // Re-render the task panel if it's currently open — updates status chain
+    // and action buttons immediately without needing to close and reopen.
+    const panelEl = document.getElementById('task-panel');
+    if (panelEl && !panelEl.classList.contains('hidden') && STATE.taskDetailId) {
+      openTaskPanel(STATE.taskDetailId);
     }
 
     // Audit log write is best-effort — a failure here does NOT revert the sign-off.
@@ -1657,6 +1658,7 @@ function renderMyTasks() {
   const waiting    = tasks.filter(t => t.Status !== STATUS.COMPLETE && isLocked(t, email));
   const overdue    = tasks.filter(t => isTaskOverdue(t) && t.Status !== STATUS.COMPLETE && !isLocked(t, email));
   const active     = tasks.filter(t => !isTaskOverdue(t) && t.Status !== STATUS.COMPLETE && !isLocked(t, email));
+  const completed  = tasks.filter(t => t.Status === STATUS.COMPLETE);
   const dueToday   = active.filter(t => getDueWD(t, email) === todayWD);
   // Second condition (getDueWD !== todayWD) is always true when first is true since tomorrowWD !== todayWD.
   const dueTomorrow = tomorrowWD !== null
@@ -1677,6 +1679,14 @@ function renderMyTasks() {
   if (waitingCountEl) waitingCountEl.textContent = waiting.length;
   const waitingCards = document.getElementById('waiting-cards');
   if (waitingCards) waitingCards.innerHTML = waiting.map(t => renderTaskCard(t, email, false, true)).join('');
+
+  // Completed section — collapsed by default
+  const completeSection = document.getElementById('my-tasks-complete');
+  const completeCountEl = document.getElementById('complete-count');
+  const completeCards   = document.getElementById('complete-cards');
+  if (completeSection) completeSection.classList.toggle('hidden', completed.length === 0);
+  if (completeCountEl) completeCountEl.textContent = completed.length;
+  if (completeCards)   completeCards.innerHTML = completed.map(t => renderTaskCard(t, email, false, false)).join('');
 
   attachCardEvents();
 
@@ -4554,6 +4564,14 @@ function attachGlobalEvents() {
   document.getElementById('waiting-toggle-header')?.addEventListener('click', () => {
     const cards = document.getElementById('waiting-cards');
     const btn   = document.getElementById('waiting-toggle');
+    if (!cards || !btn) return;
+    cards.classList.toggle('hidden');
+    btn.textContent = cards.classList.contains('hidden') ? '▼ Show' : '▲ Hide';
+  });
+
+  document.getElementById('complete-toggle-header')?.addEventListener('click', () => {
+    const cards = document.getElementById('complete-cards');
+    const btn   = document.getElementById('complete-toggle');
     if (!cards || !btn) return;
     cards.classList.toggle('hidden');
     btn.textContent = cards.classList.contains('hidden') ? '▼ Show' : '▲ Hide';
