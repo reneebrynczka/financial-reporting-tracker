@@ -1146,6 +1146,16 @@ body {
 .rs-date-today { color: var(--navy); font-weight: 700; }
 .rs-date-soon  { color: var(--amber); font-weight: 600; }
 .rs-edit-cell  { text-align: center; }
+.rs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--blue-light);
+  border: 1px solid #85B7EB;
+  border-radius: var(--border-radius-md);
+  margin-bottom: 10px;
+}
 
 /* ---- STAGING GRID ---------------------------------------- */
 .staging-select {
