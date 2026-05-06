@@ -1103,6 +1103,12 @@ async function performSignOff(assignmentId, role) {
     success = true;
     showToast('✓ Signed off', 'success');
 
+    // If the task panel is open for this assignment, re-render it so
+    // the status chain and action buttons update immediately.
+    if (STATE.taskDetailId === assignmentId) {
+      openTaskPanel(assignmentId);
+    }
+
     // Audit log write is best-effort — a failure here does NOT revert the sign-off.
     // The data is already committed to SharePoint; only the audit trail entry is missing.
     const assignedEmail = role === 'preparer' ? assignment.Preparer : assignment.Reviewer;
