@@ -445,7 +445,6 @@ body {
 }
 .view { display: none; }
 .view.active { display: block; }
-#view-matrix.active { overflow-x: hidden; }
 .view-header {
   display: flex;
   align-items: flex-start;
@@ -894,11 +893,13 @@ body {
 .matrix-table th {
   background: var(--navy);
   color: var(--white);
-  padding: 8px 6px;
+  padding: 8px 4px;
   text-align: center;
   font-weight: 500;
   font-size: 10px;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  max-width: 80px;
   border-right: 1px solid rgba(255,255,255,0.1);
   position: sticky;
   top: 0;
