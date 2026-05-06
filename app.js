@@ -2753,13 +2753,18 @@ function renderDashboard() {
     const upcoming = STATE.milestones
       .map(m => ({
         ...m,
-        ActualDate: m.MilestoneDate || STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber))?.ActualDate,
+        // MilestoneDate is the primary source — it's always set.
+        // Fall back to resolving via WorkdayNumber for milestones that predate
+        // the MilestoneDate field, or for milestones on calendar workdays.
+        ActualDate: m.MilestoneDate
+          || STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber))?.ActualDate,
       }))
       .filter(m => m.ActualDate && m.ActualDate >= today)
-      .slice(0, 5);
+      .sort((a, b) => a.ActualDate.localeCompare(b.ActualDate))
+      .slice(0, 8);
     milestoneList.innerHTML = upcoming.map(m => `
       <div class="milestone-row">
-        <span class="milestone-wd">WD${m.WorkdayNumber}</span>
+        ${m.WorkdayNumber ? `<span class="milestone-wd">WD${m.WorkdayNumber}</span>` : `<span class="milestone-wd" style="background:#FCE4EC;color:#880E4F">${m.MilestoneType || 'Deadline'}</span>`}
         <span class="milestone-date">${formatDateShort(m.ActualDate)}</span>
         <span class="milestone-name">${escapeHtml(m.MilestoneLabel)}${m.ActualDate === today ? ' <span class="milestone-today">Today</span>' : ''}</span>
       </div>`).join('') || '<p style="font-size:11px;color:var(--slate)">No upcoming milestones.</p>';
