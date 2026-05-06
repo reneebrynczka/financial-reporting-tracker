@@ -1090,6 +1090,63 @@ body {
 .milestone-team   { background: #FCE4EC; color: #880E4F;  font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 8px; white-space: nowrap; }
 .milestone-custom { background: #FFF3E0; color: #8D4E00;  font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 8px; white-space: nowrap; }
 
+/* ---- REVIEW SCHEDULE -------------------------------------- */
+.rs-table-wrap {
+  background: var(--white);
+  border: 1px solid var(--mid-gray);
+  border-radius: var(--border-radius-lg);
+  overflow: hidden;
+  overflow-x: auto;
+}
+.rs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.rs-table thead th {
+  background: #22284F;
+  color: rgba(255,255,255,0.92);
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-right: 1px solid rgba(255,255,255,0.08);
+}
+.rs-th-date { text-align: center !important; width: 130px; }
+.rs-th-edit { width: 40px; }
+.rs-section-header td {
+  background: #F0F2F8;
+  color: var(--navy);
+  font-weight: 700;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 7px 14px;
+  border-bottom: 1px solid #D4D8E8;
+}
+.rs-row td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--mid-gray);
+  vertical-align: middle;
+}
+.rs-row:last-child td { border-bottom: none; }
+.rs-row:hover td { background: var(--light-gray); }
+.rs-task-name { font-weight: 500; color: #1A1D23; min-width: 200px; }
+.rs-date-cell {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--dark-slate);
+  white-space: nowrap;
+}
+.rs-date-past  { color: var(--slate); opacity: 0.6; }
+.rs-date-today { color: var(--navy); font-weight: 700; }
+.rs-date-soon  { color: var(--amber); font-weight: 600; }
+.rs-edit-cell  { text-align: center; }
+
 /* ---- STAGING GRID ---------------------------------------- */
 .staging-select {
   width: 100%;
