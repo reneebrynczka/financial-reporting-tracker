@@ -36,6 +36,17 @@
   </div>
 
   <!-- FIRST LOGIN PROFILE SETUP -->
+  <div id="screen-access-denied" class="screen hidden">
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:16px;padding:32px;text-align:center">
+      <div style="font-size:48px">🔒</div>
+      <h1 style="font-size:22px;font-weight:600;color:var(--navy)">Access Denied</h1>
+      <p id="access-denied-msg" style="font-size:14px;color:var(--slate);max-width:420px;line-height:1.6">
+        Your account is not registered in Folio. Contact your admin to be added.
+      </p>
+      <button class="btn-secondary" onclick="msalInstance.logoutRedirect()">Sign out</button>
+    </div>
+  </div>
+
   <div id="screen-profile-setup" class="screen hidden">
     <div class="setup-wrap">
       <h2 class="setup-title">Welcome to Folio</h2>
@@ -95,6 +106,9 @@
         <button class="nav-user-avatar" id="nav-user-avatar"></button>
       </div>
     </nav>
+
+    <!-- CONTEXT RIBBON -->
+    <div id="context-ribbon" class="context-ribbon hidden"></div>
 
     <!-- STALE DATA BANNER -->
     <div id="stale-banner" class="stale-banner hidden">
@@ -354,14 +368,14 @@
         <div class="admin-layout">
           <aside class="admin-sidebar">
             <div class="sidebar-label">ADMIN</div>
-            <button class="sidebar-btn active" data-panel="overview">Overview<span class="sidebar-sub">Status &amp; diagnostics</span></button>
-            <button class="sidebar-btn" data-panel="calendar">Close Calendar<span class="sidebar-sub">WD dates &amp; milestones</span></button>
-            <button class="sidebar-btn" data-panel="rollforward">Rollforward<span class="sidebar-sub">Stage &amp; activate</span></button>
-            <button class="sidebar-btn" data-panel="templates">Task Templates<span class="sidebar-sub">Add, edit, deactivate</span></button>
-            <button class="sidebar-btn" data-panel="suggestions">Suggestions<span class="sidebar-sub" id="suggestions-count-badge">—</span></button>
-            <button class="sidebar-btn" data-panel="users">Users<span class="sidebar-sub">Roles &amp; access</span></button>
-            <button class="sidebar-btn" data-panel="auditlog">Audit Log<span class="sidebar-sub">Full history</span></button>
-            <button class="sidebar-btn" data-panel="import">Bulk Import<span class="sidebar-sub">CSV import</span></button>
+            <button class="sidebar-btn active" data-panel="overview">📊 Overview<span class="sidebar-sub">Status &amp; diagnostics</span></button>
+            <button class="sidebar-btn" data-panel="calendar">📅 Close Calendar<span class="sidebar-sub">WD dates &amp; milestones</span></button>
+            <button class="sidebar-btn" data-panel="rollforward">🔄 Rollforward<span class="sidebar-sub">Stage &amp; activate</span></button>
+            <button class="sidebar-btn" data-panel="templates">📋 Task Templates<span class="sidebar-sub">Add, edit, deactivate</span></button>
+            <button class="sidebar-btn" data-panel="suggestions">💡 Suggestions<span class="sidebar-sub" id="suggestions-count-badge">—</span></button>
+            <button class="sidebar-btn" data-panel="users">👥 Users<span class="sidebar-sub">Roles &amp; access</span></button>
+            <button class="sidebar-btn" data-panel="auditlog">📜 Audit Log<span class="sidebar-sub">Full history</span></button>
+            <button class="sidebar-btn" data-panel="import">⬆️ Bulk Import<span class="sidebar-sub">CSV import</span></button>
           </aside>
           <div class="admin-content" id="admin-content"></div>
         </div>
@@ -432,6 +446,14 @@
         <div id="panel-rc-preview"></div>
         <button class="panel-link-btn" id="panel-rc-link">View on Review Comments page →</button>
       </div>
+      <div class="panel-section" id="panel-notes">
+        <div class="panel-section-label">PREPARER NOTES</div>
+        <div id="panel-notes-display" style="font-size:12px;line-height:1.5;margin-bottom:8px;white-space:pre-wrap"></div>
+        <textarea id="panel-notes-input" class="field-textarea" rows="3"
+          placeholder="Add notes about this task — methodology, data sources, caveats, etc. Only you and admins can edit this."
+          style="font-size:12px;margin-bottom:6px"></textarea>
+        <button class="btn-secondary btn-sm" id="btn-panel-notes-save">Save notes</button>
+      </div>
       <div class="panel-section">
         <div class="panel-section-label">AUDIT TRAIL</div>
         <div id="panel-audit"></div>
@@ -462,9 +484,8 @@
       <div class="modal-title" id="modal-reversal-title">Reverse sign-off</div>
       <div class="modal-body">
         <p id="reversal-desc" class="modal-desc"></p>
-        <label class="field-label" for="reversal-reason">Reason for reversal (required)</label>
-        <textarea id="reversal-reason" class="field-textarea" rows="3" placeholder="Explain why this sign-off is being reversed..."></textarea>
-        <div id="reversal-error" class="field-error hidden">Please enter a reason.</div>
+        <label class="field-label" for="reversal-reason">Reason for reversal <span style="font-size:10px;color:var(--slate);font-weight:400">(optional but recommended)</span></label>
+        <textarea id="reversal-reason" class="field-textarea" rows="3" placeholder="Explain why this sign-off is being reversed (optional)…"></textarea>
       </div>
       <div class="modal-actions">
         <button class="btn-danger" id="btn-reversal-confirm">Confirm Reversal</button>
@@ -959,6 +980,20 @@
       <div class="modal-actions">
         <button class="btn-primary" id="btn-add-task-confirm">Add Task</button>
         <button class="btn-secondary" id="btn-add-task-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: SKIP TASK -->
+  <div id="modal-skip-task" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <div class="modal-title" id="modal-skip-title">Skip this task?</div>
+      <div class="modal-body">
+        <div id="modal-skip-desc" style="font-size:13px;line-height:1.6"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-danger" id="btn-skip-task-confirm">Skip task</button>
+        <button class="btn-secondary" id="btn-skip-task-cancel">Cancel</button>
       </div>
     </div>
   </div>
