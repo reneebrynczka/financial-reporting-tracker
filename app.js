@@ -2504,12 +2504,12 @@ function renderMatrixView() {
 
       const preparers = [...new Set(
         assignments
-          .filter(a => !a.IsSkipped && !a.MatrixCheckpoint?.toLowerCase().toLowerCase() === CATEGORY.XBRL.toLowerCase())
+          .filter(a => !a.IsSkipped && a.MatrixCheckpoint?.toLowerCase() !== CATEGORY.XBRL.toLowerCase())
           .map(a => a.Preparer).filter(Boolean)
       )];
       const reviewers = [...new Set(
         assignments
-          .filter(a => !a.IsSkipped && !a.MatrixCheckpoint?.toLowerCase().toLowerCase() === CATEGORY.XBRL.toLowerCase())
+          .filter(a => !a.IsSkipped && a.MatrixCheckpoint?.toLowerCase() !== CATEGORY.XBRL.toLowerCase())
           .map(a => a.Reviewer).filter(Boolean)
       )];
 
