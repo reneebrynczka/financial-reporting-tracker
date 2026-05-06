@@ -93,7 +93,14 @@ const CONFIG = {
 // CONSTANTS
 // ============================================================
 
-// Single source of truth for matrix-only column -> SharePoint field mapping.
+// Maps each reviewer column to its paired preparer column.
+// The matrix has one assignment per item — the reviewer column reads ReviewerSignOff
+// from the same assignment as the preparer column, not a separate task.
+const REVIEWER_CHECKPOINT_MAP = {
+  '1st Review Workiva':  'Prepared in Workiva',
+  '1st Review Tie-out':  'Tie-out',
+  '1st Review XBRL':     'XBRL',
+};
 // Used by performMatrixUpdate, renderMatrixView, and exportMatrixExcel.
 const MATRIX_FIELD_MAP = {
   'SP Preparer':     { status: 'SPPreparer',    date: 'SPPreparerDate',    by: 'SPPreparerBy'    },
@@ -376,6 +383,10 @@ function getMaxWorkday(quarter) {
 // Returns which sign-off role a matrix checkpoint represents.
 // '1st Review *' checkpoints map to the reviewer; everything else is the preparer.
 function getCheckpointRole(checkpoint) {
+  // Task-linked columns starting with '1st Review' (e.g. '1st Review Workiva',
+  // '1st Review Tie-out', '1st Review XBRL') are reviewer steps.
+  // All other task-linked columns ('Prepared in Workiva', 'Tie-out', 'XBRL') are preparer steps.
+  // Note: 'SP 1st Reviewer' is a matrix-only column handled separately — it never reaches here.
   return checkpoint.startsWith('1st Review') ? 'reviewer' : 'preparer';
 }
 
@@ -2536,9 +2547,12 @@ function renderMatrixView() {
             html += `<td class="cell-empty ${cellClass}"></td>`;
           }
         } else {
-          // Task-linked column — use getCheckpointRole/getSignOffFields for consistent field access
+          // Task-linked column. Reviewer columns (e.g. '1st Review Workiva') share
+          // the same assignment as their paired preparer column ('Prepared in Workiva').
+          // Look up by the preparer checkpoint name, then check the appropriate sign-off field.
+          const preparerCp = REVIEWER_CHECKPOINT_MAP[cp] || cp;
           const linkedAssignment = STATE.assignments.find(
-            a => a.MatrixItem === item.name && a.MatrixCheckpoint === cp
+            a => a.MatrixItem === item.name && a.MatrixCheckpoint === preparerCp
           );
 
           if (!linkedAssignment || linkedAssignment.IsSkipped) {
@@ -5336,10 +5350,10 @@ function renderReviewSchedule() {
           <td class="rs-date-cell ${rsDateClass(frWD)}">${frChip}</td>
           <td class="rs-date-cell ${rsDateClass(svpWD)}">${svpChip}</td>
           <td class="rs-date-cell ${rsDateClass(mdWD)}">${mdChip}</td>
-          ${canEdit ? `<td class="rs-edit-cell" style="display:flex;gap:4px;align-items:center;justify-content:center">
+          ${canEdit ? `<td class="rs-edit-cell"><div class="rs-edit-cell-inner">
             <button class="btn-icon btn-sm" data-action="edit-review-schedule" data-id="${a?._id}" title="Edit review dates">✏️</button>
             ${hideBtn}
-          </td>` : ''}
+          </div></td>` : ''}
         </tr>`;
     });
   });
@@ -6773,7 +6787,8 @@ function exportMatrixExcel() {
           const fm = MATRIX_FIELD_MAP[cp];
           row.push(ms?.[fm.status] || STATUS.NOT_STARTED);
         } else {
-          const linked = STATE.assignments.find(a => a.MatrixItem === t.MatrixItem && a.MatrixCheckpoint === cp);
+          const preparerCp2 = REVIEWER_CHECKPOINT_MAP[cp] || cp;
+          const linked = STATE.assignments.find(a => a.MatrixItem === t.MatrixItem && a.MatrixCheckpoint === preparerCp2);
           if (!linked) row.push('N/A');
           else {
             const cpFields = getSignOffFields(getCheckpointRole(cp));
