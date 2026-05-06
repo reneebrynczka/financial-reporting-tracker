@@ -1569,9 +1569,13 @@ async function signOffAll() {
 function filterMyAssignments() {
   const email = STATE.currentUser?.Email;
   if (!email) return [];
-  return STATE.assignments.filter(a =>
-    !a.IsSkipped && (a.Preparer === email || a.Reviewer === email)
-  );
+  return STATE.assignments.filter(a => {
+    if (a.IsSkipped) return false;
+    if (a.Preparer === email) return true;
+    // Only include as reviewer if the task actually has a reviewer step
+    if (a.Reviewer === email && a.SignOffMode !== SIGN_OFF_MODE.PREPARER_ONLY) return true;
+    return false;
+  });
 }
 
 // Renders a named task section: toggles visibility, updates count, and fills cards.
@@ -2307,7 +2311,13 @@ function renderMyTasksTable() {
   const activeTasks  = tasks.filter(t => !isLocked(t, email) && t.Status !== STATUS.COMPLETE);
   const waitingTasks = tasks.filter(t =>  isLocked(t, email));
   const doneTasks    = tasks.filter(t => t.Status === STATUS.COMPLETE && !isLocked(t, email));
-  const allActive    = [...activeTasks, ...doneTasks];
+  // Exclude tasks where user has no actionable role (Observer) — these are
+  // Preparer Only tasks where the user is only listed as reviewer.
+  const allActive = [...activeTasks, ...doneTasks].filter(t => {
+    const isMyPreparer = t.Preparer === email;
+    const isMyReviewer = t.Reviewer === email;
+    return isMyPreparer || isMyReviewer;
+  });
 
   tbody.innerHTML = '';
   allActive.forEach(a => {
