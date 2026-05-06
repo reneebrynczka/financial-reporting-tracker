@@ -1871,8 +1871,11 @@ function renderAllTasks() {
       <td style="font-size:10px;color:var(--slate)">${getTaskRCCount(a) || '—'}</td>`;
   });
 
-  // Skipped tasks toggle for admins
-  const skippedCount = STATE.assignments.filter(a => a.IsSkipped).length;
+  // If card view is currently active, re-render it too — filter applies to both views
+  const cardWrap = document.getElementById('all-tasks-cards-wrap');
+  if (cardWrap && !cardWrap.classList.contains('hidden')) {
+    renderAllTasksCards();
+  }
   const skippedToggleEl = document.getElementById('skipped-tasks-toggle');
   if (skippedToggleEl) {
     if (STATE.isAdmin && skippedCount > 0) {
@@ -2284,8 +2287,14 @@ function renderMyTasksTable() {
   const tbody = document.getElementById('my-tasks-tbody');
   if (!tbody) return;
 
+  // Split into active (my action needed) and waiting (blocked on someone else)
+  const activeTasks  = tasks.filter(t => !isLocked(t, email) && t.Status !== STATUS.COMPLETE);
+  const waitingTasks = tasks.filter(t =>  isLocked(t, email));
+  const doneTasks    = tasks.filter(t => t.Status === STATUS.COMPLETE && !isLocked(t, email));
+  const allActive    = [...activeTasks, ...doneTasks];
+
   tbody.innerHTML = '';
-  tasks.forEach(a => {
+  allActive.forEach(a => {
     const isMyPreparer = a.Preparer === email && !a.PreparerSignOff;
     const isMyReviewer = a.Reviewer === email && a.PreparerSignOff && !a.ReviewerSignOff;
     const role = isMyPreparer ? 'Preparer' : isMyReviewer ? 'Reviewer' : 'Observer';
@@ -2305,6 +2314,61 @@ function renderMyTasksTable() {
       <td style="font-size:11px;color:var(--slate)">${a.ReviewerWorkday ? 'WD' + a.ReviewerWorkday : '—'}</td>
       <td>${renderStatusBadge(a)}</td>
       <td style="font-size:11px;color:${overdue ? 'var(--red)' : 'var(--slate)'}">${dueDate ? formatDateShort(dueDate) + ' (WD' + dueWD + ')' : '—'}</td>`;
+  });
+
+  // Waiting on Others section below the main table
+  const waitingWrap = document.getElementById('my-tasks-table-waiting');
+  if (!waitingWrap) return;
+
+  if (!waitingTasks.length) {
+    waitingWrap.style.display = 'none';
+    return;
+  }
+
+  waitingWrap.style.display = '';
+  waitingWrap.innerHTML = `
+    <div class="waiting-header" style="margin-top:20px;margin-bottom:8px" id="waiting-table-toggle-header">
+      <div class="section-label" style="margin:0">WAITING ON OTHERS <span class="section-count">${waitingTasks.length}</span></div>
+      <button class="toggle-btn" id="waiting-table-toggle">▼ Show</button>
+    </div>
+    <div id="waiting-table-cards" class="hidden">
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr>
+            <th style="min-width:200px">Task</th>
+            <th>Category</th>
+            <th>Preparer</th>
+            <th>Prep WD</th>
+            <th>Rev WD</th>
+            <th>Status</th>
+            <th>Due</th>
+          </tr></thead>
+          <tbody>
+            ${waitingTasks.map(a => {
+              const dueWD = getDueWD(a, email);
+              const dueDate = resolveWorkday(getReadQuarter(), dueWD);
+              return `<tr style="cursor:pointer;opacity:0.75" onclick="openTaskPanel('${a._id}')">
+                <td style="font-weight:500;font-size:12px">${escapeHtml(a.Title || '')}</td>
+                <td><span class="cat-tag">${escapeHtml(a.Category || '')}</span></td>
+                <td>${renderBadge(a.Preparer)}</td>
+                <td style="font-size:11px;color:var(--slate)">${a.PreparerWorkday ? 'WD' + a.PreparerWorkday : '—'}</td>
+                <td style="font-size:11px;color:var(--slate)">${a.ReviewerWorkday ? 'WD' + a.ReviewerWorkday : '—'}</td>
+                <td>${renderStatusBadge(a)}</td>
+                <td style="font-size:11px;color:var(--slate)">${dueDate ? formatDateShort(dueDate) + ' (WD' + dueWD + ')' : '—'}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  // Wire toggle
+  document.getElementById('waiting-table-toggle-header')?.addEventListener('click', () => {
+    const cards = document.getElementById('waiting-table-cards');
+    const btn   = document.getElementById('waiting-table-toggle');
+    if (!cards || !btn) return;
+    const isHidden = cards.classList.toggle('hidden');
+    btn.textContent = isHidden ? '▼ Show' : '▲ Hide';
   });
 }
 
