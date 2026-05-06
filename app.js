@@ -18,7 +18,7 @@ const CONFIG = {
   redirectUri: 'https://reneebrynczka.github.io/financial-reporting-tracker/',  // Full URL to index.html
 
   // SharePoint Site
-  siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg
+  siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
 
   // SharePoint List Names — must match exactly
   lists: {
