@@ -261,6 +261,7 @@ const STATE = {
   _editUserEmoji:         null,   // emoji selected in edit user modal
   _pendingSkip:           null,   // {id, isSkipping, title} for skip/unskip confirmation
   _pendingBulkAssign:     null,   // {targets, preparer, reviewer, category} for bulk assign confirmation
+  _pendingRSEdit:         null,   // assignmentId awaiting review schedule edit
   _editUserColor:         null,   // color selected in edit user modal
   suggestions:            [],         // TaskSuggestions (loaded when admin panel opens)
   pendingCascade:         null,   // {quarter, fromWD, shiftDays, subsequent}
@@ -1268,6 +1269,12 @@ function renderBadge(email) {
 function showView(viewName) {
   // My Tasks always shows the live quarter — snap back if viewing history.
   if (viewName === 'my-tasks' && isViewingHistory()) {
+    // Set currentView and update the nav immediately so the UI is consistent
+    // even before the async switchToQuarter completes.
+    STATE.currentView = 'my-tasks';
+    document.querySelectorAll('.nav-link').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.view === 'my-tasks');
+    });
     switchToQuarter(STATE.activeQuarter);
     return;
   }
@@ -1309,14 +1316,15 @@ function refreshCurrentView() {
 
 function renderCurrentView() {
   switch (STATE.currentView) {
-    case 'my-tasks':       renderMyTasks();       break;
-    case 'all-tasks':      renderAllTasks();      break;
-    case 'review-comments':renderReviewComments();break;
-    case 'matrix':         renderMatrixView();    break;
-    case 'dashboard':      renderDashboard();     break;
-    case 'calendar':       renderCalendarView();  break;
-    case 'admin':          renderAdminView();     break;
-    case 'profile':        renderProfileView();   break;
+    case 'my-tasks':        renderMyTasks();         break;
+    case 'all-tasks':       renderAllTasks();        break;
+    case 'review-comments': renderReviewComments();  break;
+    case 'matrix':          renderMatrixView();      break;
+    case 'review-schedule': renderReviewSchedule();  break;
+    case 'dashboard':       renderDashboard();       break;
+    case 'calendar':        renderCalendarView();    break;
+    case 'admin':           renderAdminView();       break;
+    case 'profile':         renderProfileView();     break;
   }
 }
 
@@ -3194,6 +3202,12 @@ function renderStagingGrid() {
                 ${blankOpt}${userOpts.replace(`value="${escapeHtml(item.Reviewer)}"`, `value="${escapeHtml(item.Reviewer)}" selected`)}
               </select>`}
         </td>
+        <td><input type="number" class="staging-select" data-id="${item._id}" data-field="MDFRWorkday"
+          value="${item.MDFRWorkday || ''}" min="1" max="35" style="width:52px" /></td>
+        <td><input type="number" class="staging-select" data-id="${item._id}" data-field="SVPWorkday"
+          value="${item.SVPWorkday || ''}" min="1" max="35" style="width:52px" /></td>
+        <td><input type="number" class="staging-select" data-id="${item._id}" data-field="MDWorkday"
+          value="${item.MDWorkday || ''}" min="1" max="35" style="width:52px" /></td>
         <td style="text-align:center">
           <input type="checkbox" class="staging-select staging-skip" data-id="${item._id}" data-field="IsSkipped"
             ${item.IsSkipped ? 'checked' : ''} title="Skip this task for ${STATE.workingQuarter}" />
@@ -3241,6 +3255,9 @@ function renderStagingGrid() {
             <th title="Reviewer Workday">Rev WD</th>
             <th title="Sign-off mode">Mode</th>
             <th>Preparer</th><th>Reviewer</th>
+            <th title="First Review Workday (Review Schedule)">FR WD</th>
+            <th title="SVP Review Workday (Review Schedule)">SVP WD</th>
+            <th title="Controller Review Workday (Review Schedule)">Ctrl WD</th>
             <th title="Skip this quarter">Skip</th>
             <th style="width:50px"></th>
           </tr></thead>
@@ -4208,6 +4225,13 @@ function attachGlobalEvents() {
   // Edit WD
   document.getElementById('btn-edit-wd-confirm')?.addEventListener('click', confirmEditWD);
   document.getElementById('btn-edit-wd-cancel')?.addEventListener('click', () => { STATE.pendingWDEdit = null; hideModal('modal-edit-wd'); });
+  // Edit Review Schedule
+  document.getElementById('btn-edit-rs-confirm')?.addEventListener('click', confirmEditReviewSchedule);
+  document.getElementById('btn-edit-rs-cancel')?.addEventListener('click',  () => { STATE._pendingRSEdit = null; hideModal('modal-edit-review-schedule'); });
+  // Live-update date previews in Review Schedule modal
+  ['rs-fr-wd','rs-svp-wd','rs-md-wd'].forEach(fieldId => {
+    document.getElementById(fieldId)?.addEventListener('input', updateRSModalPreviews);
+  });
   // New quarter
   document.getElementById('btn-new-quarter-confirm')?.addEventListener('click', confirmNewQuarter);
   document.getElementById('btn-new-quarter-cancel')?.addEventListener('click', () => hideModal('modal-new-quarter'));
@@ -5144,6 +5168,213 @@ async function executeBulkAssign(targets, preparer, reviewer) {
   }
 }
 
+
+// ============================================================
+// REVIEW SCHEDULE VIEW
+// ============================================================
+
+// Returns the next non-weekend workday number at or after (baseWD + offset days).
+// Uses the close calendar's actual dates to skip weekends properly.
+function nextReviewScheduleWD(baseWD, offset) {
+  if (!baseWD) return null;
+  const quarter = getReadQuarter() || STATE.workingQuarter || STATE.activeQuarter;
+  if (!quarter) return Number(baseWD) + offset;
+
+  const cal = [...STATE.calendar]
+    .filter(c => c.Quarter === quarter)
+    .sort((a, b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
+  if (!cal.length) return Number(baseWD) + offset;
+
+  const baseEntry = cal.find(c => Number(c.WorkdayNumber) === Number(baseWD));
+  if (!baseEntry) return Number(baseWD) + offset;
+
+  // Add offset calendar days to the base actual date
+  const baseDate = new Date(baseEntry.ActualDate + 'T12:00:00');
+  baseDate.setDate(baseDate.getDate() + offset);
+  const targetDateStr = baseDate.toISOString().split('T')[0];
+
+  // Find first non-weekend workday in the calendar on or after target date
+  const next = cal.find(c => !c.IsWeekend && c.ActualDate >= targetDateStr);
+  return next ? Number(next.WorkdayNumber) : Number(baseWD) + offset;
+}
+
+function resolveRSDate(wdNumber) {
+  const quarter = getReadQuarter();
+  if (!quarter || !wdNumber) return '—';
+  const date = resolveWorkday(quarter, wdNumber);
+  return date ? formatDateShort(date) : `WD${wdNumber}`;
+}
+
+function rsDateClass(wdNumber) {
+  const quarter = getReadQuarter();
+  if (!quarter || !wdNumber) return '';
+  const date = resolveWorkday(quarter, wdNumber);
+  if (!date) return '';
+  const today = todayET();
+  if (date < today) return 'rs-date-past';
+  if (date === today) return 'rs-date-today';
+  const d = new Date(today + 'T12:00:00');
+  d.setDate(d.getDate() + 1);
+  const tomorrowStr = d.toISOString().split('T')[0];
+  if (date <= tomorrowStr) return 'rs-date-soon';
+  return '';
+}
+
+function renderReviewSchedule() {
+  const quarter = getReadQuarter();
+  const sub = document.getElementById('review-schedule-sub');
+  if (sub) sub.textContent = `${quarter || '—'} · Close Review Dates`;
+
+  const content = document.getElementById('review-schedule-content');
+  if (!content) return;
+
+  if (!quarter) {
+    content.innerHTML = `<div class="empty-state"><span class="empty-icon">📅</span><div class="empty-title">No active quarter</div><div class="empty-sub">A quarter must be activated before the review schedule is available.</div></div>`;
+    return;
+  }
+
+  const tasks = STATE.assignments.filter(a => !a.IsSkipped && a.MatrixItem);
+  if (!tasks.length) {
+    content.innerHTML = `<div class="empty-state"><span class="empty-icon">📅</span><div class="empty-title">No tasks to display</div><div class="empty-sub">Tasks with Matrix items will appear here once the quarter is activated.</div></div>`;
+    return;
+  }
+
+  // Collect sections in template order
+  const sections = [];
+  const seen = new Set();
+  STATE.templates.forEach(t => {
+    if (t.MatrixSection && !seen.has(t.MatrixSection)) {
+      seen.add(t.MatrixSection); sections.push(t.MatrixSection);
+    }
+  });
+
+  const canEdit = STATE.isAdmin && !isViewingHistory();
+
+  let html = `
+    <div class="rs-table-wrap">
+      <table class="rs-table">
+        <thead>
+          <tr>
+            <th class="rs-th-task">Task</th>
+            <th class="rs-th-date">First Review</th>
+            <th class="rs-th-date">SVP Review</th>
+            <th class="rs-th-date">Controller Review</th>
+            ${canEdit ? '<th class="rs-th-edit"></th>' : ''}
+          </tr>
+        </thead>
+        <tbody>`;
+
+  sections.forEach(section => {
+    const sectionTasks = tasks.filter(a => {
+      const tpl = STATE.templates.find(t => t._id === a.TaskTemplateLookupId);
+      return tpl?.MatrixSection === section;
+    });
+    if (!sectionTasks.length) return;
+
+    html += `<tr class="rs-section-header"><td colspan="${canEdit ? 5 : 4}">${escapeHtml(section)}</td></tr>`;
+
+    sectionTasks.forEach(a => {
+      const frWD  = a.MDFRWorkday  || a.ReviewerWorkday || null;
+      const svpWD = a.SVPWorkday   || (frWD ? nextReviewScheduleWD(frWD, 1) : null);
+      const mdWD  = a.MDWorkday    || (frWD ? nextReviewScheduleWD(frWD, 2) : null);
+
+      const frDate  = resolveRSDate(frWD);
+      const svpDate = resolveRSDate(svpWD);
+      const mdDate  = resolveRSDate(mdWD);
+
+      // Strip quarter prefix from title for cleaner display
+      const title = (a.Title || '')
+        .replace(/^Q\d\s+\d{4}\s*[-–]\s*[^—–]+\s*[-–]\s*/i, '').trim()
+        || a.MatrixItem || a.Title;
+
+      html += `
+        <tr class="rs-row">
+          <td class="rs-task-name">${escapeHtml(title)}</td>
+          <td class="rs-date-cell ${rsDateClass(frWD)}">${frDate}</td>
+          <td class="rs-date-cell ${rsDateClass(svpWD)}">${svpDate}</td>
+          <td class="rs-date-cell ${rsDateClass(mdWD)}">${mdDate}</td>
+          ${canEdit ? `<td class="rs-edit-cell"><button class="btn-icon btn-sm" data-action="edit-review-schedule" data-id="${a._id}" title="Edit review dates">✏️</button></td>` : ''}
+        </tr>`;
+    });
+  });
+
+  html += '</tbody></table></div>';
+  content.innerHTML = html;
+
+  // Wire edit buttons directly — this container is re-rendered on every view switch
+  if (canEdit) {
+    content.querySelectorAll('[data-action="edit-review-schedule"]').forEach(btn => {
+      btn.addEventListener('click', () => openEditReviewScheduleModal(btn.dataset.id));
+    });
+  }
+}
+
+function openEditReviewScheduleModal(assignmentId) {
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
+  STATE._pendingRSEdit = assignmentId;
+
+  const frWD  = assignment.MDFRWorkday  || assignment.ReviewerWorkday || '';
+  const svpWD = assignment.SVPWorkday   || (frWD ? nextReviewScheduleWD(Number(frWD), 1) : '');
+  const mdWD  = assignment.MDWorkday    || (frWD ? nextReviewScheduleWD(Number(frWD), 2) : '');
+
+  const taskEl = document.getElementById('modal-edit-rs-task');
+  if (taskEl) {
+    const title = (assignment.Title || '')
+      .replace(/^Q\d\s+\d{4}\s*[-–]\s*[^—–]+\s*[-–]\s*/i, '').trim()
+      || assignment.MatrixItem || assignment.Title;
+    taskEl.textContent = title;
+  }
+
+  const frEl  = document.getElementById('rs-fr-wd');
+  const svpEl = document.getElementById('rs-svp-wd');
+  const mdEl  = document.getElementById('rs-md-wd');
+  if (frEl)  frEl.value  = frWD  || '';
+  if (svpEl) svpEl.value = svpWD || '';
+  if (mdEl)  mdEl.value  = mdWD  || '';
+
+  updateRSModalPreviews();
+  showModal('modal-edit-review-schedule');
+  frEl?.focus();
+}
+
+function updateRSModalPreviews() {
+  const quarter = getReadQuarter();
+  [['fr','rs-fr-date'], ['svp','rs-svp-date'], ['md','rs-md-date']].forEach(([key, previewId]) => {
+    const wd = Number(document.getElementById(`rs-${key}-wd`)?.value);
+    const previewEl = document.getElementById(previewId);
+    if (!previewEl) return;
+    if (!wd || !quarter) { previewEl.textContent = ''; return; }
+    const date = resolveWorkday(quarter, wd);
+    previewEl.textContent = date ? `→ ${formatDateShort(date)}` : `WD${wd} (not in calendar)`;
+  });
+}
+
+async function confirmEditReviewSchedule() {
+  const assignmentId = STATE._pendingRSEdit;
+  if (!assignmentId) return;
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
+
+  const frWD  = Number(document.getElementById('rs-fr-wd')?.value)  || null;
+  const svpWD = Number(document.getElementById('rs-svp-wd')?.value) || null;
+  const mdWD  = Number(document.getElementById('rs-md-wd')?.value)  || null;
+
+  hideModal('modal-edit-review-schedule');
+  STATE._pendingRSEdit = null;
+
+  try {
+    await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, {
+      MDFRWorkday: frWD, SVPWorkday: svpWD, MDWorkday: mdWD,
+    });
+    patchAssignment(assignmentId, { MDFRWorkday: frWD, SVPWorkday: svpWD, MDWorkday: mdWD });
+    showToast('✓ Review schedule updated', 'success');
+    renderReviewSchedule();
+  } catch (err) {
+    showToast(`Failed — ${classifyGraphError(err)}`, 'error');
+    logError('confirmEditReviewSchedule failed:', err);
+  }
+}
 
 let _pendingMilestoneWD   = null;
 let _pendingMilestoneDate = null;
@@ -6266,8 +6497,13 @@ async function confirmRollforward() {
         HasDocumentLink:  template.HasDocumentLink || false,
         PreparerSignOff:  false,
         ReviewerSignOff:  false,
-        Status:       STATUS.NOT_STARTED,
-        IsStaging:    true,
+        Status:           STATUS.NOT_STARTED,
+        IsStaging:        true,
+        // Review Schedule workday numbers — defaults to reviewer WD with +1/+2 weekend-skipped offsets.
+        // MDFRWorkday mirrors ReviewerWorkday; SVP/MD are computed by nextReviewScheduleWD().
+        MDFRWorkday:      revWD || null,
+        SVPWorkday:       revWD ? nextReviewScheduleWD(revWD, 1) : null,
+        MDWorkday:        revWD ? nextReviewScheduleWD(revWD, 2) : null,
       });
       created++;
 
