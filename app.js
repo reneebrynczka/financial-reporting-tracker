@@ -1747,7 +1747,8 @@ function renderTaskCard(assignment, currentEmail, isOverdue = false, isWaiting =
           rc.Priority === PRIORITY.URGENT && rc.Status === RC_STATUS.OPEN
   );
   const rcCount = STATE.reviewComments.filter(
-    rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId
+    rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId &&
+          rc.Status !== RC_STATUS.RESOLVED
   ).length;
 
   const prepBadge = renderBadge(assignment.Preparer);
@@ -2044,7 +2045,10 @@ function getCompletionPct() {
 }
 
 function getTaskRCCount(assignment) {
-  return STATE.reviewComments.filter(rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId).length || 0;
+  return STATE.reviewComments.filter(rc =>
+    rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId &&
+    rc.Status !== RC_STATUS.RESOLVED
+  ).length || 0;
 }
 
 function populateCategoryFilter() {
@@ -2476,9 +2480,21 @@ function renderReviewComments() {
   const resolvedList = document.getElementById('rc-resolved-list');
 
   const allRCs  = rcQuarter ? STATE.reviewComments.filter(rc => rc.Quarter === rcQuarter) : STATE.reviewComments;
-  const urgent  = allRCs.filter(rc => rc.Priority === PRIORITY.URGENT && rc.Status === RC_STATUS.OPEN);
-  const normal  = allRCs.filter(rc => rc.Priority === PRIORITY.NORMAL && rc.Status === RC_STATUS.OPEN);
-  const resolved = allRCs.filter(rc => rc.Status === RC_STATUS.RESOLVED);
+
+  // Apply status and priority filters
+  const rcStatus   = STATE.filters.rcStatus   || 'all';
+  const rcPriority = STATE.filters.rcPriority || 'all';
+
+  const filteredRCs = allRCs.filter(rc => {
+    if (rcStatus === 'open'     && rc.Status !== RC_STATUS.OPEN)     return false;
+    if (rcStatus === 'resolved' && rc.Status !== RC_STATUS.RESOLVED) return false;
+    if (rcPriority === 'urgent' && rc.Priority !== PRIORITY.URGENT)  return false;
+    return true;
+  });
+
+  const urgent  = filteredRCs.filter(rc => rc.Priority === PRIORITY.URGENT && rc.Status === RC_STATUS.OPEN);
+  const normal  = filteredRCs.filter(rc => rc.Priority === PRIORITY.NORMAL && rc.Status === RC_STATUS.OPEN);
+  const resolved = filteredRCs.filter(rc => rc.Status === RC_STATUS.RESOLVED);
 
   const urgentSection = document.getElementById('rc-urgent-section');
   if (urgentSection) urgentSection.classList.toggle('hidden', urgent.length === 0);
@@ -4605,6 +4621,26 @@ function attachGlobalEvents() {
       STATE.filters.status = btn.dataset.value;
       saveFilters();
       renderAllTasks();
+    });
+  });
+
+  // RC status filter buttons (All / Open / Resolved)
+  document.querySelectorAll('[data-filter="rc-status"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-filter="rc-status"]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      STATE.filters.rcStatus = btn.dataset.value;
+      renderReviewComments();
+    });
+  });
+
+  // RC priority filter buttons (All / Urgent)
+  document.querySelectorAll('[data-filter="rc-priority"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-filter="rc-priority"]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      STATE.filters.rcPriority = btn.dataset.value;
+      renderReviewComments();
     });
   });
 
