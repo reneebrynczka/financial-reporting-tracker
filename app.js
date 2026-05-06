@@ -18,7 +18,7 @@ const CONFIG = {
   redirectUri: 'https://reneebrynczka.github.io/financial-reporting-tracker/',  // Full URL to index.html
 
   // SharePoint Site
-  siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg',
+  siteUrl: 'https://moodys.sharepoint.com/sites/finance_home_finrptg
 
   // SharePoint List Names — must match exactly
   lists: {
@@ -5306,8 +5306,12 @@ function renderReviewSchedule() {
       if (itemAssignments.length > 0 && active.length === 0) return;
 
       // Use the first active assignment for review schedule dates.
-      // Multiple assignments share the same MatrixItem — the dates are the same across them.
       const a = active[0] || itemAssignments[0];
+
+      // Hide from Review Schedule if flagged — non-admins never see hidden rows.
+      // Admins see hidden rows with a dimmed style and a show/hide toggle.
+      const isHidden = !!a?.MDScheduleHidden;
+      if (isHidden && !canEdit) return;
 
       const frWD  = a?.MDFRWorkday  || a?.ReviewerWorkday || null;
       const svpWD = a?.SVPWorkday   || (frWD ? nextReviewScheduleWD(frWD, 1) : null);
@@ -5321,13 +5325,21 @@ function renderReviewSchedule() {
       const svpChip = svpDate !== '—' ? `<span class="rs-date-chip">${svpDate}</span>` : `<span class="rs-date-empty">—</span>`;
       const mdChip  = mdDate  !== '—' ? `<span class="rs-date-chip">${mdDate}</span>`  : `<span class="rs-date-empty">—</span>`;
 
+      const rowStyle = isHidden ? ' style="opacity:0.4"' : '';
+      const hideBtn = canEdit && a
+        ? `<button class="btn-icon btn-sm" data-action="toggle-rs-hidden" data-id="${a._id}" data-hidden="${isHidden}" title="${isHidden ? 'Show in Review Schedule' : 'Hide from Review Schedule'}">${isHidden ? '👁' : '🚫'}</button>`
+        : '';
+
       html += `
-        <tr class="rs-row">
-          <td class="rs-task-name">${escapeHtml(matrixItem)}</td>
+        <tr class="rs-row"${rowStyle}>
+          <td class="rs-task-name">${escapeHtml(matrixItem)}${isHidden ? ' <span style="font-size:9px;background:#F0F0F0;color:var(--slate);padding:1px 5px;border-radius:3px;margin-left:4px">HIDDEN</span>' : ''}</td>
           <td class="rs-date-cell ${rsDateClass(frWD)}">${frChip}</td>
           <td class="rs-date-cell ${rsDateClass(svpWD)}">${svpChip}</td>
           <td class="rs-date-cell ${rsDateClass(mdWD)}">${mdChip}</td>
-          ${canEdit && a ? `<td class="rs-edit-cell"><button class="btn-icon btn-sm" data-action="edit-review-schedule" data-id="${a._id}" title="Edit review dates">✏️</button></td>` : (canEdit ? '<td></td>' : '')}
+          ${canEdit ? `<td class="rs-edit-cell" style="display:flex;gap:4px;align-items:center;justify-content:center">
+            <button class="btn-icon btn-sm" data-action="edit-review-schedule" data-id="${a?._id}" title="Edit review dates">✏️</button>
+            ${hideBtn}
+          </td>` : ''}
         </tr>`;
     });
   });
@@ -5335,10 +5347,13 @@ function renderReviewSchedule() {
   html += '</tbody></table></div>';
   content.innerHTML = html;
 
-  // Wire edit buttons directly — this container is re-rendered on every view switch
+  // Wire edit and hide buttons directly — container re-renders on every view switch
   if (canEdit) {
     content.querySelectorAll('[data-action="edit-review-schedule"]').forEach(btn => {
       btn.addEventListener('click', () => openEditReviewScheduleModal(btn.dataset.id));
+    });
+    content.querySelectorAll('[data-action="toggle-rs-hidden"]').forEach(btn => {
+      btn.addEventListener('click', () => toggleRSHidden(btn.dataset.id, btn.dataset.hidden === 'true'));
     });
   }
 }
@@ -5407,6 +5422,30 @@ async function confirmEditReviewSchedule() {
   } catch (err) {
     showToast(`Failed — ${classifyGraphError(err)}`, 'error');
     logError('confirmEditReviewSchedule failed:', err);
+  }
+}
+
+async function toggleRSHidden(assignmentId, currentlyHidden) {
+  const assignment = STATE.assignments.find(a => a._id === assignmentId);
+  if (!assignment) return;
+  const newValue = !currentlyHidden;
+  try {
+    await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, { MDScheduleHidden: newValue });
+    patchAssignment(assignmentId, { MDScheduleHidden: newValue });
+    // Also update sibling assignments that share the same MatrixItem
+    // so the hidden state is consistent across all tasks for this row
+    const siblings = STATE.assignments.filter(
+      a => a.MatrixItem === assignment.MatrixItem && a._id !== assignmentId
+    );
+    await Promise.all(siblings.map(s =>
+      updateListItem(CONFIG.lists.quarterlyAssignments, s._id, { MDScheduleHidden: newValue })
+        .then(() => patchAssignment(s._id, { MDScheduleHidden: newValue }))
+    ));
+    showToast(newValue ? '🚫 Hidden from Review Schedule' : '👁 Shown in Review Schedule', 'success');
+    renderReviewSchedule();
+  } catch (err) {
+    showToast(`Failed — ${classifyGraphError(err)}`, 'error');
+    logError('toggleRSHidden failed:', err);
   }
 }
 
