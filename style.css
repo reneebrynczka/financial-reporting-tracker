@@ -877,12 +877,15 @@ body {
 .resolution-note { background: var(--green-light); border-radius: var(--border-radius-md); padding: 6px 10px; margin-top: 8px; font-size: 11px; color: var(--green); }
 
 /* ---- MATRIX ----------------------------------------------- */
-.matrix-scroll-wrap {
-  overflow-x: visible;
+.matrix-outer-wrap {
   overflow-y: auto;
   max-height: calc(100vh - 180px);
   border-radius: var(--border-radius-lg);
   border: 1px solid var(--mid-gray);
+  background: var(--white);
+}
+.matrix-scroll-wrap {
+  overflow: visible;
   background: var(--white);
 }
 .matrix-table {
