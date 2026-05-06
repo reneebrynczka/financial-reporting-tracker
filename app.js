@@ -269,7 +269,7 @@ const STATE = {
   pendingDocLinkEdit:     null,   // assignmentId awaiting doc link edit
   _auditEntries:          [],     // Loaded on-demand when audit log panel opens
   _auditFilter:           { type: 'All', person: '', quarter: '' }, // Audit log filter state
-  _matrixUpdateInFlight:  false,       // Guard against double-clicks on matrix cells
+  _matrixUpdateInFlight:  new Set(),   // Guards against double-clicks; keyed by 'matrixItem:column'
   _signOffInFlight:       new Set(),   // Guards against double-click sign-offs per assignment+role
   _allUsers:              [],          // All users including inactive — for badge rendering in audit/SOX
   _calendarLoading:        false,  // Guard against double calendar loads
@@ -449,6 +449,9 @@ function getWDIndicatorText(quarter) {
 function isTaskOverdue(assignment) {
   if (assignment.IsSkipped) return false;  // Skipped tasks are never overdue
   if (assignment.Status === STATUS.COMPLETE) return false;
+  // When browsing a historical quarter, never flag tasks as overdue — the close
+  // is complete, and today's workday in the active quarter is irrelevant to history.
+  if (isViewingHistory()) return false;
   const wd = getTodaysWorkday(STATE.activeQuarter);
   // Post-close: all incomplete tasks are overdue
   if (wd === 'post-close') return true;
@@ -798,10 +801,24 @@ async function loadRCReplies() {
   // Use Quarter server-side filter if the column exists (new replies have it).
   // Falls back to fetching all and filtering client-side for older replies without it.
   const quarter = getReadQuarter();
-  const items = await getListItems(
-    CONFIG.lists.reviewCommentReplies,
-    quarter ? `fields/Quarter eq '${quarter}'` : ''
-  ).catch(() => getListItems(CONFIG.lists.reviewCommentReplies));
+  let items = [];
+  try {
+    // Try server-side quarter filter first (works for new replies that have the Quarter column).
+    items = await getListItems(
+      CONFIG.lists.reviewCommentReplies,
+      quarter ? `fields/Quarter eq '${quarter}'` : ''
+    );
+  } catch (filterErr) {
+    // Quarter filter failed — column may not exist yet. Fall back to unfiltered fetch.
+    logError('loadRCReplies: quarter filter failed, falling back to full fetch:', filterErr);
+    try {
+      items = await getListItems(CONFIG.lists.reviewCommentReplies);
+    } catch (fallbackErr) {
+      logError('loadRCReplies: fallback fetch also failed:', fallbackErr);
+      STATE.rcReplies = [];
+      return;
+    }
+  }
   // Always filter by rcIds as a safety net — catches replies that predate the Quarter column.
   STATE.rcReplies = items
     .map(i => ({ ...i.fields, _id: i.id }))
@@ -900,6 +917,9 @@ async function switchToQuarter(quarter) {
   try {
     STATE.viewingQuarter = quarter;
     document.title = `Folio — ${quarter}${quarter !== STATE.activeQuarter ? ' (history)' : ''}`;
+    // Reset showSkipped when switching quarters — skipped tasks in one quarter
+    // should not automatically be visible in another without the admin re-enabling.
+    STATE.filters.showSkipped = false;
     await loadViewingQuarterData(quarter);
     updateHistoryBanner();
     updateWDIndicator(); updateContextRibbon();
@@ -1001,7 +1021,11 @@ function startPolling() {
     document._folioVisibilityListenerAdded = true;
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && STATE.activeQuarter) {
-        loadAllData()
+        // Respect the current viewing context — same logic as the poll.
+        const loader = isViewingHistory()
+          ? loadViewingQuarterData(STATE.viewingQuarter)
+          : loadAllData();
+        loader
           .then(() => { refreshCurrentView(); updateWDIndicator(); updateContextRibbon(); showStaleBanner(false); })
           .catch(() => showStaleBanner(true));
       }
@@ -1045,9 +1069,11 @@ async function performSignOff(assignmentId, role) {
   Object.assign(assignment, fields);
   refreshCurrentView();
 
+  let success = false;
   try {
     // Write to SharePoint first — if this succeeds the sign-off is real.
     await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, fields);
+    success = true;
     showToast('✓ Signed off', 'success');
 
     // Audit log write is best-effort — a failure here does NOT revert the sign-off.
@@ -1073,6 +1099,7 @@ async function performSignOff(assignmentId, role) {
   } finally {
     STATE._signOffInFlight.delete(guardKey);
   }
+  return success;
 }
 
 // ============================================================
@@ -1140,8 +1167,9 @@ async function performReversal(assignmentId, role, reason) {
 // MATRIX STATUS UPDATE
 // ============================================================
 async function performMatrixUpdate(matrixItem, column, newStatus) {
-  if (STATE._matrixUpdateInFlight) return;
-  STATE._matrixUpdateInFlight = true;
+  const guardKey = `${matrixItem}:${column}`;
+  if (STATE._matrixUpdateInFlight.has(guardKey)) return;
+  STATE._matrixUpdateInFlight.add(guardKey);
 
   const existing = STATE.matrixStatus.find(
     m => m.MatrixItem === matrixItem && m.Quarter === STATE.activeQuarter
@@ -1151,7 +1179,7 @@ async function performMatrixUpdate(matrixItem, column, newStatus) {
   const userEmail = STATE.currentUser.Email;
 
   const fm = MATRIX_FIELD_MAP[column];
-  if (!fm) { STATE._matrixUpdateInFlight = false; return; }
+  if (!fm) { STATE._matrixUpdateInFlight.delete(guardKey); return; }
 
   const fields = {
     [fm.status]: newStatus,
@@ -1203,7 +1231,7 @@ async function performMatrixUpdate(matrixItem, column, newStatus) {
     showToast('Update failed — please try again', 'error');
     logError('Matrix update failed:', err);
   } finally {
-    STATE._matrixUpdateInFlight = false;
+    STATE._matrixUpdateInFlight.delete(guardKey);
   }
 }
 
@@ -1481,16 +1509,17 @@ async function signOffAll() {
   const errors = [];
 
   for (const assignment of ready) {
-    try {
-      const isPreparer = assignment.Preparer === email && !assignment.PreparerSignOff;
-      const role = isPreparer ? 'preparer' : 'reviewer';
-      await performSignOff(assignment._id, role);
+    const isPreparer = assignment.Preparer === email && !assignment.PreparerSignOff;
+    const role = isPreparer ? 'preparer' : 'reviewer';
+    // performSignOff catches internally and returns false on failure — it never throws.
+    // Check the return value so we can detect and stop on failure.
+    const ok = await performSignOff(assignment._id, role);
+    if (ok) {
       done++;
-    } catch (err) {
+    } else {
       errors.push(assignment.Title || assignment._id);
-      logError('Sign-off-all failed for:', assignment.Title, err);
-      // Stop on first failure — a network error mid-batch means subsequent
-      // sign-offs would also fail, and partial state is clearer to recover from.
+      logError('Sign-off-all: performSignOff returned false for:', assignment.Title);
+      // Stop on first failure — partial state is clearer to recover from.
       break;
     }
   }
@@ -2155,11 +2184,9 @@ function renderPanelAction(assignment, email) {
   const isAdmin          = STATE.isAdmin;
   const isFinalReviewer  = STATE.isFinalReviewer;
 
-  // RULE 3: Preparer steps — any team member can sign off (always shown).
-  // RULE 4: Reviewer steps — restricted to assigned reviewer, admin, FinalReviewer.
-  //         Everyone else sees an "on behalf" override button that logs the actual signer.
-  const canSignPreparer  = !STATE.isReadOnly;  // ReadOnly users cannot sign off
-  const canSignReviewer  = isReviewer || isAdmin || isFinalReviewer;
+  // ReadOnly users cannot perform any sign-off actions.
+  const canSignPreparer  = !STATE.isReadOnly;
+  const canSignReviewer  = (isReviewer || isAdmin || isFinalReviewer) && !STATE.isReadOnly;
 
   // Reversals stay restricted — only assigned person or admin can reverse.
   const canReversePreparer = (isPreparer || isAdmin) && !STATE.isReadOnly;
@@ -2168,7 +2195,7 @@ function renderPanelAction(assignment, email) {
   const et = formatDateET(new Date().toISOString());
   let html = '';
 
-  if (!prepDone) {
+  if (!prepDone && canSignPreparer) {
     const onBehalf = !isPreparer;
     html = `
       <div class="confirm-box">
@@ -2178,6 +2205,9 @@ function renderPanelAction(assignment, email) {
           <button class="btn-primary btn-sm" data-action="signoff" data-id="${assignment._id}" data-role="preparer">✓ ${onBehalf ? 'Sign Off on Behalf' : 'Sign Off as Preparer'}</button>
         </div>
       </div>`;
+  } else if (!prepDone && !canSignPreparer) {
+    // ReadOnly user — preparer step pending but they cannot act
+    html = `<p style="font-size:11px;color:var(--slate)">Awaiting preparer sign-off by ${renderBadge(assignment.Preparer)}.</p>`;
   } else if (!isPrepOnly && !revDone) {
     if (canSignReviewer) {
       const onBehalf = !isReviewer;
@@ -4232,6 +4262,10 @@ function attachGlobalEvents() {
   document.getElementById('btn-signoff-cancel')?.addEventListener('click', () => {
     hideModal('modal-signoff');
     STATE.pendingSignoff = null;
+    // Always reset the confirm button — on-behalf flow disables it, and cancelling
+    // must leave it in a clean state for the next sign-off modal open.
+    const confirmBtn = document.getElementById('btn-signoff-confirm');
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.style.opacity = '1'; }
   });
 
   // Reversal modal
@@ -5409,7 +5443,13 @@ async function confirmReassign() {
 
   const selectEl = document.getElementById('reassign-user-select');
   const newEmail = selectEl?.value;
-  if (!newEmail) return;
+  if (!newEmail) {
+    // User selected "— No change —" — close modal with informative feedback.
+    hideModal('modal-reassign');
+    showToast('No change — assignment unchanged', 'info');
+    STATE.pendingReassign = null;
+    return;
+  }
 
   const field = role === 'preparer' ? 'Preparer' : 'Reviewer';
   const prevEmail = assignment[field];
@@ -6427,6 +6467,20 @@ function renderAllTasksCards() {
   const filtered = getFilteredAssignments();
   wrap.innerHTML = filtered.map(a => renderTaskCard(a, STATE.currentUser?.Email, isTaskOverdue(a))).join('');
   attachCardEvents();
+
+  // Keep the skipped-tasks-toggle in sync with the card view — same logic as the table view.
+  const skippedCount = STATE.assignments.filter(a => a.IsSkipped).length;
+  const skippedToggleEl = document.getElementById('skipped-tasks-toggle');
+  if (skippedToggleEl) {
+    if (STATE.isAdmin && skippedCount > 0) {
+      skippedToggleEl.style.display = '';
+      skippedToggleEl.innerHTML = `<button class="btn-secondary btn-sm" onclick="STATE.filters.showSkipped=!STATE.filters.showSkipped;renderAllTasks()">
+        ${STATE.filters.showSkipped ? 'Hide skipped tasks' : `Show ${skippedCount} skipped task${skippedCount !== 1 ? 's' : ''}`}
+      </button>`;
+    } else {
+      skippedToggleEl.style.display = 'none';
+    }
+  }
 }
 
 // ============================================================
