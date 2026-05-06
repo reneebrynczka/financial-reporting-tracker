@@ -269,6 +269,7 @@ const STATE = {
   _pendingSkip:           null,   // {id, isSkipping, title} for skip/unskip confirmation
   _pendingBulkAssign:     null,   // {targets, preparer, reviewer, category} for bulk assign confirmation
   _pendingRSEdit:         null,   // assignmentId awaiting review schedule edit
+  _pollFailCount:         0,      // consecutive poll failures before showing stale banner
   _editUserColor:         null,   // color selected in edit user modal
   suggestions:            [],         // TaskSuggestions (loaded when admin panel opens)
   pendingCascade:         null,   // {quarter, fromWD, shiftDays, subsequent}
@@ -1030,10 +1031,14 @@ function startPolling() {
       refreshCurrentView();
       updateWDIndicator(); updateContextRibbon();
       await populateQuarterPicker();
+      STATE._pollFailCount = 0;
       showStaleBanner(false);
     } catch (err) {
+      STATE._pollFailCount = (STATE._pollFailCount || 0) + 1;
       logError('Poll failed:', err, '|', classifyGraphError(err));
-      showStaleBanner(true);
+      // Only show the stale banner after 3 consecutive failures — transient
+      // network hiccups and token refreshes should not alarm the user.
+      if (STATE._pollFailCount >= 3) showStaleBanner(true);
     }
   }, CONFIG.pollIntervalMs);
 
@@ -1723,7 +1728,8 @@ function renderTaskCard(assignment, currentEmail, isOverdue = false, isWaiting =
   ).length;
 
   const prepBadge = renderBadge(assignment.Preparer);
-  const revBadge = assignment.Reviewer ? renderBadge(assignment.Reviewer) : '';
+  const isPrepOnly = assignment.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY;
+  const revBadge = (!isPrepOnly && assignment.Reviewer) ? renderBadge(assignment.Reviewer) : '';
 
   let signoffBtn = '';
   let nudgeBtn = '';
@@ -1765,7 +1771,7 @@ function renderTaskCard(assignment, currentEmail, isOverdue = false, isWaiting =
       </div>
       <div class="task-card-people">
         ${prepBadge}
-        ${revBadge ? `<span style="font-size:10px;color:var(--slate)">Reviewer:</span>${revBadge}` : '<span style="font-size:10px;color:var(--slate)">Preparer only</span>'}
+        ${isPrepOnly ? '<span style="font-size:10px;color:var(--slate)">Preparer only</span>' : (revBadge ? `<span style="font-size:10px;color:var(--slate)">Reviewer:</span>${revBadge}` : '<span style="font-size:10px;color:var(--slate)">No reviewer</span>')}
       </div>
       <div class="task-card-actions">
         ${signoffBtn}
@@ -1884,9 +1890,9 @@ function renderAllTasks() {
       <td style="font-weight:500;font-size:12px">${escapeHtml(a.Title || '')}${a.IsSkipped ? ' <span style="font-size:9px;background:#F5F5F5;color:var(--slate);padding:1px 5px;border-radius:4px">SKIPPED</span>' : ''}</td>
       <td><span class="cat-tag">${escapeHtml(a.Category || '')}</span></td>
       <td>${renderBadge(a.Preparer)}</td>
-      <td>${a.Reviewer ? renderBadge(a.Reviewer) : '<span style="font-size:10px;color:var(--slate)">Preparer only</span>'}</td>
+      <td>${a.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY ? '<span style="font-size:10px;color:var(--slate)">Preparer only</span>' : (a.Reviewer ? renderBadge(a.Reviewer) : '<span style="font-size:10px;color:var(--slate)">—</span>')}</td>
       <td style="font-size:11px;color:var(--slate)">${a.PreparerWorkday ? 'WD' + a.PreparerWorkday : '—'}</td>
-      <td style="font-size:11px;color:var(--slate)">${a.ReviewerWorkday ? 'WD' + a.ReviewerWorkday : '—'}</td>
+      <td style="font-size:11px;color:var(--slate)">${a.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY ? '—' : (a.ReviewerWorkday ? 'WD' + a.ReviewerWorkday : '—')}</td>
       <td>${renderStatusBadge(a)}</td>
       <td style="font-size:10px;color:var(--slate)">${getTaskRCCount(a) || '—'}</td>`;
   });
@@ -2081,7 +2087,8 @@ function openTaskPanel(assignmentId) {
   // Assignment section
   const email = STATE.currentUser?.Email;
   const prepBadge = renderBadge(assignment.Preparer);
-  const revBadge = assignment.Reviewer ? renderBadge(assignment.Reviewer) : '—';
+  const isPrepOnly2 = assignment.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY;
+  const revBadge = (!isPrepOnly2 && assignment.Reviewer) ? renderBadge(assignment.Reviewer) : (isPrepOnly2 ? '<span style="font-size:11px;color:var(--slate)">Preparer only</span>' : '—');
   // CATEGORY.TIE_OUT is an exact-match comparison — the SharePoint Category value must
   // match 'Tie Out' exactly (case-insensitive). If the category name ever changes,
   // update CATEGORY.TIE_OUT in the constants block above.
@@ -2093,7 +2100,7 @@ function openTaskPanel(assignmentId) {
   const canReassign = STATE.isAdmin && !isViewingHistory() && !STATE.isReadOnly;
   document.getElementById('panel-assignment').innerHTML = `
     <div class="panel-meta-row"><span class="panel-meta-label">Preparer</span>${prepBadge}${canReassign ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="reassign" data-id="${assignment._id}" data-role="preparer">Reassign</button>` : ''}</div>
-    <div class="panel-meta-row"><span class="panel-meta-label">Reviewer</span>${revBadge}${canReassign && assignment.Reviewer ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="reassign" data-id="${assignment._id}" data-role="reviewer">Reassign</button>` : ''}</div>
+    ${isPrepOnly2 ? '' : `<div class="panel-meta-row"><span class="panel-meta-label">Reviewer</span>${revBadge}${canReassign && assignment.Reviewer ? '<button class="btn-icon btn-sm" style="margin-left:6px" data-action="reassign" data-id="' + assignment._id + '" data-role="reviewer">Reassign</button>' : ''}</div>`}
     <div class="panel-meta-row"><span class="panel-meta-label">Sign-off mode</span><span style="font-size:11px">${assignment.SignOffMode || '—'}</span></div>
     ${showDocRow ? `<div class="panel-meta-row" style="border-bottom:none"><span class="panel-meta-label">Document</span>${docLink || ''}${STATE.isAdmin && !isViewingHistory() ? `<button class="btn-icon btn-sm" style="margin-left:6px" data-action="edit-doc-link" data-id="${assignment._id}" data-url="${escapeHtml(assignment.DocumentLink || '')}" title="Edit document link">✏️</button>` : ''}</div>` : ''}`;
 
@@ -2204,7 +2211,7 @@ function renderPanelStatusChain(assignment, email) {
       <div class="status-step-dot ${revDone ? 'dot-complete' : !prepDone ? 'dot-locked' : 'dot-pending'}"></div>
       <div>
         <div class="status-step-text">Reviewer sign-off</div>
-        <div class="status-step-sub">${!prepDone ? '🔒 Locked until preparer signs' : revDone ? renderBadge(assignment.ReviewerSignOffBy || assignment.Reviewer) + ' · ' + formatDateET(assignment.ReviewerSignOffDate) : renderBadge(assignment.Reviewer) + ' · Pending'}</div>
+        <div class="status-step-sub">${!prepDone ? '🔒 Locked until preparer signs' : revDone ? renderBadge(assignment.ReviewerSignOffBy || assignment.Reviewer) + ' · ' + formatDateET(assignment.ReviewerSignOffDate) : (assignment.Reviewer ? renderBadge(assignment.Reviewer) + ' · Pending' : 'No reviewer assigned')}</div>
       </div>
     </div>` : ''}`;
 }
@@ -4279,8 +4286,21 @@ function attachGlobalEvents() {
 
   // Stale retry
   document.getElementById('btn-stale-retry')?.addEventListener('click', async () => {
-    try { await loadAllData(); refreshCurrentView(); showStaleBanner(false); }
-    catch { /* stay stale */ }
+    try {
+      if (isViewingHistory()) {
+        await loadViewingQuarterData(STATE.viewingQuarter);
+      } else {
+        await loadAllData();
+      }
+      refreshCurrentView();
+      updateWDIndicator();
+      updateContextRibbon();
+      showStaleBanner(false);
+      STATE._pollFailCount = 0;
+    } catch (err) {
+      logError('Retry failed:', err);
+      // Stay stale — user can try again
+    }
   });
 
   // Profile save
