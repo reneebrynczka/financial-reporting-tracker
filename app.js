@@ -4026,7 +4026,8 @@ function renderProfileView() {
       { key: 'NotifyOnOverdue', label: 'Task overdue' },
       { key: 'NotifyOnReassignment', label: 'Task reassigned to me' },
       { key: 'NotifyOnSuggestionUpdate', label: 'My suggestion approved/rejected' },
-      { key: 'NotifyOnReviewComment',    label: 'Review comment posted on my task' },
+      { key: 'NotifyOnReviewComment', label: 'Review comment posted on a task I\'m assigned to' },
+      { key: 'NotifyOnTagged',         label: 'I\'m tagged in a review comment' },
     ];
     notifList.innerHTML = prefs.map(p => `
       <div class="notif-row">
@@ -4082,7 +4083,8 @@ async function saveProfile() {
       NotifyOnOverdue:          u.NotifyOnOverdue === true,
       NotifyOnReassignment:     u.NotifyOnReassignment === true,
       NotifyOnSuggestionUpdate: u.NotifyOnSuggestionUpdate === true,
-      NotifyOnReviewComment:    u.NotifyOnReviewComment    === true,
+      NotifyOnReviewComment: u.NotifyOnReviewComment === true,
+      NotifyOnTagged:        u.NotifyOnTagged        === true,
     });
     updateNavAvatar();
     showToast('✓ Profile saved', 'success');
@@ -6216,7 +6218,8 @@ async function createUser() {
       NotifyOnOverdue:          false,
       NotifyOnReassignment:     false,
       NotifyOnSuggestionUpdate: false,
-      NotifyOnReviewComment:    false,
+      NotifyOnReviewComment: false,
+      NotifyOnTagged:        false,
     });
     STATE.users.push({ ...created.fields, _id: created.id });
     const badgeNote = emoji && color ? ` with badge ${emoji}` : '';
