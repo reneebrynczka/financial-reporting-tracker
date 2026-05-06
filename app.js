@@ -5239,6 +5239,28 @@ function renderReviewSchedule() {
     return;
   }
 
+  // Count tasks that still need defaults populated (MDFRWorkday not yet set)
+  const unpopulated = tasks.filter(a => !a.MDFRWorkday && a.ReviewerWorkday).length;
+  const canEdit = STATE.isAdmin && !isViewingHistory();
+
+  // Admin toolbar — populate defaults button shown when tasks are missing RS workdays
+  if (canEdit && unpopulated > 0) {
+    const existingToolbar = content.previousElementSibling;
+    if (!existingToolbar || !existingToolbar.classList.contains('rs-toolbar')) {
+      const toolbar = document.createElement('div');
+      toolbar.className = 'rs-toolbar';
+      toolbar.innerHTML = `
+        <span style="font-size:12px;color:var(--slate)">${unpopulated} task${unpopulated !== 1 ? 's' : ''} have no review dates set.</span>
+        <button class="btn-secondary btn-sm" id="btn-rs-populate">⚡ Populate defaults for all tasks</button>`;
+      content.parentNode.insertBefore(toolbar, content);
+      document.getElementById('btn-rs-populate')?.addEventListener('click', populateRSDefaults);
+    }
+  } else {
+    // Remove toolbar if it exists and is no longer needed
+    const existingToolbar = content.previousElementSibling;
+    if (existingToolbar?.classList.contains('rs-toolbar')) existingToolbar.remove();
+  }
+
   // Collect sections in template order
   const sections = [];
   const seen = new Set();
@@ -5247,8 +5269,6 @@ function renderReviewSchedule() {
       seen.add(t.MatrixSection); sections.push(t.MatrixSection);
     }
   });
-
-  const canEdit = STATE.isAdmin && !isViewingHistory();
 
   let html = `
     <div class="rs-table-wrap">
@@ -5374,6 +5394,48 @@ async function confirmEditReviewSchedule() {
     showToast(`Failed — ${classifyGraphError(err)}`, 'error');
     logError('confirmEditReviewSchedule failed:', err);
   }
+}
+
+async function populateRSDefaults() {
+  const tasks = STATE.assignments.filter(a =>
+    !a.IsSkipped && a.MatrixItem && !a.MDFRWorkday && a.ReviewerWorkday
+  );
+  if (!tasks.length) {
+    showToast('All tasks already have review dates set', 'info');
+    return;
+  }
+
+  showLoading(`Populating defaults for ${tasks.length} tasks...`);
+  let done = 0;
+  const errors = [];
+
+  for (const a of tasks) {
+    const frWD  = a.ReviewerWorkday;
+    const svpWD = nextReviewScheduleWD(frWD, 1);
+    const mdWD  = nextReviewScheduleWD(frWD, 2);
+    const fields = { MDFRWorkday: frWD, SVPWorkday: svpWD, MDWorkday: mdWD };
+    try {
+      await updateListItem(CONFIG.lists.quarterlyAssignments, a._id, fields);
+      patchAssignment(a._id, fields);
+      done++;
+      // Update loading text progress every 5 items
+      if (done % 5 === 0) {
+        const loadingText = document.getElementById('loading-text');
+        if (loadingText) loadingText.textContent = `Populating... ${done} of ${tasks.length}`;
+      }
+    } catch (err) {
+      errors.push(a.Title || a._id);
+      logError('populateRSDefaults failed for:', a.Title, err);
+    }
+  }
+
+  hideLoading();
+  if (errors.length) {
+    showToast(`Populated ${done} tasks. Failed: ${errors.slice(0,3).join(', ')}${errors.length > 3 ? ` +${errors.length-3} more` : ''}`, 'warning');
+  } else {
+    showToast(`✓ Review dates populated for ${done} tasks`, 'success');
+  }
+  renderReviewSchedule();
 }
 
 let _pendingMilestoneWD   = null;
