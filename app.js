@@ -489,9 +489,16 @@ async function getToken() {
     });
     return result.accessToken;
   } catch (err) {
-    log('Silent token failed, redirecting...', err);
-    await msalInstance.acquireTokenRedirect(loginRequest);
-    throw err;
+    log('Silent token failed, trying popup...', err);
+    try {
+      // Use popup instead of redirect so the page doesn't navigate away.
+      // Redirect would cause the retry button to navigate rather than refresh.
+      const result = await msalInstance.acquireTokenPopup(loginRequest);
+      return result.accessToken;
+    } catch (popupErr) {
+      log('Popup token failed too:', popupErr);
+      throw popupErr;
+    }
   }
 }
 
@@ -4302,6 +4309,8 @@ function attachGlobalEvents() {
 
   // Stale retry
   document.getElementById('btn-stale-retry')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-stale-retry');
+    if (btn) { btn.textContent = 'Retrying...'; btn.disabled = true; }
     try {
       if (isViewingHistory()) {
         await loadViewingQuarterData(STATE.viewingQuarter);
@@ -4315,7 +4324,9 @@ function attachGlobalEvents() {
       STATE._pollFailCount = 0;
     } catch (err) {
       logError('Retry failed:', err);
-      // Stay stale — user can try again
+      showToast(`Retry failed — ${classifyGraphError(err)}`, 'error');
+    } finally {
+      if (btn) { btn.textContent = 'Retry'; btn.disabled = false; }
     }
   });
 
@@ -6524,7 +6535,7 @@ async function submitRCReply(rcId) {
     showToast('✓ Reply posted', 'success');
     renderReviewComments();
   } catch (err) {
-    showToast('Failed to post reply', 'error');
+    showToast(`Failed to post reply — ${classifyGraphError(err)}`, 'error');
     logError('submitRCReply failed:', err);
   }
 }
