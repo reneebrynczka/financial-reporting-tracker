@@ -4019,10 +4019,12 @@ function updateNavAvatar() {
   const btn = document.getElementById('nav-user-avatar');
   if (!btn || !STATE.currentUser) return;
   const u = STATE.currentUser;
-  btn.textContent = u.Emoji || u.Title?.[0] || '?';
+  const emoji = u.Emoji || '👤';
+  const firstName = (u.Title || u.Email?.split('@')[0] || '').split(' ')[0];
   const hex = u.Color || '#75787B';
-  btn.style.background = hex + '33';
-  btn.style.color = hex;
+  btn.innerHTML = `<span style="font-size:15px;line-height:1">${emoji}</span><span class="nav-user-name">${escapeHtml(firstName)}</span>`;
+  btn.style.background = hex + '22';
+  btn.style.borderColor = hex + '88';
 }
 
 // ============================================================
