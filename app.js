@@ -4417,10 +4417,42 @@ function attachGlobalEvents() {
       showToast('You must be assigned as a reviewer to post review comments', 'error');
       return;
     }
-    const sel = document.getElementById('rc-task-select');
-    if (sel) sel.innerHTML = STATE.templates.map(t =>
-      `<option value="${escapeHtml(t._id)}">${escapeHtml(t.TaskName || t.Title || '')}</option>`
-    ).join('');
+
+    // Populate category filter from active assignments (not templates)
+    // so only categories that have tasks this quarter appear.
+    const catSel = document.getElementById('rc-category-select');
+    const taskSel = document.getElementById('rc-task-select');
+
+    const categories = [...new Set(
+      STATE.assignments.filter(a => !a.IsSkipped).map(a => a.Category).filter(Boolean)
+    )].sort();
+
+    if (catSel) {
+      catSel.innerHTML = categories.map(c =>
+        `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`
+      ).join('');
+    }
+
+    // Helper: populate task dropdown for selected category
+    const populateRCTasks = (category) => {
+      if (!taskSel) return;
+      const tasksForCat = STATE.assignments.filter(a =>
+        !a.IsSkipped && a.Category === category
+      );
+      taskSel.innerHTML = tasksForCat.map(a =>
+        `<option value="${escapeHtml(a.TaskTemplateLookupId)}">${escapeHtml(a.MatrixItem || a.Title || '')}</option>`
+      ).join('');
+    };
+
+    // Populate tasks for first category on open
+    if (categories.length) populateRCTasks(categories[0]);
+
+    // Re-populate tasks when category changes
+    if (catSel && !catSel.dataset.rcListenerAttached) {
+      catSel.dataset.rcListenerAttached = 'true';
+      catSel.addEventListener('change', () => populateRCTasks(catSel.value));
+    }
+
     showModal('modal-new-rc');
     renderRCTagPicker();
   });
