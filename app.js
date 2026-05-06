@@ -2850,7 +2850,7 @@ function renderCalendarView() {
     <div class="cal-view-legend">
       <div class="cal-view-legend-item"><span class="milestone-std" style="padding:2px 8px;border-radius:8px">Standard</span>&nbsp;Meetings &amp; filings</div>
       <div class="cal-view-legend-item"><span class="milestone-svp" style="padding:2px 8px;border-radius:8px">SVP</span>&nbsp;SVP deliverables</div>
-      <div class="cal-view-legend-item"><span class="milestone-md" style="padding:2px 8px;border-radius:8px">MD</span>&nbsp;MD deliverables</div>
+      <div class="cal-view-legend-item"><span class="milestone-md" style="padding:2px 8px;border-radius:8px">Controller</span>&nbsp;Controller deliverables</div>
       <div class="cal-view-legend-item"><span class="milestone-cfo" style="padding:2px 8px;border-radius:8px">CFO</span>&nbsp;CFO deliverables</div>
       <div class="cal-view-legend-item"><span class="milestone-team" style="padding:2px 8px;border-radius:8px">Team</span>&nbsp;Team deadlines</div>
     </div>
