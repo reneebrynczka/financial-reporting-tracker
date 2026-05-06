@@ -225,7 +225,8 @@ const STATE = {
   rcReplies:      [],         // ReviewCommentReplies for active quarter
   currentView:    'my-tasks',
   pollTimer:      null,
-  siteId:         null,       // SharePoint site ID (auto-populated)
+  siteId:         null,
+  _siteIdPromise: null,   // In-flight getSiteId promise — prevents duplicate concurrent fetches       // SharePoint site ID (auto-populated)
   isAdmin:        false,
   isFinalReviewer: false,
   isReadOnly:      false,
@@ -258,6 +259,7 @@ const STATE = {
   pendingCalendarEdit:    null,   // calendar row ID being edited
   pendingUserEdit:        null,   // user email being edited
   _editUserEmoji:         null,   // emoji selected in edit user modal
+  _pendingSkip:           null,   // {id, isSkipping, title} for skip/unskip confirmation
   _editUserColor:         null,   // color selected in edit user modal
   suggestions:            [],         // TaskSuggestions (loaded when admin panel opens)
   pendingCascade:         null,   // {quarter, fromWD, shiftDays, subsequent}
@@ -266,7 +268,9 @@ const STATE = {
   pendingDocLinkEdit:     null,   // assignmentId awaiting doc link edit
   _auditEntries:          [],     // Loaded on-demand when audit log panel opens
   _auditFilter:           { type: 'All', person: '', quarter: '' }, // Audit log filter state
-  _matrixUpdateInFlight:  false,  // Guard against double-clicks on matrix cells
+  _matrixUpdateInFlight:  false,       // Guard against double-clicks on matrix cells
+  _signOffInFlight:       new Set(),   // Guards against double-click sign-offs per assignment+role
+  _allUsers:              [],          // All users including inactive — for badge rendering in audit/SOX
   _calendarLoading:        false,  // Guard against double calendar loads
 };
 
@@ -405,10 +409,9 @@ function getTodaysWorkday(quarter) {
   if (match) return Number(match.WorkdayNumber);
   if (today < sorted[0].ActualDate) return 'pre-close';
   if (today > sorted[sorted.length-1].ActualDate) return 'post-close';
-  const prev = sorted.filter(c => c.ActualDate < today).pop();
-  const next = sorted.find(c => c.ActualDate > today);
-  if (prev && next) return `Between WD${prev.WorkdayNumber} and WD${next.WorkdayNumber}`;
-  return null;
+  // Return 'between' for days that fall between two workdays (e.g. non-workday within the close period).
+  // Callers should check typeof wd === 'number' before using as a workday number.
+  return 'between';
 }
 
 // Returns the workday number for the next calendar workday after today,
@@ -428,7 +431,14 @@ function getWDIndicatorText(quarter) {
   if (wd === null) return quarter;
   if (wd === 'pre-close') return `Pre-close · ${quarter}`;
   if (wd === 'post-close') return `Post-close · ${quarter}`;
-  if (typeof wd === 'string') return wd; // "Between WD3 and WD4"
+  if (wd === 'between') {
+    // Find the surrounding workdays for display
+    const sorted2 = [...STATE.calendar].filter(c => c.Quarter === quarter)
+      .sort((a,b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
+    const prev = sorted2.filter(c => c.ActualDate < today).pop();
+    const next = sorted2.find(c => c.ActualDate > today);
+    return prev && next ? `Between WD${prev.WorkdayNumber} and WD${next.WorkdayNumber}` : quarter;
+  }
   const date = resolveWorkday(quarter, wd);
   const dateStr = date ? formatDateShort(date) : '';
   const historyFlag = isViewingHistory() ? ' 🔒' : '';
@@ -541,15 +551,24 @@ function classifyGraphError(err) {
 // ============================================================
 async function getSiteId() {
   if (STATE.siteId) return STATE.siteId;
-  // Strip trailing slash so the Graph API path is always well-formed
+  // Promise-cache: if a fetch is already in-flight, reuse it rather than firing a duplicate request.
+  if (STATE._siteIdPromise) return STATE._siteIdPromise;
   const url = CONFIG.siteUrl.replace(/\/$/, '').replace('https://', '').replace('.sharepoint.com', '');
   const parts = url.split('/sites/');
   const hostname = parts[0] + '.sharepoint.com';
   const sitePath = 'sites/' + parts[1];
-  const data = await graphRequest('GET', `/sites/${hostname}:/${sitePath}`);
-  STATE.siteId = data.id;
-  log('Site ID:', STATE.siteId);
-  return STATE.siteId;
+  STATE._siteIdPromise = graphRequest('GET', `/sites/${hostname}:/${sitePath}`)
+    .then(data => {
+      STATE.siteId = data.id;
+      STATE._siteIdPromise = null;
+      log('Site ID:', STATE.siteId);
+      return STATE.siteId;
+    })
+    .catch(err => {
+      STATE._siteIdPromise = null;
+      throw err;
+    });
+  return STATE._siteIdPromise;
 }
 
 // ============================================================
@@ -672,44 +691,40 @@ async function loadActiveQuarter() {
 }
 
 async function loadCurrentUser(email) {
-  const items = await getListItems(CONFIG.lists.users, `fields/Email eq '${email}'`);
-  if (items.length) {
-    STATE.currentUser = items[0].fields;
-    STATE.currentUser._id = items[0].id;
+  // Load ALL users (active and inactive) so deactivated users still render
+  // correctly in sign-off records, badges, and the SOX export.
+  const allItems = await getListItems(CONFIG.lists.users);
+  // Keep the full user list in a separate cache for badge rendering.
+  // STATE.users (filtered to active) is used for assignment dropdowns.
+  STATE._allUsers = allItems.map(i => ({ ...i.fields, _id: i.id }));
+
+  const match = allItems.find(i => i.fields.Email?.toLowerCase() === email.toLowerCase());
+  if (match) {
+    STATE.currentUser = { ...match.fields, _id: match.id };
+    // Block deactivated users
+    if (STATE.currentUser.IsActive === false || STATE.currentUser.IsActive === 0) {
+      throw new Error('ACCESS_DENIED: Your account has been deactivated. Contact your Folio admin.');
+    }
   } else {
-    // First login — create user record
-    const created = await createListItem(CONFIG.lists.users, {
-      Title: email.split('@')[0],
-      Email: email,
-      Role: ROLE.TEAM_MEMBER,
-      IsActive: true,
-      NotifyOnAssignment:       false,
-      NotifyOnReviewUnlock:     false,
-      NotifyOnOverdue:          false,
-      NotifyOnReassignment:     false,
-      NotifyOnSuggestionUpdate: false,
-    });
-    STATE.currentUser = { ...created.fields, _id: created.id };
-    // Set role flags for first-login users too (Role defaults to TeamMember on creation)
-    STATE.isAdmin        = STATE.currentUser.Role === ROLE.ADMIN;
-    STATE.isFinalReviewer = STATE.currentUser.Role === ROLE.FINAL_REVIEWER || STATE.isAdmin;
-    STATE.isReadOnly      = STATE.currentUser.Role === ROLE.READ_ONLY;
-    return false; // First login
+    // Unknown user — deny access. Admin must pre-add users.
+    // This prevents any Moody's tenant user from auto-gaining access.
+    throw new Error('ACCESS_DENIED: Your account is not registered in Folio. Contact your admin to be added.');
   }
   STATE.isAdmin        = STATE.currentUser.Role === ROLE.ADMIN;
   STATE.isFinalReviewer = STATE.currentUser.Role === ROLE.FINAL_REVIEWER || STATE.isAdmin;
   STATE.isReadOnly      = STATE.currentUser.Role === ROLE.READ_ONLY;
-  return true; // Returning user
+  return true;
 }
 
 async function loadUsers() {
-  // Load all users without a server-side filter — SharePoint boolean comparisons
-  // are unreliable (eq true vs eq 1 varies by column creation method).
-  // Filter client-side instead — the Users list is always small.
-  const items = await getListItems(CONFIG.lists.users);
-  STATE.users = items
-    .map(i => ({ ...i.fields, _id: i.id }))
-    .filter(u => u.IsActive !== false && u.IsActive !== 0);
+  // If loadCurrentUser already fetched all users, reuse that data to avoid a duplicate request.
+  const items = STATE._allUsers.length
+    ? STATE._allUsers
+    : (await getListItems(CONFIG.lists.users)).map(i => ({ ...i.fields, _id: i.id }));
+  // STATE.users contains only active users — used for assignment dropdowns and staging grid.
+  // STATE._allUsers contains everyone (active + inactive) — used for badge rendering.
+  if (!STATE._allUsers.length) STATE._allUsers = items;
+  STATE.users = items.filter(u => u.IsActive !== false && u.IsActive !== 0);
 }
 
 async function loadTemplates() {
@@ -731,6 +746,7 @@ async function loadAssignments(quarter) {
 }
 
 async function loadCalendar(quarter) {
+  quarter = normalizeQuarter(quarter);  // Normalize before use as a filter key
   const items = await getListItems(CONFIG.lists.closeCalendar, `fields/Quarter eq '${quarter}'`);
   STATE.calendar = items.map(i => {
     const row = { ...i.fields, _id: i.id };
@@ -743,6 +759,7 @@ async function loadCalendar(quarter) {
 }
 
 async function loadMilestones(quarter) {
+  quarter = normalizeQuarter(quarter);
   try {
     const items = await getListItems(CONFIG.lists.calendarMilestones, `fields/Quarter eq '${quarter}'`);
     STATE.milestones = items.map(i => ({ ...i.fields, _id: i.id }))
@@ -812,7 +829,13 @@ function canActAsReviewer(assignment) {
 }
 
 // Returns true if the current user can post review comments.
-// FinalReviewers, Admins, and users assigned as reviewer on at least one task can post.
+// FinalReviewers and Admins can post on any task.
+// TeamMembers can post only if assigned as reviewer on the specific task (when taskId provided)
+// or on any task in the quarter (when taskId is omitted — used for the New Comment button).
+// INTENTIONAL: When taskId is omitted, a TeamMember assigned as reviewer on one task
+// can see the New Comment button and access all tasks' comments. This is acceptable
+// because the modal asks them to select the task — they cannot comment on tasks
+// they're not assigned to without an explicit selection.
 function canPostReviewComment(taskId) {
   if (!canWrite() || STATE.isReadOnly) return false;
   if (canReview()) return true;
@@ -822,7 +845,8 @@ function canPostReviewComment(taskId) {
       a => a.TaskTemplateLookupId === taskId && a.Reviewer === STATE.currentUser?.Email
     );
   }
-  // No taskId — allow if user is reviewer on ANY task this quarter
+  // No taskId — show New Comment button if user is reviewer on ANY task this quarter.
+  // The modal itself scopes the comment to the selected task.
   return STATE.assignments.some(a => a.Reviewer === STATE.currentUser?.Email);
 }
 
@@ -872,7 +896,7 @@ async function switchToQuarter(quarter) {
     document.title = `Folio — ${quarter}${quarter !== STATE.activeQuarter ? ' (history)' : ''}`;
     await loadViewingQuarterData(quarter);
     updateHistoryBanner();
-    updateWDIndicator();
+    updateWDIndicator(); updateContextRibbon();
     refreshCurrentView();
   } catch (err) {
     showToast(`Failed to load ${quarter}`, 'error');
@@ -949,7 +973,7 @@ function startPolling() {
     try {
       await loadAllData();
       refreshCurrentView();
-      updateWDIndicator();
+      updateWDIndicator(); updateContextRibbon();
       await populateQuarterPicker();
       showStaleBanner(false);
     } catch (err) {
@@ -965,7 +989,7 @@ function startPolling() {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && STATE.activeQuarter) {
         loadAllData()
-          .then(() => { refreshCurrentView(); updateWDIndicator(); showStaleBanner(false); })
+          .then(() => { refreshCurrentView(); updateWDIndicator(); updateContextRibbon(); showStaleBanner(false); })
           .catch(() => showStaleBanner(true));
       }
     });
@@ -981,8 +1005,13 @@ function stopPolling() {
 // SIGN-OFF
 // ============================================================
 async function performSignOff(assignmentId, role) {
+  // Guard against double-clicks — ignore if this assignment+role is already in-flight.
+  const guardKey = `${assignmentId}:${role}`;
+  if (STATE._signOffInFlight.has(guardKey)) return;
+  STATE._signOffInFlight.add(guardKey);
+
   const assignment = STATE.assignments.find(a => a._id === assignmentId);
-  if (!assignment) return;
+  if (!assignment) { STATE._signOffInFlight.delete(guardKey); return; }
 
   const f = getSignOffFields(role);
   const now = new Date().toISOString();
@@ -1004,23 +1033,31 @@ async function performSignOff(assignmentId, role) {
   refreshCurrentView();
 
   try {
+    // Write to SharePoint first — if this succeeds the sign-off is real.
     await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, fields);
+    showToast('✓ Signed off', 'success');
+
+    // Audit log write is best-effort — a failure here does NOT revert the sign-off.
+    // The data is already committed to SharePoint; only the audit trail entry is missing.
     const assignedEmail = role === 'preparer' ? assignment.Preparer : assignment.Reviewer;
     const onBehalf = assignedEmail && assignedEmail !== userEmail;
-    await writeAuditLog('SignOff', {
+    writeAuditLog('SignOff', {
       taskName: assignment.Title || assignment.TaskTemplateLookupId,
       assignmentId,
       newValue: onBehalf
         ? `${role} signed off by ${userEmail} ON BEHALF OF ${assignedEmail}`
         : `${role} signed off by ${userEmail}`,
+    }).catch(auditErr => {
+      logError('Audit log write failed for sign-off (sign-off itself succeeded):', auditErr);
     });
-    showToast('✓ Signed off', 'success');
   } catch (err) {
     // Restore full snapshot — covers all fields set above, not just a subset.
     Object.assign(assignment, snapshot);
     refreshCurrentView();
     showToast(`Sign-off failed — ${classifyGraphError(err)}`, 'error');
     logError('Sign-off failed:', err);
+  } finally {
+    STATE._signOffInFlight.delete(guardKey);
   }
 }
 
@@ -1158,7 +1195,11 @@ async function performMatrixUpdate(matrixItem, column, newStatus) {
 // USER HELPERS
 // ============================================================
 function getUserByEmail(email) {
-  return STATE.users.find(u => u.Email === email);
+  if (!email) return null;
+  // Search _allUsers first (includes inactive) so deactivated users still render
+  // correctly in sign-off records, audit logs, and SOX exports.
+  const pool = STATE._allUsers.length ? STATE._allUsers : STATE.users;
+  return pool.find(u => u.Email?.toLowerCase() === email.toLowerCase());
 }
 
 function renderBadge(email) {
@@ -1219,7 +1260,7 @@ function showView(viewName) {
 
 function refreshCurrentView() {
   renderCurrentView();
-  updateWDIndicator();
+  updateWDIndicator(); updateContextRibbon();
 }
 
 function renderCurrentView() {
@@ -1238,6 +1279,55 @@ function renderCurrentView() {
 // ============================================================
 // WD INDICATOR
 // ============================================================
+// Updates the persistent context ribbon below the nav bar.
+// Shows mode, quarter, and the user's effective role — reduces confusion
+// about why actions are enabled/disabled in the current context.
+function updateContextRibbon() {
+  const ribbon = document.getElementById('context-ribbon');
+  if (!ribbon) return;
+
+  const quarter = getReadQuarter();
+  if (!quarter) { ribbon.classList.add('hidden'); return; }
+
+  const isHistory   = isViewingHistory();
+  const isReadOnly  = STATE.isReadOnly;
+  const isAdmin     = STATE.isAdmin;
+  const isFinal     = STATE.isFinalReviewer;
+  const activeQ     = STATE.activeQuarter;
+  const workingQ    = STATE.workingQuarter;
+
+  let modeIcon, modeLabel, modeClass, roleLabel;
+
+  if (isHistory) {
+    modeIcon  = '🔒';
+    modeLabel = 'Historical · Read-only';
+    modeClass = 'ribbon-history';
+  } else if (!activeQ && workingQ) {
+    modeIcon  = '⏳';
+    modeLabel = 'Staging · Not yet activated';
+    modeClass = 'ribbon-staging';
+  } else {
+    modeIcon  = '🟢';
+    modeLabel = 'Live';
+    modeClass = 'ribbon-live';
+  }
+
+  if (isAdmin)        roleLabel = 'Admin';
+  else if (isReadOnly) roleLabel = 'Read Only';
+  else if (isFinal)   roleLabel = 'Final Reviewer';
+  else                roleLabel = 'Team Member';
+
+  ribbon.className = `context-ribbon ${modeClass}`;
+  ribbon.innerHTML = `
+    <span class="ribbon-mode">${modeIcon} ${modeLabel}</span>
+    <span class="ribbon-sep">·</span>
+    <span class="ribbon-quarter">${escapeHtml(quarter)}</span>
+    <span class="ribbon-sep">·</span>
+    <span class="ribbon-role">You are: <strong>${roleLabel}</strong></span>
+    ${isHistory ? '<span class="ribbon-sep">·</span><span class="ribbon-hint">Sign-offs and edits are disabled</span>' : ''}
+  `;
+}
+
 function updateWDIndicator() {
   const pill = document.getElementById('wd-indicator');
   if (!pill) return;
@@ -1378,17 +1468,21 @@ async function signOffAll() {
     try {
       const isPreparer = assignment.Preparer === email && !assignment.PreparerSignOff;
       const role = isPreparer ? 'preparer' : 'reviewer';
-      await performSignOff(assignment, role);
+      await performSignOff(assignment._id, role);
       done++;
     } catch (err) {
-      errors.push(assignment.Title);
+      errors.push(assignment.Title || assignment._id);
       logError('Sign-off-all failed for:', assignment.Title, err);
+      // Stop on first failure — a network error mid-batch means subsequent
+      // sign-offs would also fail, and partial state is clearer to recover from.
+      break;
     }
   }
 
   hideLoading();
   if (errors.length) {
-    showToast(`Signed off ${done} tasks. ${errors.length} failed — check console.`, 'warning');
+    const failedNames = errors.slice(0, 3).join(', ') + (errors.length > 3 ? ` + ${errors.length - 3} more` : '');
+    showToast(`Signed off ${done} tasks. Failed: ${failedNames}`, 'warning');
   } else {
     showToast(`✓ Signed off ${done} tasks`, 'success');
   }
@@ -1548,11 +1642,22 @@ function renderTaskCard(assignment, currentEmail, isOverdue = false, isWaiting =
   const revBadge = assignment.Reviewer ? renderBadge(assignment.Reviewer) : '';
 
   let signoffBtn = '';
+  let nudgeBtn = '';
   if (isViewingHistory()) {
-    // No sign-off actions available when browsing a historical quarter.
     signoffBtn = '';
   } else if (isWaiting || locked) {
     signoffBtn = `<button class="btn-secondary btn-sm" disabled>🔒 Awaiting preparer sign-off</button>`;
+    // Nudge button — only for the assigned reviewer on waiting tasks, not ReadOnly
+    const isAssignedReviewer = assignment.Reviewer === currentEmail;
+    if (isAssignedReviewer && !STATE.isReadOnly) {
+      // Rate-limit: don't show if nudged in the last hour
+      const lastNudged = assignment.NudgeSent ? new Date(assignment.NudgeSent) : null;
+      const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      const recentlyNudged = lastNudged && lastNudged > hourAgo;
+      nudgeBtn = recentlyNudged
+        ? `<button class="btn-icon btn-sm" disabled title="Nudge sent recently — wait an hour before sending another">👋 Nudged</button>`
+        : `<button class="btn-icon btn-sm" data-action="nudge-preparer" data-id="${assignment._id}" title="Send a reminder to the preparer">👋 Nudge</button>`;
+    }
   } else if (role) {
     const label = role === 'preparer' ? 'Sign Off as Preparer' : 'Sign Off as Reviewer';
     signoffBtn = `<button class="btn-primary btn-sm" data-action="signoff" data-id="${assignment._id}" data-role="${role}">✓ ${label}</button>`;
@@ -1580,6 +1685,7 @@ function renderTaskCard(assignment, currentEmail, isOverdue = false, isWaiting =
       </div>
       <div class="task-card-actions">
         ${signoffBtn}
+        ${nudgeBtn}
         ${commentBtn}
         ${linkBtn}
       </div>
@@ -1889,6 +1995,9 @@ function openTaskPanel(assignmentId) {
   const email = STATE.currentUser?.Email;
   const prepBadge = renderBadge(assignment.Preparer);
   const revBadge = assignment.Reviewer ? renderBadge(assignment.Reviewer) : '—';
+  // CATEGORY.TIE_OUT is an exact-match comparison — the SharePoint Category value must
+  // match 'Tie Out' exactly (case-insensitive). If the category name ever changes,
+  // update CATEGORY.TIE_OUT in the constants block above.
   const isTieOut = (assignment.Category || '').toLowerCase() === CATEGORY.TIE_OUT.toLowerCase();
   const docLink = isTieOut && assignment.HasDocumentLink && assignment.DocumentLink
     ? `<a class="panel-doc-link" href="${escapeHtml(assignment.DocumentLink)}" target="_blank">🔗 Open document</a>`
@@ -1944,6 +2053,42 @@ function openTaskPanel(assignmentId) {
           <div class="audit-action">${e.action}</div>
           <div class="audit-meta">${formatDateET(e.date)}</div>
         </div>`).join('');
+    }
+  }
+
+  // Notes — preparer free-text field for documenting methodology, caveats, etc.
+  const notesEl = document.getElementById('panel-notes');
+  const notesInput = document.getElementById('panel-notes-input');
+  const notesSave = document.getElementById('btn-panel-notes-save');
+  const notesDisplay = document.getElementById('panel-notes-display');
+
+  if (notesEl) {
+    const canEditNotes = !isViewingHistory() && !STATE.isReadOnly &&
+      (assignment.Preparer === STATE.currentUser?.Email || STATE.isAdmin);
+    const currentNotes = assignment.Notes || '';
+
+    // Show read-only display for non-editors; hide it for editors (they see the textarea instead)
+    if (notesDisplay) {
+      notesDisplay.textContent = currentNotes || 'No notes yet.';
+      notesDisplay.style.color = currentNotes ? '' : 'var(--slate)';
+      notesDisplay.style.display = canEditNotes ? 'none' : '';
+    }
+    if (notesInput) {
+      notesInput.value = currentNotes;
+      notesInput.style.display = canEditNotes ? '' : 'none';
+    }
+    if (notesSave) {
+      notesSave.style.display = canEditNotes ? '' : 'none';
+      notesSave.onclick = async () => {
+        const newNotes = notesInput?.value?.trim() || '';
+        try {
+          await updateListItem(CONFIG.lists.quarterlyAssignments, assignment._id, { Notes: newNotes });
+          patchAssignment(assignment._id, { Notes: newNotes });
+          showToast('✓ Notes saved', 'success');
+        } catch (err) {
+          showToast(`Failed to save notes — ${classifyGraphError(err)}`, 'error');
+        }
+      };
     }
   }
 
@@ -3007,6 +3152,7 @@ function renderStagingGrid() {
           <input type="checkbox" class="staging-select staging-skip" data-id="${item._id}" data-field="IsSkipped"
             ${item.IsSkipped ? 'checked' : ''} title="Skip this task for ${STATE.workingQuarter}" />
         </td>
+        <td><span class="staging-save-indicator" style="font-size:10px;white-space:nowrap"></span></td>
       </tr>`).join('');
 
   return `
@@ -3016,6 +3162,27 @@ function renderStagingGrid() {
         <span style="font-size:11px;font-weight:400;color:var(--slate)">${stagingItems.length} assignments · ${stagingItems.filter(i => i.IsSkipped).length} skipped · changes save instantly</span>
       </div>
       <p style="font-size:12px;color:var(--slate);margin-bottom:10px">Review and adjust workday numbers, preparers, and reviewers before activating. Changes here only affect the staging quarter.</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:var(--light-gray);border-radius:6px">
+        <span style="font-size:11px;font-weight:600;color:var(--slate)">Bulk assign:</span>
+        <select id="bulk-assign-category" class="field-input" style="font-size:11px;width:160px;padding:4px 8px">
+          <option value="all">All categories</option>
+          ${[...new Set(stagingItems.map(i => i.Category).filter(Boolean))].sort().map(c =>
+            `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}
+        </select>
+        <select id="bulk-assign-preparer" class="field-input" style="font-size:11px;width:160px;padding:4px 8px">
+          <option value="">Set Preparer…</option>
+          ${STATE.users.filter(u => u.IsActive !== false).map(u =>
+            `<option value="${escapeHtml(u.Email)}">${escapeHtml((u.Emoji || '') + ' ' + (u.Title || u.Email.split('@')[0]))}</option>`).join('')}
+        </select>
+        <select id="bulk-assign-reviewer" class="field-input" style="font-size:11px;width:160px;padding:4px 8px">
+          <option value="">Set Reviewer…</option>
+          <option value="__clear__">— Clear reviewer —</option>
+          ${STATE.users.filter(u => u.IsActive !== false).map(u =>
+            `<option value="${escapeHtml(u.Email)}">${escapeHtml((u.Emoji || '') + ' ' + (u.Title || u.Email.split('@')[0]))}</option>`).join('')}
+        </select>
+        <button class="btn-primary btn-sm" id="btn-bulk-assign-apply" data-action="bulk-assign">Apply</button>
+        <span id="bulk-assign-status" style="font-size:11px;color:var(--slate)"></span>
+      </div>
       <div class="table-wrap">
         <table class="data-table" style="table-layout:fixed;width:100%">
           <colgroup>
@@ -3029,6 +3196,7 @@ function renderStagingGrid() {
             <th title="Sign-off mode">Mode</th>
             <th>Preparer</th><th>Reviewer</th>
             <th title="Skip this quarter">Skip</th>
+            <th style="width:50px"></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -3264,7 +3432,8 @@ function attachAdminEvents(panelName) {
   const adminContent2 = document.getElementById('admin-content');
   if (adminContent2 && !adminContent2.dataset.stagingEventsAttached) {
     adminContent2.dataset.stagingEventsAttached = 'true';
-    adminContent2.addEventListener('change', async e => {
+    const _stagingDebounce = {};
+    adminContent2.addEventListener('change', e => {
       const sel = e.target.closest('.staging-select');
       if (!sel) return;
       const { id, field } = sel.dataset;
@@ -3275,35 +3444,41 @@ function attachAdminEvents(panelName) {
       const raw    = isSkip ? sel.checked : sel.value;
       const value  = isWD   ? (raw ? Number(raw) : null)
                    : isSkip ? Boolean(raw)
-                   : (raw || null);  // SignOffMode, Preparer, Reviewer all stored as strings
+                   : (raw || null);
 
-      // Validate WD range
+      // Validate WD range immediately — before debounce
       if (isWD && value !== null && (value < 1 || value > 35)) {
         showToast('Workday must be between 1 and 35', 'error');
         return;
       }
 
-      try {
-        await updateListItem(CONFIG.lists.quarterlyAssignments, id, { [field]: value });
-        const item = STATE._stagingItems.find(i => i._id === id);
-        if (item) item[field] = value;
-        if (isSkip || field === 'SignOffMode') {
-          // Only re-render the staging grid section, not the whole panel
-          const gridContainer = document.getElementById('staging-grid-container');
-          if (gridContainer) {
-            gridContainer.outerHTML = renderStagingGrid();
-            attachAdminEvents('rollforward');
+      // Show pending indicator
+      const row = sel.closest('tr');
+      const indicator = row?.querySelector('.staging-save-indicator');
+      if (indicator) { indicator.textContent = 'Saving…'; indicator.style.color = 'var(--slate)'; }
+
+      // Debounce: cancel pending save for this field, reschedule
+      clearTimeout(_stagingDebounce[id + field]);
+      _stagingDebounce[id + field] = setTimeout(async () => {
+        try {
+          await updateListItem(CONFIG.lists.quarterlyAssignments, id, { [field]: value });
+          const item = STATE._stagingItems.find(i => i._id === id);
+          if (item) item[field] = value;
+          if (indicator) { indicator.textContent = '✓'; indicator.style.color = 'var(--green-mid)'; }
+          setTimeout(() => { if (indicator) indicator.textContent = ''; }, 2000);
+          if (isSkip || field === 'SignOffMode') {
+            const gridContainer = document.getElementById('staging-grid-container');
+            if (gridContainer) {
+              gridContainer.outerHTML = renderStagingGrid();
+              attachAdminEvents('rollforward');
+            }
           }
+        } catch (err) {
+          if (indicator) { indicator.textContent = '✗ Failed'; indicator.style.color = 'var(--red)'; }
+          showToast(`Failed to update ${field} — ${classifyGraphError(err)}`, 'error');
+          logError('Staging grid update failed:', err);
         }
-        let toastMsg = 'Updated';
-        if (isWD)                    toastMsg = `${field.replace('Workday', '')} WD updated`;
-        else if (isSkip)             toastMsg = value ? 'Task skipped' : 'Task unskipped';
-        else if (field === 'SignOffMode') toastMsg = 'Sign-off mode updated';
-        showToast(`✓ ${toastMsg}`, 'success');
-      } catch (err) {
-        showToast(`Failed to update ${field} — ${classifyGraphError(err)}`, 'error');
-        logError('Staging grid update failed:', err);
-      }
+      }, 350);
     });
   }
 
@@ -3343,6 +3518,7 @@ function attachAdminEvents(panelName) {
       if (action === 'edit-cal-row')      openEditCalendarRowModal(id);
       if (action === 'edit-doc-link')      openEditDocLinkModal(id, btn.dataset.url);
       if (action === 'add-milestone')      openAddMilestoneModal(btn.dataset.wd, btn.dataset.date);
+      if (action === 'bulk-assign')         confirmBulkAssign();
       if (action === 'delete-milestone')   deleteMilestone(id);
       if (action === 'edit-user')         openEditUserRoleModal(email);
       if (action === 'rc-reply')          openRCReplyInput(id);
@@ -3932,6 +4108,24 @@ function attachGlobalEvents() {
   document.getElementById('btn-save-profile')?.addEventListener('click', saveProfile);
 
   // ── Admin modal buttons ──────────────────────────────────────
+  // Skip task modal
+  document.getElementById('btn-skip-task-confirm')?.addEventListener('click', () => {
+    const { id, isSkipping } = STATE._pendingSkip || {};
+    if (!id) return;
+    hideModal('modal-skip-task');
+    updateListItem(CONFIG.lists.quarterlyAssignments, id, { IsSkipped: isSkipping })
+      .then(() => {
+        patchAssignment(id, { IsSkipped: isSkipping });
+        showToast(isSkipping ? '✓ Task skipped' : '✓ Task restored', 'success');
+        STATE._pendingSkip = null;
+        closeTaskPanel();
+        refreshCurrentView();
+      })
+      .catch(err => { showToast(`Failed — ${classifyGraphError(err)}`, 'error'); STATE._pendingSkip = null; });
+  });
+  document.getElementById('btn-skip-task-cancel')?.addEventListener('click', () => {
+    hideModal('modal-skip-task'); STATE._pendingSkip = null;
+  });
   // Add milestone modal
   document.getElementById('btn-add-milestone-confirm')?.addEventListener('click', confirmAddMilestone);
   document.getElementById('btn-add-milestone-cancel')?.addEventListener('click', () => hideModal('modal-add-milestone'));
@@ -4014,11 +4208,9 @@ function attachGlobalEvents() {
 
   // Reversal modal
   document.getElementById('btn-reversal-confirm')?.addEventListener('click', async () => {
-    const reason = document.getElementById('reversal-reason')?.value?.trim();
-    if (!reason) {
-      document.getElementById('reversal-error')?.classList.remove('hidden');
-      return;
-    }
+    // Reason is optional — a blank reason is stored as empty string, not blocked.
+    // Forcing a reason produces garbage data ('n/a') which is worse than nothing.
+    const reason = document.getElementById('reversal-reason')?.value?.trim() || '';
     if (!STATE.pendingReversal) return;
     hideModal('modal-reversal');
     await performReversal(STATE.pendingReversal.assignmentId, STATE.pendingReversal.role, reason);
@@ -4236,10 +4428,13 @@ function attachCardEvents() {
           STATE.pendingSignoff = { assignmentId: id, role };
           const titleEl = document.getElementById('modal-signoff-title');
           const bodyEl  = document.getElementById('modal-signoff-body');
+          const confirmBtn = document.getElementById('btn-signoff-confirm');
           if (titleEl) titleEl.textContent = `Sign off as ${role}?`;
           if (bodyEl) bodyEl.innerHTML = `
             <p style="font-size:13px;margin-bottom:8px">${escapeHtml(assignment.Title || '')}</p>
             <p style="font-size:12px;color:var(--slate)">Recorded as ${renderBadge(STATE.currentUser?.Email)} · ${formatDateET(new Date().toISOString())}</p>`;
+          // Regular sign-off — button always enabled
+          if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.style.opacity = '1'; }
           showModal('modal-signoff');
         }
       }
@@ -4250,7 +4445,6 @@ function attachCardEvents() {
         if (desc) desc.textContent = `You are reversing the ${role} sign-off. This action will be logged.`;
         const reasonEl = document.getElementById('reversal-reason');
         if (reasonEl) reasonEl.value = '';
-        document.getElementById('reversal-error')?.classList.add('hidden');
         showModal('modal-reversal');
       }
 
@@ -4278,22 +4472,51 @@ function attachCardEvents() {
         openEditDocLinkModal(id, btn.dataset.url);
       }
 
+      if (action === 'nudge-preparer') {
+        const assignment = STATE.assignments.find(a => a._id === id);
+        if (!assignment) return;
+        const now = new Date().toISOString();
+        // Optimistically update the card so the button disables immediately
+        patchAssignment(id, { NudgeSent: now });
+        updateListItem(CONFIG.lists.quarterlyAssignments, id, { NudgeSent: now })
+          .then(() => {
+            showToast(`👋 Nudge sent to ${assignment.Preparer?.split('@')[0] || 'preparer'}`, 'success');
+            refreshCurrentView();
+          })
+          .catch(err => {
+            // Revert on failure
+            patchAssignment(id, { NudgeSent: assignment.NudgeSent || null });
+            showToast(`Failed to send nudge — ${classifyGraphError(err)}`, 'error');
+          });
+      }
+
       if (action === 'skip-task' || action === 'unskip-task') {
         const isSkipping = action === 'skip-task';
         const assignment = STATE.assignments.find(a => a._id === id);
         if (!assignment) return;
-        const confirmMsg = isSkipping
-          ? `Skip "${assignment.Title}" for this quarter? It will be hidden from all views and not count toward completion.`
-          : `Restore "${assignment.Title}"? It will reappear in all views.`;
-        if (!window.confirm(confirmMsg)) return;
-        updateListItem(CONFIG.lists.quarterlyAssignments, id, { IsSkipped: isSkipping })
-          .then(() => {
-            patchAssignment(id, { IsSkipped: isSkipping });
-            showToast(isSkipping ? '✓ Task skipped' : '✓ Task restored', 'success');
-            closeTaskPanel();
-            refreshCurrentView();
-          })
-          .catch(err => showToast(`Failed — ${classifyGraphError(err)}`, 'error'));
+        STATE._pendingSkip = { id, isSkipping, title: assignment.Title };
+        const modalTitle = document.getElementById('modal-skip-title');
+        const modalDesc  = document.getElementById('modal-skip-desc');
+        if (isSkipping) {
+          if (modalTitle) modalTitle.textContent = 'Skip this task?';
+          const confirmBtn = document.getElementById('btn-skip-task-confirm');
+          if (confirmBtn) { confirmBtn.textContent = 'Skip task'; confirmBtn.className = 'btn-danger'; }
+          if (modalDesc) modalDesc.innerHTML = `
+            <strong>${escapeHtml(assignment.Title)}</strong> will be removed from:
+            <ul style="margin:8px 0 0 18px;font-size:12px">
+              <li>My Tasks and All Tasks views</li>
+              <li>Overdue counts and Dashboard</li>
+              <li>Matrix (shown as N/A)</li>
+              <li>Future rollforwards — unless you restore it first</li>
+            </ul>
+            <p style="margin-top:10px;font-size:12px;color:var(--slate)">You can restore it from the Show Skipped Tasks toggle in All Tasks.</p>`;
+        } else {
+          if (modalTitle) modalTitle.textContent = 'Restore this task?';
+          const confirmBtn = document.getElementById('btn-skip-task-confirm');
+          if (confirmBtn) { confirmBtn.textContent = 'Restore task'; confirmBtn.className = 'btn-primary'; }
+          if (modalDesc) modalDesc.innerHTML = `<strong>${escapeHtml(assignment.Title)}</strong> will reappear in all views and be included in the next rollforward.`;
+        }
+        showModal('modal-skip-task');
       }
     });
 
@@ -4780,9 +5003,65 @@ async function saveCalendarRowEdit() {
   }
 }
 
-// ============================================================
-// CALENDAR MILESTONES
-// ============================================================
+// Applies preparer/reviewer to all staging items in the selected category.
+async function confirmBulkAssign() {
+  const category = document.getElementById('bulk-assign-category')?.value || 'all';
+  const preparer = document.getElementById('bulk-assign-preparer')?.value || '';
+  const reviewer  = document.getElementById('bulk-assign-reviewer')?.value  || '';
+  const statusEl  = document.getElementById('bulk-assign-status');
+
+  if (!preparer && !reviewer) {
+    showToast('Select a preparer or reviewer to assign', 'error'); return;
+  }
+
+  const targets = STATE._stagingItems.filter(i =>
+    !i.IsSkipped && (category === 'all' || i.Category === category)
+  );
+
+  if (!targets.length) {
+    showToast('No tasks match the selected category', 'error'); return;
+  }
+
+  if (!window.confirm(`Apply to ${targets.length} task${targets.length !== 1 ? 's' : ''}${category !== 'all' ? ' in ' + category : ''}?`)) return;
+
+  if (statusEl) statusEl.textContent = `Saving 0 of ${targets.length}…`;
+
+  let done = 0;
+  const errors = [];
+  for (const item of targets) {
+    const fields = {};
+    if (preparer) fields.Preparer = preparer;
+    if (reviewer === '__clear__') fields.Reviewer = '';
+    else if (reviewer) fields.Reviewer = reviewer;
+
+    try {
+      await updateListItem(CONFIG.lists.quarterlyAssignments, item._id, fields);
+      Object.assign(item, fields);
+      done++;
+      if (statusEl) statusEl.textContent = `Saved ${done} of ${targets.length}…`;
+    } catch (err) {
+      errors.push(item.Title);
+      logError('Bulk assign failed for:', item.Title, err);
+    }
+  }
+
+  if (statusEl) statusEl.textContent = '';
+
+  if (errors.length) {
+    showToast(`Applied to ${done} tasks. ${errors.length} failed.`, 'warning');
+  } else {
+    showToast(`✓ Applied to ${done} tasks`, 'success');
+  }
+
+  // Re-render staging grid to reflect updated values
+  const gridContainer = document.getElementById('staging-grid-container');
+  if (gridContainer) {
+    gridContainer.outerHTML = renderStagingGrid();
+    attachAdminEvents('rollforward');
+  }
+}
+
+
 let _pendingMilestoneWD   = null;
 let _pendingMilestoneDate = null;
 
@@ -4994,22 +5273,50 @@ function openSignOffBehalfModal(assignmentId, role) {
 
   const titleEl = document.getElementById('modal-signoff-title');
   const bodyEl  = document.getElementById('modal-signoff-body');
+  const confirmBtn = document.getElementById('btn-signoff-confirm');
 
   const assignedEmail = role === 'preparer' ? assignment.Preparer : assignment.Reviewer;
   const et = formatDateET(new Date().toISOString());
 
-  if (titleEl) titleEl.textContent = `Sign off on behalf?`;
+  if (titleEl) titleEl.textContent = `Sign off on behalf`;
   if (bodyEl) bodyEl.innerHTML = `
-    <p style="font-size:13px;margin-bottom:6px">${escapeHtml(assignment.Title || '')}</p>
-    <p style="font-size:12px;color:var(--slate);margin-bottom:6px">
+    <p style="font-size:13px;font-weight:500;margin-bottom:6px">${escapeHtml(assignment.Title || '')}</p>
+    <p style="font-size:12px;color:var(--slate);margin-bottom:4px">
       Assigned ${role}: ${renderBadge(assignedEmail)}
     </p>
-    <p style="font-size:12px;color:var(--slate);margin-bottom:6px">
+    <p style="font-size:12px;color:var(--slate);margin-bottom:12px">
       Signing as: ${renderBadge(STATE.currentUser?.Email)} · ${et}
     </p>
-    <p style="font-size:11px;color:var(--amber);font-weight:500">
-      ⚠ This will be recorded in the audit log as signed on behalf of the assigned ${role}.
-    </p>`;
+    <div style="background:#FFF8E6;border:1px solid #F5C842;border-radius:6px;padding:10px 12px;margin-bottom:12px">
+      <p style="font-size:11px;color:#7A5200;font-weight:600;margin-bottom:6px">
+        ⚠ This action will be recorded in the audit log as signed on behalf of the assigned ${role}. It cannot be undone without a reversal.
+      </p>
+      <p style="font-size:11px;color:#7A5200">
+        Type <strong>ON BEHALF</strong> below to confirm:
+      </p>
+    </div>
+    <input type="text" id="signoff-behalf-confirm-input" class="field-input"
+      placeholder="Type ON BEHALF to confirm" autocomplete="off"
+      style="font-size:13px;letter-spacing:1px" />`;
+
+  // Disable confirm button until "ON BEHALF" is typed
+  if (confirmBtn) {
+    confirmBtn.disabled = true;
+    confirmBtn.style.opacity = '0.5';
+  }
+
+  // Wire input to gate the button
+  setTimeout(() => {
+    const input = document.getElementById('signoff-behalf-confirm-input');
+    if (input && confirmBtn) {
+      input.addEventListener('input', () => {
+        const valid = input.value.trim().toUpperCase() === 'ON BEHALF';
+        confirmBtn.disabled = !valid;
+        confirmBtn.style.opacity = valid ? '1' : '0.5';
+      });
+      input.focus();
+    }
+  }, 100);
 
   showModal('modal-signoff');
 }
@@ -5251,9 +5558,11 @@ async function createUser() {
 // SOX EXPORT
 // ============================================================
 function openSOXExportModal() {
-  // Populate quarter picker with all available quarters from audit entries + assignments
+  // Derive quarters from assignments (always loaded) + active quarter.
+  // Do not rely on STATE._auditEntries which may be empty if the audit log panel hasn't been opened.
+  const fromAssignments = [...new Set(STATE.assignments.map(a => a.Quarter).filter(Boolean))];
   const quarters = [...new Set([
-    ...STATE._auditEntries.map(e => e.Quarter).filter(Boolean),
+    ...fromAssignments,
     STATE.activeQuarter,
   ].filter(Boolean))].sort().reverse();
 
@@ -5284,11 +5593,24 @@ async function confirmSOXExport() {
       assignments = items.map(i => ({ ...i.fields, _id: i.id }));
     }
 
+    // Fetch the calendar for the export quarter if it differs from the active quarter.
+    // STATE.calendar only holds the active quarter — historical exports need their own calendar.
+    let exportCalendar = STATE.calendar.filter(c => c.Quarter === quarter);
+    if (!exportCalendar.length) {
+      const calItems = await getListItems(
+        CONFIG.lists.closeCalendar, `fields/Quarter eq '${quarter}'`);
+      exportCalendar = calItems.map(i => {
+        const row = { ...i.fields, _id: i.id };
+        if (row.ActualDate?.includes('T')) row.ActualDate = row.ActualDate.split('T')[0];
+        return row;
+      });
+    }
+
     function getSignOffWD(isoDate) {
       if (!isoDate) return '';
       const dateStr = isoDate.substring(0, 10);
-      const match = STATE.calendar.find(c => c.Quarter === quarter && c.ActualDate === dateStr);
-      return match ? match.WorkdayNumber : '';
+      const match = exportCalendar.find(c => c.ActualDate === dateStr);
+      return match ? Number(match.WorkdayNumber) : '';
     }
 
     const signOffRows = [
@@ -5341,7 +5663,14 @@ async function confirmSOXExport() {
     });
 
     // ── 3. Reversals ─────────────────────────────────────────
-    const auditQ = STATE._auditEntries.filter(e => e.Quarter === quarter);
+    // Always fetch audit entries fresh for the export quarter — STATE._auditEntries
+    // is only populated when the Audit Log panel is opened and may be empty or stale.
+    let auditQ = STATE._auditEntries.filter(e => e.Quarter === quarter);
+    if (!auditQ.length) {
+      const freshAudit = await getListItems(
+        CONFIG.lists.auditLog, `fields/Quarter eq '${quarter}'`);
+      auditQ = freshAudit.map(i => ({ ...i.fields, _id: i.id }));
+    }
     const reversalRows = [['Quarter','Date ET','WD','Task Name','Reversed By','Detail','Reason']];
     auditQ.filter(e => e.ActionType === 'Reversal').forEach(e => {
       reversalRows.push([quarter, formatDateET(e.ActionDate), e.WorkdayNumber || '', e.TaskName, e.ActionBy, e.NewValue || '', e.ReasonNote || '']);
@@ -5847,24 +6176,35 @@ async function confirmRollforward() {
       }
     }
 
+    // Warn if any assignments reference inactive users BEFORE clearing _stagingItems
+    const activeEmails = new Set(STATE.users.filter(u => u.IsActive !== false && u.IsActive !== 0).map(u => u.Email));
+    const inactiveCount = eligible.filter(t => {
+      const prev = prevMap[t._id];
+      const preparer = prev?.Preparer || t.DefaultPreparer;
+      const reviewer  = prev?.Reviewer  || t.DefaultReviewer;
+      return (preparer && !activeEmails.has(preparer)) || (reviewer && !activeEmails.has(reviewer));
+    }).length;
+
     STATE._stagingItems   = [];
     STATE._stagingLoading = false;
     hideModal('modal-rollforward-confirm');
     showToast(`✓ Rolled forward ${created} tasks to ${quarter}`, 'success');
 
-    // Warn if any assignments reference inactive users — catches team changes between quarters
-    const activeEmails = new Set(STATE.users.filter(u => u.IsActive !== false && u.IsActive !== 0).map(u => u.Email));
-    const inactiveRefs = STATE._stagingItems.filter(a =>
-      (a.Preparer && !activeEmails.has(a.Preparer)) ||
-      (a.Reviewer && !activeEmails.has(a.Reviewer))
-    );
-    if (inactiveRefs.length) {
-      showToast(`⚠ ${inactiveRefs.length} assignment(s) reference inactive users — review the staging grid before activating`, 'warning');
+    if (inactiveCount > 0) {
+      showToast(`⚠ ${inactiveCount} task(s) may reference inactive users — review the staging grid before activating`, 'warning');
     }
 
     renderAdminPanel('rollforward');
   } catch (err) {
-    showToast(`Rollforward failed after ${created} tasks — check staging assignments in SharePoint`, 'error');
+    if (created > 0) {
+      showToast(
+        `Rollforward partially completed — ${created} of ${eligible?.length || '?'} tasks created. ` +
+        `Review and manually clean up QuarterlyAssignments in SharePoint before retrying.`,
+        'error'
+      );
+    } else {
+      showToast(`Rollforward failed — ${classifyGraphError(err)}`, 'error');
+    }
     logError('confirmRollforward failed:', err);
   } finally {
     hideLoading();
@@ -5875,6 +6215,19 @@ async function confirmRollforward() {
 // QUARTER ACTIVATION
 // ============================================================
 async function activateQuarter(quarter) {
+  // Guard: require a close calendar before activation.
+  // Without a calendar, all tasks show no due dates and overdue detection is broken.
+  const calCheck = await getListItems(
+    CONFIG.lists.closeCalendar, `fields/Quarter eq '${quarter}'`);
+  if (!calCheck.length) {
+    showToast(
+      `Cannot activate — no Close Calendar exists for ${quarter}. ` +
+      'Go to Admin → Close Calendar → Setup Calendar first.',
+      'error'
+    );
+    return;
+  }
+
   showLoading(`Activating ${quarter}...`);
   // Declared outside try so catch can safely reference it for the error message.
   let stagingItems = [];
@@ -6123,7 +6476,7 @@ async function showApp() {
   }
   hideLoading();
 
-  updateWDIndicator();
+  updateWDIndicator(); updateContextRibbon();
 
   // Populate the quarter picker now that we know which quarters exist.
   populateQuarterPicker();
@@ -6274,11 +6627,18 @@ async function init() {
     } catch (err) {
       hideLoading();
       logError('Init failed:', err);
-      // Show classified error on the sign-in screen so the user knows what to do
-      const errMsg = classifyGraphError(err);
-      const errEl = document.getElementById('signin-error');
-      if (errEl) { errEl.textContent = errMsg; errEl.classList.remove('hidden'); }
-      showScreen('screen-signin');
+      const errMsg = String(err.message || '');
+      if (errMsg.startsWith('ACCESS_DENIED:')) {
+        // Show a dedicated access denied screen rather than the sign-in screen
+        const accessEl = document.getElementById('access-denied-msg');
+        if (accessEl) accessEl.textContent = errMsg.replace('ACCESS_DENIED: ', '');
+        showScreen('screen-access-denied');
+      } else {
+        const classified = classifyGraphError(err);
+        const errEl = document.getElementById('signin-error');
+        if (errEl) { errEl.textContent = classified; errEl.classList.remove('hidden'); }
+        showScreen('screen-signin');
+      }
     }
   } else {
     showScreen('screen-signin');
