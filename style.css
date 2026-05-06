@@ -879,6 +879,8 @@ body {
 /* ---- MATRIX ----------------------------------------------- */
 .matrix-scroll-wrap {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: calc(100vh - 180px);
   border-radius: var(--border-radius-lg);
   border: 1px solid var(--mid-gray);
   background: var(--white);
