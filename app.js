@@ -260,6 +260,7 @@ const STATE = {
   pendingUserEdit:        null,   // user email being edited
   _editUserEmoji:         null,   // emoji selected in edit user modal
   _pendingSkip:           null,   // {id, isSkipping, title} for skip/unskip confirmation
+  _pendingBulkAssign:     null,   // {targets, preparer, reviewer, category} for bulk assign confirmation
   _editUserColor:         null,   // color selected in edit user modal
   suggestions:            [],         // TaskSuggestions (loaded when admin panel opens)
   pendingCascade:         null,   // {quarter, fromWD, shiftDays, subsequent}
@@ -658,14 +659,18 @@ async function setAppSettings(kvPairs) {
 // AUDIT LOG
 // ============================================================
 async function writeAuditLog(actionType, details) {
+  // Use explicitly provided quarter if given — falls back to activeQuarter.
+  // Callers should always pass quarter explicitly to avoid recording against
+  // the wrong quarter when viewingQuarter differs from activeQuarter.
+  const quarter = details.quarter || STATE.activeQuarter || '';
   try {
     await createListItem(CONFIG.lists.auditLog, {
       Title: `${actionType}: ${details.taskName || details.description || ''}`,
-      Quarter:       STATE.activeQuarter || '',
+      Quarter:       quarter,
       ActionType:    actionType,
       ActionBy:      STATE.currentUser?.Email || '',
       ActionDate:    new Date().toISOString(),
-      WorkdayNumber: (() => { const w = getTodaysWorkday(STATE.activeQuarter); return typeof w === 'number' ? w : 0; })(),
+      WorkdayNumber: (() => { const w = getTodaysWorkday(quarter); return typeof w === 'number' ? w : 0; })(),
       TaskName:      details.taskName || '',
       AssignmentID:  details.assignmentId || null,
       PreviousValue: details.previousValue || '',
@@ -787,16 +792,17 @@ async function loadReviewComments(quarter) {
   STATE.reviewComments = items.map(i => ({ ...i.fields, _id: i.id }));
 }
 
-async function loadRCReplies() { // quarter param removed — filtering done client-side against loaded comment IDs
-  // Replies don't have a Quarter field — we filter client-side by matching against
-  // parent comment IDs already loaded for this quarter.
-  // KNOWN SCALING ISSUE: this fetches ALL replies across all quarters then discards
-  // those not belonging to the current quarter. This is safe at current scale
-  // (replies are rare and small) but will become expensive once reply counts grow.
-  // Future fix: add a Quarter column to ReviewCommentReplies and filter server-side.
+async function loadRCReplies() {
   const rcIds = new Set(STATE.reviewComments.map(rc => rc._id));
   if (!rcIds.size) { STATE.rcReplies = []; return; }
-  const items = await getListItems(CONFIG.lists.reviewCommentReplies);
+  // Use Quarter server-side filter if the column exists (new replies have it).
+  // Falls back to fetching all and filtering client-side for older replies without it.
+  const quarter = getReadQuarter();
+  const items = await getListItems(
+    CONFIG.lists.reviewCommentReplies,
+    quarter ? `fields/Quarter eq '${quarter}'` : ''
+  ).catch(() => getListItems(CONFIG.lists.reviewCommentReplies));
+  // Always filter by rcIds as a safety net — catches replies that predate the Quarter column.
   STATE.rcReplies = items
     .map(i => ({ ...i.fields, _id: i.id }))
     .filter(r => rcIds.has(r.ReviewCommentLookupId));
@@ -971,7 +977,14 @@ function startPolling() {
     if (!STATE.activeQuarter) return;
 
     try {
-      await loadAllData();
+      // If the user is viewing a historical quarter, refresh that quarter's data.
+      // Using loadAllData() here would replace STATE.assignments with live data
+      // while STATE.viewingQuarter still points at history — causing wrong renders.
+      if (isViewingHistory()) {
+        await loadViewingQuarterData(STATE.viewingQuarter);
+      } else {
+        await loadAllData();
+      }
       refreshCurrentView();
       updateWDIndicator(); updateContextRibbon();
       await populateQuarterPicker();
@@ -1042,7 +1055,8 @@ async function performSignOff(assignmentId, role) {
     const assignedEmail = role === 'preparer' ? assignment.Preparer : assignment.Reviewer;
     const onBehalf = assignedEmail && assignedEmail !== userEmail;
     writeAuditLog('SignOff', {
-      taskName: assignment.Title || assignment.TaskTemplateLookupId,
+      quarter:      assignment.Quarter || STATE.activeQuarter,
+      taskName:     assignment.Title || assignment.TaskTemplateLookupId,
       assignmentId,
       newValue: onBehalf
         ? `${role} signed off by ${userEmail} ON BEHALF OF ${assignedEmail}`
@@ -1106,6 +1120,7 @@ async function performReversal(assignmentId, role, reason) {
   try {
     await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, fields);
     await writeAuditLog('Reversal', {
+      quarter:       assignment.Quarter || STATE.activeQuarter,
       taskName:      assignment.Title,
       assignmentId,
       previousValue: prevValue,
@@ -1173,8 +1188,9 @@ async function performMatrixUpdate(matrixItem, column, newStatus) {
     // Log Final Review sign-offs to the audit trail — it's the last checkpoint before filing
     if (column === CHECKPOINT.FINAL_REVIEW) {
       await writeAuditLog('FinalReview', {
-        taskName:  `${matrixItem} — Final Review`,
-        newValue:  newStatus,
+        quarter:       getWriteQuarter(),
+        taskName:      `${matrixItem} — Final Review`,
+        newValue:      newStatus,
         previousValue: existing?.[fm.status] || STATUS.NOT_STARTED,
       });
     }
@@ -3522,6 +3538,8 @@ function attachAdminEvents(panelName) {
       if (action === 'delete-milestone')   deleteMilestone(id);
       if (action === 'edit-user')         openEditUserRoleModal(email);
       if (action === 'rc-reply')          openRCReplyInput(id);
+      if (action === 'submit-rc-reply')   submitRCReply(id);
+      if (action === 'cancel-rc-reply')   e.target.closest('.rc-reply-form')?.remove();
       if (action === 'approve-suggestion') await approveSuggestion(id);
       if (action === 'reject-suggestion') {
         STATE.pendingSuggestionReject = id;
@@ -4021,10 +4039,9 @@ function updateNavAvatar() {
   const u = STATE.currentUser;
   const emoji = u.Emoji || '👤';
   const firstName = (u.Title || u.Email?.split('@')[0] || '').split(' ')[0];
-  const hex = u.Color || '#75787B';
   btn.innerHTML = `<span style="font-size:15px;line-height:1">${emoji}</span><span class="nav-user-name">${escapeHtml(firstName)}</span>`;
-  btn.style.background = hex + '22';
-  btn.style.borderColor = hex + '88';
+  btn.style.background = '';
+  btn.style.borderColor = '';
 }
 
 // ============================================================
@@ -4111,7 +4128,16 @@ function attachGlobalEvents() {
 
   // ── Admin modal buttons ──────────────────────────────────────
   // Skip task modal
-  document.getElementById('btn-skip-task-confirm')?.addEventListener('click', () => {
+  document.getElementById('btn-skip-task-confirm')?.addEventListener('click', async () => {
+    // Bulk assign takes priority — the modal is reused for both skip and bulk assign
+    if (STATE._pendingBulkAssign) {
+      const { targets, preparer, reviewer, category } = STATE._pendingBulkAssign;
+      STATE._pendingBulkAssign = null;
+      hideModal('modal-skip-task');
+      await executeBulkAssign(targets, preparer, reviewer);
+      return;
+    }
+    // Skip/restore flow
     const { id, isSkipping } = STATE._pendingSkip || {};
     if (!id) return;
     hideModal('modal-skip-task');
@@ -4454,6 +4480,18 @@ function attachCardEvents() {
         resolveReviewComment(id);
       }
 
+      if (action === 'rc-reply') {
+        openRCReplyInput(id);
+      }
+
+      if (action === 'submit-rc-reply') {
+        submitRCReply(id);
+      }
+
+      if (action === 'cancel-rc-reply') {
+        el.closest('.rc-reply-form')?.remove();
+      }
+
       if (action === 'rc-open-task') {
         openTaskPanel(id);
       }
@@ -4471,7 +4509,7 @@ function attachCardEvents() {
       }
 
       if (action === 'edit-doc-link') {
-        openEditDocLinkModal(id, btn.dataset.url);
+        openEditDocLinkModal(id, el.dataset.url);
       }
 
       if (action === 'nudge-preparer') {
@@ -5006,11 +5044,11 @@ async function saveCalendarRowEdit() {
 }
 
 // Applies preparer/reviewer to all staging items in the selected category.
+// Shows a confirmation modal before executing — actual write is in executeBulkAssign.
 async function confirmBulkAssign() {
   const category = document.getElementById('bulk-assign-category')?.value || 'all';
   const preparer = document.getElementById('bulk-assign-preparer')?.value || '';
   const reviewer  = document.getElementById('bulk-assign-reviewer')?.value  || '';
-  const statusEl  = document.getElementById('bulk-assign-status');
 
   if (!preparer && !reviewer) {
     showToast('Select a preparer or reviewer to assign', 'error'); return;
@@ -5024,8 +5062,19 @@ async function confirmBulkAssign() {
     showToast('No tasks match the selected category', 'error'); return;
   }
 
-  if (!window.confirm(`Apply to ${targets.length} task${targets.length !== 1 ? 's' : ''}${category !== 'all' ? ' in ' + category : ''}?`)) return;
+  STATE._pendingBulkAssign = { targets, preparer, reviewer, category };
+  const modalTitle = document.getElementById('modal-skip-title');
+  const modalDesc  = document.getElementById('modal-skip-desc');
+  const confirmBtn = document.getElementById('btn-skip-task-confirm');
+  if (modalTitle) modalTitle.textContent = 'Confirm bulk assignment';
+  if (modalDesc)  modalDesc.innerHTML = `Apply to <strong>${targets.length} task${targets.length !== 1 ? 's' : ''}</strong>${category !== 'all' ? ' in <strong>' + escapeHtml(category) + '</strong>' : ''}?<br><span style="font-size:12px;color:var(--slate)">This will overwrite existing preparer/reviewer assignments.</span>`;
+  if (confirmBtn) { confirmBtn.textContent = 'Apply'; confirmBtn.className = 'btn-primary'; }
+  showModal('modal-skip-task');
+}
 
+// Executes the actual bulk assign writes after confirmation.
+async function executeBulkAssign(targets, preparer, reviewer) {
+  const statusEl = document.getElementById('bulk-assign-status');
   if (statusEl) statusEl.textContent = `Saving 0 of ${targets.length}…`;
 
   let done = 0;
@@ -5048,14 +5097,12 @@ async function confirmBulkAssign() {
   }
 
   if (statusEl) statusEl.textContent = '';
-
   if (errors.length) {
-    showToast(`Applied to ${done} tasks. ${errors.length} failed.`, 'warning');
+    showToast(`Applied to ${done} tasks. Failed: ${errors.slice(0,3).join(', ')}${errors.length > 3 ? ` +${errors.length-3} more` : ''}`, 'warning');
   } else {
     showToast(`✓ Applied to ${done} tasks`, 'success');
   }
 
-  // Re-render staging grid to reflect updated values
   const gridContainer = document.getElementById('staging-grid-container');
   if (gridContainer) {
     gridContainer.outerHTML = renderStagingGrid();
@@ -5379,6 +5426,7 @@ async function confirmReassign() {
   try {
     await updateListItem(CONFIG.lists.quarterlyAssignments, assignmentId, { [field]: newEmail });
     await writeAuditLog('Reassignment', {
+      quarter:       assignment.Quarter || STATE.activeQuarter,
       taskName:      assignment.Title,
       assignmentId,
       previousValue: `${role}: ${prevEmail}`,
@@ -5811,8 +5859,11 @@ async function confirmSOXExport() {
 async function exportAuditLog() {
   showLoading('Loading audit log...');
   try {
+    // Use getReadQuarter so admins viewing a historical quarter export that quarter,
+    // not the currently active one.
+    const exportQ = getReadQuarter();
     const items = await getListItems(CONFIG.lists.auditLog,
-      STATE.activeQuarter ? `fields/Quarter eq '${STATE.activeQuarter}'` : ''
+      exportQ ? `fields/Quarter eq '${exportQ}'` : ''
     );
     const rows = [['Quarter','Action Type','Action By','Date ET','Workday','Task Name','Assignment ID','Previous Value','New Value','Reason']];
     items.forEach(i => {
@@ -5830,7 +5881,7 @@ async function exportAuditLog() {
         f.ReasonNote || '',
       ]);
     });
-    downloadCSV(rows, `Folio-AuditLog-${STATE.activeQuarter || 'all'}.csv`);
+    downloadCSV(rows, `Folio-AuditLog-${exportQ || 'all'}.csv`);
     showToast(`✓ Exported ${items.length} audit entries`, 'success');
   } catch (err) {
     showToast('Failed to export audit log', 'error');
@@ -5864,8 +5915,8 @@ function openRCReplyInput(rcId) {
       ${replyTagOpts ? `<div style="margin:4px 0 6px;font-size:11px;color:var(--slate)">Tag teammates (optional):</div>
       <div style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:6px">${replyTagOpts}</div>` : ''}
       <div style="display:flex;gap:6px">
-        <button class="btn-primary btn-sm" onclick="submitRCReply('${rcId}')">Post</button>
-        <button class="btn-secondary btn-sm" onclick="this.closest('.rc-reply-form').remove()">Cancel</button>
+        <button class="btn-primary btn-sm" data-action="submit-rc-reply" data-id="${rcId}">Post</button>
+        <button class="btn-secondary btn-sm" data-action="cancel-rc-reply">Cancel</button>
       </div>
     </div>`);
   document.getElementById(`reply-text-${rcId}`)?.focus();
@@ -5886,6 +5937,7 @@ async function submitRCReply(rcId) {
       CreatedByEmail:        STATE.currentUser.Email,
       CreatedDate:           now,
       TaggedUsers:           replyTagged || null,
+      Quarter:               STATE.activeQuarter || '',  // Stored for future server-side filtering
     });
     // Push into STATE immediately so the reply renders without waiting for next poll.
     // Set ReviewCommentLookupId explicitly since SharePoint may return a numeric lookup ID
@@ -5997,7 +6049,8 @@ async function saveTemplateEdit() {
       ? Number(document.getElementById('edit-tpl-revwd').value) : null,
     PreparerWorkday10K:  prepWD10K ? Number(prepWD10K) : null,
     ReviewerWorkday10K:  revWD10K  ? Number(revWD10K)  : null,
-    IsActive:            true,
+    // IsActive omitted from edit payload — saving a retired template must not un-retire it.
+    // IsActive is only set to true on create (new templates start active by default).
   };
 
   try {
@@ -6011,6 +6064,7 @@ async function saveTemplateEdit() {
       const created = await createListItem(CONFIG.lists.taskTemplates, {
         ...updates,
         TaskName: name, // TaskName mirrors Title for the app's display logic
+        IsActive: true, // New templates always start active
       });
       STATE.templates.push({ ...created.fields, _id: created.id });
         showToast('✓ Template created', 'success');
@@ -6072,15 +6126,23 @@ async function confirmNewQuarter() {
 // with IsStaging = true. All-or-nothing: if any item fails the batch is halted.
 async function performRollforward() {
   const quarter = STATE.workingQuarter;
-  const fromQuarter = STATE.activeQuarter;
   if (!quarter) { showToast('No staging quarter set', 'error'); return; }
 
-  // Show a proper confirmation modal instead of window.confirm.
+  // Check if existing staging items have been customized (preparer populated)
+  // and warn the admin they will be overwritten.
+  const existingCustomized = STATE._stagingItems.filter(i => i.Preparer);
+  const hasCustomizations  = existingCustomized.length > 0;
+
   STATE.pendingRollforward = quarter;
   const rfDetail = document.getElementById('rollforward-confirm-detail');
-  if (rfDetail) rfDetail.textContent =
-    `This will create ~${STATE.templates.length} staging assignments for ${quarter} copied from templates. ` +
-    `Existing staging assignments for ${quarter} will be replaced. You can review before activating.`;
+  if (rfDetail) {
+    const baseMsg = `This will create ~${STATE.templates.length} staging assignments for ${quarter} copied from templates. `;
+    const overwriteMsg = hasCustomizations
+      ? `⚠️ Warning: ${existingCustomized.length} staging assignment(s) already have customized preparers/reviewers that will be lost. `
+      : `Existing staging assignments for ${quarter} will be replaced. `;
+    rfDetail.textContent = baseMsg + overwriteMsg + `You can review and adjust before activating.`;
+    rfDetail.style.color = hasCustomizations ? 'var(--red-dark)' : '';
+  }
   showModal('modal-rollforward-confirm');
 }
 
