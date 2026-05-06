@@ -3093,16 +3093,21 @@ function renderAdminOverview() {
 
 function renderCalendarPreview() {
   const today = todayET();
-  const items = STATE.milestones.map(m => ({
-    ...m,
-    ActualDate: m.MilestoneDate || STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber))?.ActualDate,
-  })).slice(0, 8);
+  const items = STATE.milestones
+    .map(m => ({
+      ...m,
+      ActualDate: m.MilestoneDate
+        || STATE.calendar.find(c => Number(c.WorkdayNumber) === Number(m.WorkdayNumber))?.ActualDate,
+    }))
+    .filter(m => m.ActualDate)
+    .sort((a, b) => a.ActualDate.localeCompare(b.ActualDate));
+
   if (!items.length) return '<p style="font-size:11px;color:var(--slate)">No milestones set. Go to Close Calendar to configure.</p>';
   return `<table class="cal-table">
     <thead><tr><th>WD</th><th>Date</th><th>Milestone</th></tr></thead>
     <tbody>${items.map(m => `
-      <tr ${m.ActualDate === today ? 'class="today-row"' : ''}>
-        <td style="font-weight:500">WD${m.WorkdayNumber}</td>
+      <tr ${m.ActualDate === today ? 'class="today-row"' : ''} style="${m.ActualDate < today ? 'opacity:0.5' : ''}">
+        <td style="font-weight:500">${m.WorkdayNumber ? 'WD' + m.WorkdayNumber : '—'}</td>
         <td style="color:var(--slate)">${formatDateShort(m.ActualDate)}</td>
         <td>
           <span class="${milestoneClass(m)}">${escapeHtml(m.MilestoneLabel)}</span>
