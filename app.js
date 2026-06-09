@@ -2138,23 +2138,57 @@ function openTaskPanel(assignmentId) {
   // Action
   renderPanelAction(assignment, email);
 
-  // Review comments preview
-  const rcs = STATE.reviewComments.filter(rc => rc.TaskTemplateLookupId === assignment.TaskTemplateLookupId);
+  // Review comments — full inline section
+  const taskId = assignment.TaskTemplateLookupId;
+  const rcs = STATE.reviewComments.filter(rc => rc.TaskTemplateLookupId === taskId);
   const rcPreview = document.getElementById('panel-rc-preview');
   if (rcPreview) {
-    if (rcs.length) {
-      rcPreview.innerHTML = rcs.slice(0,2).map(rc => `
-        <div class="rc-card ${rc.Priority === PRIORITY.URGENT ? 'urgent' : ''}" style="cursor:default">
-          <div class="rc-meta">
-            ${renderBadge(rc.CreatedBy)}
-            <span class="rc-meta-text">${formatDateET(rc.CreatedDate) || '—'}</span>
-            <span class="${rc.Priority === PRIORITY.URGENT ? 'badge-urgent' : 'badge-normal'}">${rc.Priority}</span>
+    const canPost = canPostReviewComment(taskId) && !isViewingHistory();
+    const openRCs = rcs.filter(rc => rc.Status === RC_STATUS.OPEN);
+    const resolvedRCs = rcs.filter(rc => rc.Status === RC_STATUS.RESOLVED);
+
+    let html = '';
+
+    // Composer
+    if (canPost) {
+      html += `
+        <div id="panel-rc-composer" style="margin-bottom:12px">
+          <textarea id="panel-rc-input" class="field-textarea" rows="2"
+            placeholder="Add a review comment…"
+            style="font-size:12px;margin-bottom:6px;resize:vertical"></textarea>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <label style="font-size:11px;color:var(--slate);display:flex;align-items:center;gap:4px">
+              <input type="radio" name="panel-rc-priority" value="Normal" checked> Normal
+            </label>
+            <label style="font-size:11px;color:var(--slate);display:flex;align-items:center;gap:4px">
+              <input type="radio" name="panel-rc-priority" value="Urgent"> Urgent
+            </label>
+            <button class="btn-primary btn-sm" data-action="panel-rc-post" data-taskid="${taskId}" style="margin-left:auto">Post Comment</button>
           </div>
-          <div class="rc-comment-text">"${escapeHtml((rc.CommentText || '').substring(0, 120))}${rc.CommentText?.length > 120 ? '...' : ''}"</div>
-        </div>`).join('');
-    } else {
-      rcPreview.innerHTML = '<p style="font-size:11px;color:var(--slate)">No review comments on this task.</p>';
+        </div>`;
     }
+
+    // Open comments
+    if (openRCs.length) {
+      html += openRCs.map(rc => renderPanelRCCard(rc)).join('');
+    } else if (!canPost) {
+      html += '<p style="font-size:11px;color:var(--slate);margin-bottom:8px">No review comments on this task.</p>';
+    }
+
+    // Resolved comments (collapsed)
+    if (resolvedRCs.length) {
+      html += `
+        <div style="margin-top:8px;border-top:1px solid var(--mid-gray);padding-top:8px">
+          <button class="btn-icon btn-sm" data-action="panel-rc-toggle-resolved" style="font-size:10px;color:var(--slate)">
+            ▼ ${resolvedRCs.length} resolved
+          </button>
+          <div id="panel-rc-resolved-list" class="hidden" style="margin-top:6px">
+            ${resolvedRCs.map(rc => renderPanelRCCard(rc, true)).join('')}
+          </div>
+        </div>`;
+    }
+
+    rcPreview.innerHTML = html;
   }
 
   // Audit trail (simplified — from assignments data)
@@ -2582,6 +2616,45 @@ function renderRCReplies(rcId) {
       <div class="rc-reply-text">${escapeHtml(r.ReplyText || '')}</div>
       <div class="rc-reply-meta">${renderBadge(r.CreatedByEmail)} · ${formatDateET(r.CreatedDate)}${r.TaggedUsers ? ' · Tagged: ' + r.TaggedUsers.split(';').filter(Boolean).map(e => renderBadge(e.trim())).join('') : ''}</div>
     </div>`).join('');
+}
+
+function renderPanelRCCard(rc, isResolved = false) {
+  const canResolve = !isResolved && (rc.CreatedBy === STATE.currentUser?.Email || STATE.isAdmin) && !isViewingHistory();
+  const resNote = rc.ResolvedBy
+    ? `<div class="resolution-note" style="font-size:10px;margin-top:4px">✓ Resolved by ${renderBadge(rc.ResolvedBy)} · ${formatDateET(rc.ResolvedDate)}${rc.ResolutionNote ? ' · "' + escapeHtml(rc.ResolutionNote) + '"' : ''}</div>`
+    : '';
+  const replies = (STATE.rcReplies || []).filter(r => r.ReviewCommentLookupId === rc._id);
+  const repliesHtml = replies.map(r => `
+    <div class="rc-reply" style="margin-top:4px">
+      <div class="rc-reply-text" style="font-size:11px">${escapeHtml(r.ReplyText || '')}</div>
+      <div class="rc-reply-meta" style="font-size:10px">${renderBadge(r.CreatedByEmail)} · ${formatDateET(r.CreatedDate)}</div>
+    </div>`).join('');
+
+  return `
+    <div class="rc-card ${rc.Priority === PRIORITY.URGENT ? 'urgent' : ''} ${isResolved ? 'resolved' : ''}" style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:4px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          ${renderBadge(rc.CreatedBy)}
+          <span class="rc-meta-text">${formatDateET(rc.CreatedDate) || '—'}</span>
+        </div>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <span class="${rc.Priority === PRIORITY.URGENT ? 'badge-urgent' : 'badge-normal'}">${rc.Priority}</span>
+          <span class="${isResolved ? 'badge-resolved' : 'badge-open'}">${isResolved ? '✓ Resolved' : 'Open'}</span>
+        </div>
+      </div>
+      <div class="rc-comment-text" style="font-size:12px">"${escapeHtml(rc.CommentText || '')}"</div>
+      ${repliesHtml}
+      ${resNote}
+      ${!isResolved ? `
+      <div class="rc-actions" style="margin-top:6px">
+        ${!isViewingHistory() ? `<button class="btn-icon btn-sm" data-action="panel-rc-reply" data-id="${rc._id}">Reply</button>` : ''}
+        ${canResolve ? `<button class="btn-success btn-sm" data-action="rc-resolve" data-id="${rc._id}">✓ Resolve</button>` : ''}
+      </div>` : `
+      ${STATE.isAdmin && !isViewingHistory() ? `
+      <div class="rc-actions" style="margin-top:6px">
+        <button class="btn-secondary btn-sm" data-action="rc-reopen" data-id="${rc._id}">↩ Reopen</button>
+      </div>` : ''}`}
+    </div>`;
 }
 
 // ============================================================
@@ -4803,6 +4876,88 @@ function attachCardEvents() {
         reopenReviewComment(id);
       }
 
+      if (action === 'panel-rc-post') {
+        const taskId = el.dataset.taskid;
+        const input = document.getElementById('panel-rc-input');
+        const text = input?.value?.trim();
+        if (!text) { showToast('Please enter a comment', 'error'); return; }
+        const priority = document.querySelector('input[name="panel-rc-priority"]:checked')?.value || 'Normal';
+        el.disabled = true;
+        createListItem(CONFIG.lists.reviewComments, {
+          Title:                `RC: ${STATE.templates.find(t => t._id === taskId)?.TaskName || taskId}`,
+          Quarter:              STATE.activeQuarter,
+          TaskTemplateLookupId: taskId,
+          CommentText:          text,
+          CreatedBy:            STATE.currentUser.Email,
+          CreatedDate:          new Date().toISOString(),
+          Priority:             priority,
+          Status:               RC_STATUS.OPEN,
+          TaggedUsers:          null,
+        }).then(created => {
+          STATE.reviewComments.push({ ...created.fields, _id: created.id });
+          showToast('✓ Comment posted', 'success');
+          if (STATE.taskDetailId) openTaskPanel(STATE.taskDetailId);
+        }).catch(err => {
+          showToast('Failed to post comment', 'error');
+          logError('Panel RC post failed:', err);
+          el.disabled = false;
+        });
+      }
+
+      if (action === 'panel-rc-reply') {
+        const existing = document.getElementById(`panel-reply-form-${id}`);
+        if (existing) { existing.remove(); return; }
+        const card = el.closest('.rc-card');
+        if (!card) return;
+        const form = document.createElement('div');
+        form.id = `panel-reply-form-${id}`;
+        form.style.cssText = 'margin-top:6px';
+        form.innerHTML = `
+          <textarea class="field-textarea" rows="2" id="panel-reply-input-${id}"
+            placeholder="Write a reply…" style="font-size:12px;margin-bottom:4px;resize:vertical"></textarea>
+          <div style="display:flex;gap:6px">
+            <button class="btn-primary btn-sm" data-action="panel-rc-reply-submit" data-id="${id}">Reply</button>
+            <button class="btn-secondary btn-sm" data-action="panel-rc-reply-cancel" data-id="${id}">Cancel</button>
+          </div>`;
+        card.appendChild(form);
+        document.getElementById(`panel-reply-input-${id}`)?.focus();
+      }
+
+      if (action === 'panel-rc-reply-cancel') {
+        document.getElementById(`panel-reply-form-${id}`)?.remove();
+      }
+
+      if (action === 'panel-rc-reply-submit') {
+        const input = document.getElementById(`panel-reply-input-${id}`);
+        const text = input?.value?.trim();
+        if (!text) { showToast('Please enter a reply', 'error'); return; }
+        el.disabled = true;
+        createListItem(CONFIG.lists.reviewCommentReplies, {
+          Title:                  `Reply to RC ${id}`,
+          ReviewCommentLookupId:  id,
+          ReplyText:              text,
+          CreatedByEmail:         STATE.currentUser.Email,
+          CreatedDate:            new Date().toISOString(),
+          TaggedUsers:            null,
+        }).then(created => {
+          if (!STATE.rcReplies) STATE.rcReplies = [];
+          STATE.rcReplies.push({ ...created.fields, _id: created.id });
+          showToast('✓ Reply posted', 'success');
+          if (STATE.taskDetailId) openTaskPanel(STATE.taskDetailId);
+        }).catch(err => {
+          showToast('Failed to post reply', 'error');
+          logError('Panel RC reply failed:', err);
+          el.disabled = false;
+        });
+      }
+
+      if (action === 'panel-rc-toggle-resolved') {
+        const list = document.getElementById('panel-rc-resolved-list');
+        if (!list) return;
+        const hidden = list.classList.toggle('hidden');
+        el.textContent = `${hidden ? '▼' : '▲'} ${el.textContent.replace(/^[▼▲]\s*/, '')}`;
+      }
+
       if (action === 'rc-reply') {
         openRCReplyInput(id);
       }
@@ -5002,6 +5157,7 @@ async function reopenReviewComment(rcId) {
     rc.ResolvedDate = null;
     rc.ResolutionNote = null;
     renderReviewComments();
+    if (STATE.taskDetailId) openTaskPanel(STATE.taskDetailId);
     showToast('↩ Comment reopened', 'success');
   } catch (err) {
     showToast('Failed to reopen comment', 'error');
