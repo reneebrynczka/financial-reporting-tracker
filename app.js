@@ -4144,10 +4144,13 @@ function trapFocus(modalEl) {
 
   // Delay focus AND briefly disable all buttons in the modal to prevent
   // carryover clicks from the triggering button firing modal actions.
+  // Track which buttons were already intentionally disabled (e.g. on-behalf confirm gate)
+  // so we don't re-enable them when the carryover-click guard expires.
   const buttons = Array.from(modalEl.querySelectorAll('button'));
+  const preDisabled = new Set(buttons.filter(b => b.disabled).map(b => b.id || b));
   buttons.forEach(b => { b.disabled = true; });
   setTimeout(() => {
-    buttons.forEach(b => { b.disabled = false; });
+    buttons.forEach(b => { if (!preDisabled.has(b.id || b)) b.disabled = false; });
     // Focus the modal title or a non-button element if possible,
     // otherwise focus the cancel button last to avoid accidental confirms.
     const cancelBtn = modalEl.querySelector('.btn-secondary, [id*="cancel"]');
