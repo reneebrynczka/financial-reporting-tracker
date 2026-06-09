@@ -983,21 +983,14 @@ function updateHistoryBanner() {
 async function populateQuarterPicker() {
   const sel = document.getElementById('quarter-picker');
   if (!sel) return;
-  // Note: this function is sometimes called without await (fire-and-forget).
-  // The try/catch inside ensures errors are always logged regardless.
 
   try {
-    // Collect all known quarters from loaded assignments plus active/working quarters.
-    // If no assignments loaded yet (first load), fall back to a lightweight API call.
-    let quarters;
-    if (STATE.assignments.length) {
-      const fromAssignments = [...new Set(STATE.assignments.map(a => a.Quarter).filter(Boolean))];
-      const extras = [STATE.activeQuarter, STATE.workingQuarter].filter(Boolean);
-      quarters = [...new Set([...fromAssignments, ...extras])].sort().reverse();
-    } else {
-      const items = await getListItems(CONFIG.lists.quarterlyAssignments);
-      quarters = [...new Set(items.map(i => i.fields?.Quarter).filter(Boolean))].sort().reverse();
-    }
+    // Always fetch all distinct quarters from SharePoint so historical quarters
+    // appear in the picker even when STATE.assignments only holds the active quarter.
+    const items = await getListItems(CONFIG.lists.quarterlyAssignments);
+    const fromSP = [...new Set(items.map(i => i.fields?.Quarter).filter(Boolean))];
+    const extras  = [STATE.activeQuarter, STATE.workingQuarter].filter(Boolean);
+    const quarters = [...new Set([...fromSP, ...extras])].sort().reverse();
 
     const current = getReadQuarter();
     sel.innerHTML = quarters.map(q =>
