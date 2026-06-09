@@ -2278,7 +2278,7 @@ function renderPanelAction(assignment, email) {
         <div class="confirm-text">Sign off preparer step?${onBehalf ? ` <span style="font-size:10px;color:var(--amber);font-weight:500">On behalf of ${renderBadge(assignment.Preparer)}</span>` : ''}</div>
         <div class="confirm-sub">Recorded as ${renderBadge(email)} · ${et}</div>
         <div class="confirm-btns">
-          <button class="btn-primary btn-sm" data-action="signoff" data-id="${assignment._id}" data-role="preparer">✓ ${onBehalf ? 'Sign Off on Behalf' : 'Sign Off as Preparer'}</button>
+          <button class="btn-primary btn-sm" data-action="${onBehalf ? 'signoff-behalf' : 'signoff'}" data-id="${assignment._id}" data-role="preparer">✓ ${onBehalf ? 'Sign Off on Behalf' : 'Sign Off as Preparer'}</button>
         </div>
       </div>`;
   } else if (!prepDone && !canSignPreparer) {
@@ -2292,7 +2292,7 @@ function renderPanelAction(assignment, email) {
           <div class="confirm-text">Sign off reviewer step?${onBehalf ? ` <span style="font-size:10px;color:var(--amber);font-weight:500">On behalf of ${renderBadge(assignment.Reviewer)}</span>` : ''}</div>
           <div class="confirm-sub">Recorded as ${renderBadge(email)} · ${et}</div>
           <div class="confirm-btns">
-            <button class="btn-primary btn-sm" data-action="signoff" data-id="${assignment._id}" data-role="reviewer">✓ ${onBehalf ? 'Sign Off on Behalf' : 'Sign Off as Reviewer'}</button>
+            <button class="btn-primary btn-sm" data-action="${onBehalf ? 'signoff-behalf' : 'signoff'}" data-id="${assignment._id}" data-role="reviewer">✓ ${onBehalf ? 'Sign Off on Behalf' : 'Sign Off as Reviewer'}</button>
           </div>
         </div>`;
     } else {
