@@ -1926,6 +1926,7 @@ function renderAllTasks() {
   if (cardWrap && !cardWrap.classList.contains('hidden')) {
     renderAllTasksCards();
   }
+  const skippedCount = STATE.assignments.filter(a => a.IsSkipped).length;
   const skippedToggleEl = document.getElementById('skipped-tasks-toggle');
   if (skippedToggleEl) {
     if (STATE.isAdmin && skippedCount > 0) {
@@ -4150,9 +4151,7 @@ function trapFocus(modalEl) {
   const preDisabled = new Set(buttons.filter(b => b.disabled).map(b => b.id || b));
   buttons.forEach(b => { b.disabled = true; });
   setTimeout(() => {
-    console.log('[Folio debug] trapFocus 150ms fired, preDisabled:', [...preDisabled], 'buttons:', buttons.map(b => b.id + ':disabled=' + b.disabled));
     buttons.forEach(b => { if (!preDisabled.has(b.id || b)) b.disabled = false; });
-    console.log('[Folio debug] after re-enable, btn-signoff-confirm disabled:', document.getElementById('btn-signoff-confirm')?.disabled);
     // Focus the cancel button to avoid accidental confirms — but only if an input
     // hasn't already claimed focus (e.g. the on-behalf confirmation input).
     if (!modalEl.contains(document.activeElement) || document.activeElement === document.body) {
@@ -4464,7 +4463,6 @@ function attachGlobalEvents() {
 
   // Sign-off modal
   document.getElementById('btn-signoff-confirm')?.addEventListener('click', async () => {
-    console.log('[Folio debug] btn-signoff-confirm clicked, pendingSignoff:', JSON.stringify(STATE.pendingSignoff), 'btn disabled:', document.getElementById('btn-signoff-confirm')?.disabled);
     if (!STATE.pendingSignoff) {
       logError('btn-signoff-confirm clicked but STATE.pendingSignoff is null');
       return;
@@ -5996,14 +5994,11 @@ function openSignOffBehalfModal(assignmentId, role) {
   // Wire input to gate the button
   setTimeout(() => {
     const input = document.getElementById('signoff-behalf-confirm-input');
-    console.log('[Folio debug] on-behalf setTimeout fired, input:', input, 'confirmBtn:', confirmBtn);
     if (input && confirmBtn) {
       input.addEventListener('input', () => {
         const valid = input.value.trim().toUpperCase() === 'ON BEHALF';
-        console.log('[Folio debug] input event, value:', JSON.stringify(input.value), 'valid:', valid, 'btn disabled before:', confirmBtn.disabled);
         confirmBtn.disabled = !valid;
         confirmBtn.style.opacity = valid ? '1' : '0.5';
-        console.log('[Folio debug] btn disabled after:', confirmBtn.disabled);
       });
       input.focus();
     }
