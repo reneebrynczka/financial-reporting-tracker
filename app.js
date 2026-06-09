@@ -4151,10 +4151,12 @@ function trapFocus(modalEl) {
   buttons.forEach(b => { b.disabled = true; });
   setTimeout(() => {
     buttons.forEach(b => { if (!preDisabled.has(b.id || b)) b.disabled = false; });
-    // Focus the modal title or a non-button element if possible,
-    // otherwise focus the cancel button last to avoid accidental confirms.
-    const cancelBtn = modalEl.querySelector('.btn-secondary, [id*="cancel"]');
-    (cancelBtn || first).focus();
+    // Focus the cancel button to avoid accidental confirms — but only if an input
+    // hasn't already claimed focus (e.g. the on-behalf confirmation input).
+    if (!modalEl.contains(document.activeElement) || document.activeElement === document.body) {
+      const cancelBtn = modalEl.querySelector('.btn-secondary, [id*="cancel"]');
+      (cancelBtn || first).focus();
+    }
   }, 150);
 
   if (_modalKeyHandler) document.removeEventListener('keydown', _modalKeyHandler);
@@ -4460,10 +4462,18 @@ function attachGlobalEvents() {
 
   // Sign-off modal
   document.getElementById('btn-signoff-confirm')?.addEventListener('click', async () => {
-    if (!STATE.pendingSignoff) return;
+    if (!STATE.pendingSignoff) {
+      logError('btn-signoff-confirm clicked but STATE.pendingSignoff is null');
+      return;
+    }
+    // Snapshot before clearing — handler is async and pendingSignoff must not be null mid-flight.
+    const { assignmentId, role } = STATE.pendingSignoff;
+    // Reset confirm button in case this was an on-behalf flow (button was gated by "ON BEHALF" input).
+    const confirmBtn = document.getElementById('btn-signoff-confirm');
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.style.opacity = '1'; }
     hideModal('modal-signoff');
-    await performSignOff(STATE.pendingSignoff.assignmentId, STATE.pendingSignoff.role);
     STATE.pendingSignoff = null;
+    await performSignOff(assignmentId, role);
     if (STATE.taskDetailId) openTaskPanel(STATE.taskDetailId);
   });
   document.getElementById('btn-signoff-cancel')?.addEventListener('click', () => {
