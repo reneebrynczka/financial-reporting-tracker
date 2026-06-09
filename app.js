@@ -7296,11 +7296,11 @@ function exportSignOffLog() {
 </table>
 </body></html>`;
 
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
   a.href = url;
-  a.download = `Folio-SignOffLog-${quarter}.htm`;
+  a.download = `Folio-SignOffLog-${quarter}.xls`;
   a.click();
   URL.revokeObjectURL(url);
 }
