@@ -2557,6 +2557,14 @@ function renderReviewComments() {
   if (urgentList) urgentList.innerHTML = urgent.map(rc => renderRCCard(rc)).join('');
   if (openList)   openList.innerHTML   = normal.map(rc => renderRCCard(rc)).join('');
   if (resolvedList) resolvedList.innerHTML = resolved.map(rc => renderRCCard(rc, true)).join('');
+
+  // Auto-expand resolved section when filter is "all" or "resolved"
+  const resolvedToggle = document.getElementById('rc-resolved-toggle');
+  if (resolvedList && resolvedToggle && resolved.length > 0) {
+    const shouldExpand = rcStatus === 'all' || rcStatus === 'resolved';
+    resolvedList.classList.toggle('hidden', !shouldExpand);
+    resolvedToggle.textContent = shouldExpand ? '▲ Hide' : '▼ Show';
+  }
 }
 
 function renderRCCard(rc, isResolved = false) {
@@ -7218,11 +7226,31 @@ function exportSignOffLog() {
   }
 
   function hdr(val) {
-    const s = 'background:#1A2B7A;color:#fff;font-weight:700;font-family:Arial,sans-serif;font-size:9pt;padding:4px 6px;border:1px solid #D0D5E8;text-align:center;white-space:nowrap';
-    return `<th style="${s}">${val}</th>`;
+    const s = 'background:#1A2B7A;color:#ffffff;font-weight:700;font-family:Arial,sans-serif;font-size:9pt;padding:4px 6px;border:1px solid #D0D5E8;text-align:center;white-space:nowrap';
+    return `<td style="${s}">${val}</td>`;
   }
 
-  const detailHtml = detailRows.map((r, i) => {
+  const hasReversals = detailRows.some(r => r.reversal === 'Yes');
+  const detailHeaders = ['Task','Category','Type','Assigned To','Signed Off By','On Behalf',
+    'Date & Time (ET)','Sign-Off WD','Due WD','Timeliness','Reversal',
+    ...(hasReversals ? ['Reversal Reason'] : [])];
+
+  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
+    xmlns:x="urn:schemas-microsoft-com:office:excel"
+    xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="UTF-8">
+<style>
+  body { font-family: Arial, sans-serif; margin: 12px; }
+  table { border-collapse: collapse; }
+</style>
+</head>
+<body>
+<table style="width:100%;margin-bottom:0">
+  <tr><td colspan="12" style="background:#0A1264;color:#ffffff;font-family:Arial,sans-serif;font-size:13pt;font-weight:700;padding:8px 14px;border:none">FOLIO &mdash; Sign-Off Log &nbsp;&middot;&nbsp; ${escapeHtml(quarter)}</td></tr>
+  <tr><td colspan="12" style="background:#F0F2FF;color:#5C6BC0;font-family:Arial,sans-serif;font-size:9pt;font-style:italic;padding:4px 14px;border:none">${detailRows.length} sign-offs &nbsp;&middot;&nbsp; ${prepCt} preparer &nbsp;&middot;&nbsp; ${revCt} reviewer &nbsp;&middot;&nbsp; ${obCt} on behalf</td></tr>
+  <tr><td colspan="12" style="padding:6px;border:none">&nbsp;</td></tr>
+  <tr>${detailHeaders.map(hdr).join('')}</tr>
+  ${detailRows.map((r, i) => {
     const isRev = r.type === 'Reviewer';
     const isOB  = r.onBehalf === 'Yes';
     const bg    = isOB ? '#FFF8E6' : isRev ? '#F0FFF4' : (i%2===0 ? '#EEF2FF' : '#F7F8FC');
@@ -7230,75 +7258,49 @@ function exportSignOffLog() {
     const obColor   = isOB  ? '#92400E' : '#6B7280';
     const tlColor   = r.timeliness === 'On Time' ? '#1A7A3C' : r.timeliness === 'Late' ? '#B91C1C' : '#6B7280';
     const revColor  = r.reversal === 'Yes' ? '#B91C1C' : '#6B7280';
-    return `<tr>
-      ${cell(r.task,       bg, '#111827', false, 'left')}
-      ${cell(r.category,   bg, '#111827', false, 'center')}
-      ${cell(r.type,       bg, typeColor, true,  'center')}
-      ${cell(r.assignedTo, bg, '#111827', false, 'left')}
-      ${cell(r.signedBy,   bg, '#111827', false, 'left')}
-      ${cell(r.onBehalf,   bg, obColor,   isOB,  'center')}
-      ${cell(r.date,       bg, '#111827', false, 'left')}
-      ${cell(r.signWD,     bg, '#111827', false, 'center')}
-      ${cell(r.dueWD,      bg, '#111827', false, 'center')}
-      ${cell(r.timeliness, bg, tlColor,   r.timeliness!=='Unknown', 'center')}
-      ${cell(r.reversal,   bg, revColor,  r.reversal==='Yes', 'center')}
-      ${cell(r.note,       bg, '#111827', false, 'left')}
-    </tr>`;
-  }).join('');
-
-  const summaryHtml = tasks.map((task, i) => {
+    const cells = [
+      cell(r.task,       bg, '#111827', false, 'left'),
+      cell(r.category,   bg, '#111827', false, 'center'),
+      cell(r.type,       bg, typeColor, true,  'center'),
+      cell(r.assignedTo, bg, '#111827', false, 'left'),
+      cell(r.signedBy,   bg, '#111827', false, 'left'),
+      cell(r.onBehalf,   bg, obColor,   isOB,  'center'),
+      cell(r.date,       bg, '#111827', false, 'left'),
+      cell(r.signWD,     bg, '#111827', false, 'center'),
+      cell(r.dueWD,      bg, '#111827', false, 'center'),
+      cell(r.timeliness, bg, tlColor,   r.timeliness!=='Unknown', 'center'),
+      cell(r.reversal,   bg, revColor,  r.reversal==='Yes', 'center'),
+      ...(hasReversals ? [cell(r.note, bg, '#111827', false, 'left')] : []),
+    ];
+    return `<tr>${cells.join('')}</tr>`;
+  }).join('')}
+  <tr><td colspan="12" style="padding:10px;border:none">&nbsp;</td></tr>
+  <tr><td colspan="4" style="background:#0A1264;color:#ffffff;font-family:Arial,sans-serif;font-size:11pt;font-weight:700;padding:6px 14px;border:none">Summary</td><td colspan="8" style="background:#0A1264;border:none">&nbsp;</td></tr>
+  <tr><td style="padding:4px;border:none">&nbsp;</td></tr>
+  <tr>${['Task','Preparer ✓','Reviewer ✓','On Behalf'].map(hdr).join('')}</tr>
+  ${tasks.map((task, i) => {
     const tr = detailRows.filter(r => r.task === task);
     const prep = tr.find(r => r.type === 'Preparer');
     const rev  = tr.find(r => r.type === 'Reviewer');
     const prepOB = prep && prep.onBehalf === 'Yes';
     const revOB  = rev  && rev.onBehalf  === 'Yes';
     const anyOB  = prepOB || revOB;
-    const bg     = i%2===0 ? '#fff' : '#F7F8FC';
-    const prepVal = prep ? (prepOB ? '✓ On Behalf' : '✓') : '—';
-    const revVal  = rev  ? (revOB  ? '✓ On Behalf' : '✓') : '—';
-    const prepColor = prep ? (prepOB ? '#92400E' : '#1A7A3C') : '#6B7280';
-    const revColor  = rev  ? (revOB  ? '#92400E' : '#1A7A3C') : '#6B7280';
+    const bg     = i%2===0 ? '#ffffff' : '#F7F8FC';
     return `<tr>
       ${cell(task,    bg, '#111827', false, 'left')}
-      ${cell(prepVal, bg, prepColor, !!prep, 'center')}
-      ${cell(revVal,  bg, revColor,  !!rev,  'center')}
+      ${cell(prep ? (prepOB ? '✓ On Behalf' : '✓') : '—', bg, prep ? (prepOB ? '#92400E' : '#1A7A3C') : '#6B7280', !!prep, 'center')}
+      ${cell(rev  ? (revOB  ? '✓ On Behalf' : '✓') : '—', bg, rev  ? (revOB  ? '#92400E' : '#1A7A3C') : '#6B7280', !!rev,  'center')}
       ${cell(anyOB ? 'Yes' : '', anyOB ? '#FFF8E6' : bg, anyOB ? '#92400E' : '#6B7280', anyOB, 'center')}
     </tr>`;
-  }).join('');
-
-  const titleStyle = 'background:#0A1264;color:#fff;font-family:Arial,sans-serif;font-size:13pt;font-weight:700;padding:8px 12px';
-  const subStyle   = 'background:#F0F2FF;color:#5C6BC0;font-family:Arial,sans-serif;font-size:9pt;font-style:italic;padding:4px 12px';
-
-  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
-    xmlns:x="urn:schemas-microsoft-com:office:excel"
-    xmlns="http://www.w3.org/TR/REC-html40">
-<head><meta charset="UTF-8">
-<style>
-  body { font-family: Arial, sans-serif; }
-  table { border-collapse: collapse; }
-</style>
-</head>
-<body>
-<h2 style="${titleStyle}">FOLIO — Sign-Off Log &nbsp;·&nbsp; ${escapeHtml(quarter)}</h2>
-<p style="${subStyle}">${detailRows.length} sign-offs &nbsp;·&nbsp; ${prepCt} preparer &nbsp;·&nbsp; ${revCt} reviewer &nbsp;·&nbsp; ${obCt} on behalf</p>
-<br>
-<table>
-  <thead><tr>${['Task','Category','Type','Assigned To','Signed Off By','On Behalf','Date & Time (ET)','Sign-Off WD','Due WD','Timeliness','Reversal','Reversal Reason'].map(hdr).join('')}</tr></thead>
-  <tbody>${detailHtml}</tbody>
-</table>
-<br><br>
-<h3 style="font-family:Arial;font-size:11pt;color:#0A1264">Summary</h3>
-<table>
-  <thead><tr>${['Task','Preparer ✓','Reviewer ✓','On Behalf'].map(hdr).join('')}</tr></thead>
-  <tbody>${summaryHtml}</tbody>
+  }).join('')}
 </table>
 </body></html>`;
 
-  const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
   a.href = url;
-  a.download = `Folio-SignOffLog-${quarter}.xls`;
+  a.download = `Folio-SignOffLog-${quarter}.htm`;
   a.click();
   URL.revokeObjectURL(url);
 }
