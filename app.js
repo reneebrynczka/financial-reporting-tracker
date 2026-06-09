@@ -2566,7 +2566,11 @@ function renderRCCard(rc, isResolved = false) {
       <div class="rc-actions">
         ${!isViewingHistory() ? `<button class="btn-icon" data-action="rc-reply" data-id="${rc._id}">Reply</button>` : ''}
         ${canResolve && !isViewingHistory() ? `<button class="btn-success btn-sm" data-action="rc-resolve" data-id="${rc._id}">✓ Mark Resolved</button>` : ''}
-      </div>` : ''}
+      </div>` : `
+      ${STATE.isAdmin && !isViewingHistory() ? `
+      <div class="rc-actions">
+        <button class="btn-secondary btn-sm" data-action="rc-reopen" data-id="${rc._id}">↩ Reopen</button>
+      </div>` : ''}`}
     </div>`;
 }
 
@@ -4795,6 +4799,10 @@ function attachCardEvents() {
         resolveReviewComment(id);
       }
 
+      if (action === 'rc-reopen') {
+        reopenReviewComment(id);
+      }
+
       if (action === 'rc-reply') {
         openRCReplyInput(id);
       }
@@ -4976,6 +4984,28 @@ async function confirmResolveReviewComment(rcId, note) {
   } catch (err) {
     showToast('Failed to resolve', 'error');
     logError('RC resolve failed:', err);
+  }
+}
+
+async function reopenReviewComment(rcId) {
+  const rc = STATE.reviewComments.find(r => r._id === rcId);
+  if (!rc) return;
+  try {
+    await updateListItem(CONFIG.lists.reviewComments, rcId, {
+      Status:         RC_STATUS.OPEN,
+      ResolvedBy:     null,
+      ResolvedDate:   null,
+      ResolutionNote: null,
+    });
+    rc.Status = RC_STATUS.OPEN;
+    rc.ResolvedBy = null;
+    rc.ResolvedDate = null;
+    rc.ResolutionNote = null;
+    renderReviewComments();
+    showToast('↩ Comment reopened', 'success');
+  } catch (err) {
+    showToast('Failed to reopen comment', 'error');
+    logError('RC reopen failed:', err);
   }
 }
 
