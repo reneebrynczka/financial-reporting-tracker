@@ -4240,15 +4240,12 @@ function trapFocus(modalEl) {
 
   // Delay focus AND briefly disable all buttons in the modal to prevent
   // carryover clicks from the triggering button firing modal actions.
-  // Track which buttons were already intentionally disabled (e.g. on-behalf confirm gate)
-  // so we don't re-enable them when the carryover-click guard expires.
   const buttons = Array.from(modalEl.querySelectorAll('button'));
-  const preDisabled = new Set(buttons.filter(b => b.disabled).map(b => b.id || b));
   buttons.forEach(b => { b.disabled = true; });
   setTimeout(() => {
-    buttons.forEach(b => { if (!preDisabled.has(b.id || b)) b.disabled = false; });
+    buttons.forEach(b => { b.disabled = false; });
     // Focus the cancel button to avoid accidental confirms — but only if an input
-    // hasn't already claimed focus (e.g. the on-behalf confirmation input).
+    // hasn't already claimed focus inside the modal.
     if (!modalEl.contains(document.activeElement) || document.activeElement === document.body) {
       const cancelBtn = modalEl.querySelector('.btn-secondary, [id*="cancel"]');
       (cancelBtn || first).focus();
@@ -6178,36 +6175,17 @@ function openSignOffBehalfModal(assignmentId, role) {
     <p style="font-size:12px;color:var(--slate);margin-bottom:12px">
       Signing as: ${renderBadge(STATE.currentUser?.Email)} · ${et}
     </p>
-    <div style="background:#FFF8E6;border:1px solid #F5C842;border-radius:6px;padding:10px 12px;margin-bottom:12px">
-      <p style="font-size:11px;color:#7A5200;font-weight:600;margin-bottom:6px">
+    <div style="background:#FFF8E6;border:1px solid #F5C842;border-radius:6px;padding:10px 12px">
+      <p style="font-size:11px;color:#7A5200;font-weight:600;margin:0">
         ⚠ This action will be recorded in the audit log as signed on behalf of the assigned ${role}. It cannot be undone without a reversal.
       </p>
-      <p style="font-size:11px;color:#7A5200">
-        Type <strong>ON BEHALF</strong> below to confirm:
-      </p>
-    </div>
-    <input type="text" id="signoff-behalf-confirm-input" class="field-input"
-      placeholder="Type ON BEHALF to confirm" autocomplete="off"
-      style="font-size:13px;letter-spacing:1px" />`;
+    </div>`;
 
-  // Disable confirm button until "ON BEHALF" is typed
+  // Ensure confirm button is enabled
   if (confirmBtn) {
-    confirmBtn.disabled = true;
-    confirmBtn.style.opacity = '0.5';
+    confirmBtn.disabled = false;
+    confirmBtn.style.opacity = '1';
   }
-
-  // Wire input to gate the button
-  setTimeout(() => {
-    const input = document.getElementById('signoff-behalf-confirm-input');
-    if (input && confirmBtn) {
-      input.addEventListener('input', () => {
-        const valid = input.value.trim().toUpperCase() === 'ON BEHALF';
-        confirmBtn.disabled = !valid;
-        confirmBtn.style.opacity = valid ? '1' : '0.5';
-      });
-      input.focus();
-    }
-  }, 100);
 
   showModal('modal-signoff');
 }
