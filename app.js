@@ -39,7 +39,7 @@ const CONFIG = {
   // NOTE: When bumping version, also update:
   //   1. The ?v= cache-bust parameter on app.js and style.css in index.html
   //   2. The footer version display in index.html
-  version:         '1.0.0',
+  version:         '1.2.0',
   pollIntervalMs:  60000,           // 60 seconds — balances freshness vs API call volume
   timezone:        'America/New_York',
   verboseLogging:  false,           // Set true temporarily to debug — logs all API calls to browser console
@@ -7171,219 +7171,200 @@ function exportSignOffLog() {
     return match ? Number(match.WorkdayNumber) : '';
   }
 
-  // Strip quarter prefix from title e.g. "Q1 2025 - Cover" → "Cover"
   function shortTitle(title) {
     return (title || '').replace(new RegExp('^' + quarter.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\s*-\\s*'), '');
   }
 
-  // Build detail rows
   const detailRows = [];
   STATE.assignments.forEach(a => {
     if (a.PreparerSignOff) {
-      const dueWD     = Number(a.PreparerWorkday);
+      const dueWD = Number(a.PreparerWorkday);
       const signOffWD = getSignOffWorkday(a.PreparerSignOffDate);
-      const timeliness = typeof signOffWD === 'number' && signOffWD
-        ? (signOffWD <= dueWD ? 'On Time' : 'Late') : 'Unknown';
+      const timeliness = typeof signOffWD === 'number' && signOffWD ? (signOffWD <= dueWD ? 'On Time' : 'Late') : 'Unknown';
       const onBehalf = (a.PreparerSignOffBy && a.PreparerSignOffBy !== a.Preparer) ? 'Yes' : 'No';
-      detailRows.push([
-        shortTitle(a.Title), a.Category, 'Preparer',
-        a.Preparer, a.PreparerSignOffBy || a.Preparer, onBehalf,
-        formatDateET(a.PreparerSignOffDate),
-        signOffWD || '—', dueWD, timeliness, 'No', ''
-      ]);
+      detailRows.push([shortTitle(a.Title), a.Category, 'Preparer', a.Preparer,
+        a.PreparerSignOffBy || a.Preparer, onBehalf, formatDateET(a.PreparerSignOffDate),
+        signOffWD || '—', dueWD, timeliness, 'No', '']);
     }
     if (a.ReviewerSignOff && a.SignOffMode !== SIGN_OFF_MODE.PREPARER_ONLY) {
-      const dueWD     = Number(a.ReviewerWorkday);
+      const dueWD = Number(a.ReviewerWorkday);
       const signOffWD = getSignOffWorkday(a.ReviewerSignOffDate);
-      const timeliness = typeof signOffWD === 'number' && signOffWD
-        ? (signOffWD <= dueWD ? 'On Time' : 'Late') : 'Unknown';
+      const timeliness = typeof signOffWD === 'number' && signOffWD ? (signOffWD <= dueWD ? 'On Time' : 'Late') : 'Unknown';
       const onBehalf = (a.ReviewerSignOffBy && a.ReviewerSignOffBy !== a.Reviewer) ? 'Yes' : 'No';
-      detailRows.push([
-        shortTitle(a.Title), a.Category, 'Reviewer',
-        a.Reviewer, a.ReviewerSignOffBy || a.Reviewer, onBehalf,
-        formatDateET(a.ReviewerSignOffDate),
-        signOffWD || '—', dueWD, timeliness, 'No', ''
-      ]);
+      detailRows.push([shortTitle(a.Title), a.Category, 'Reviewer', a.Reviewer,
+        a.ReviewerSignOffBy || a.Reviewer, onBehalf, formatDateET(a.ReviewerSignOffDate),
+        signOffWD || '—', dueWD, timeliness, 'No', '']);
     }
   });
 
   if (!detailRows.length) { showToast('No sign-offs to export', 'info'); return; }
 
-  if (typeof XLSX === 'undefined') {
-    // Fallback to CSV if SheetJS not loaded
+  if (typeof ExcelJS === 'undefined') {
+    // Fallback to CSV
     const headers = ['Task','Category','Type','Assigned To','Signed Off By','On Behalf',
                      'Date & Time ET','Sign-Off WD','Due WD','Timeliness','Reversal','Reversal Reason'];
     downloadCSV([headers, ...detailRows], `Folio-SignOffLog-${quarter}.csv`);
     return;
   }
 
-  const NAVY     = '0A1264';
-  const NAVY_MID = '1A2B7A';
-  const WHITE    = 'FFFFFF';
-  const PREP_BG  = 'EEF2FF';
-  const REV_BG   = 'F0FFF4';
-  const OB_BG    = 'FFF8E6';
-  const ALT_BG   = 'F7F8FC';
-  const GREEN    = '1A7A3C';
-  const RED      = 'B91C1C';
-  const AMBER    = '92400E';
-  const GREY     = '6B7280';
+  const NAVY = '0A1264', NAVY_MID = '1A2B7A', WHITE = 'FFFFFFFF';
+  const PREP_BG = 'FFEEF2FF', REV_BG = 'FFF0FFF4', OB_BG = 'FFFFF8E6', ALT_BG = 'FFF7F8FC';
+  const GREEN = 'FF1A7A3C', RED = 'FFB91C1C', AMBER = 'FF92400E', GREY = 'FF6B7280';
+  const NAVY_F = 'FF' + NAVY, NAVYMID_F = 'FF' + NAVY_MID;
 
-  function s(bold, color, sz, bg, halign) {
-    return {
-      font:      { name: 'Arial', bold: !!bold, color: { rgb: color || '000000' }, sz: sz || 9 },
-      fill:      bg ? { patternType: 'solid', fgColor: { rgb: bg } } : undefined,
-      alignment: { horizontal: halign || 'left', vertical: 'center', wrapText: false },
-      border: {
-        top:    { style: 'thin', color: { rgb: 'D0D5E8' } },
-        bottom: { style: 'thin', color: { rgb: 'D0D5E8' } },
-        left:   { style: 'thin', color: { rgb: 'D0D5E8' } },
-        right:  { style: 'thin', color: { rgb: 'D0D5E8' } },
-      },
-    };
-  }
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Folio'; wb.created = new Date();
 
   // ── Sheet 1: Sign-Off Log ─────────────────────────────────────────────────
+  const ws1 = wb.addWorksheet('Sign-Off Log', { views: [{ showGridLines: false }] });
+
   const prepCt = detailRows.filter(r => r[2] === 'Preparer').length;
   const revCt  = detailRows.filter(r => r[2] === 'Reviewer').length;
   const obCt   = detailRows.filter(r => r[5] === 'Yes').length;
 
-  const ws1data = [
-    [`FOLIO — Sign-Off Log   ·   ${quarter}`, ...Array(11).fill('')],
-    [`${detailRows.length} sign-offs   ·   ${prepCt} preparer   ·   ${revCt} reviewer   ·   ${obCt} on behalf`, ...Array(11).fill('')],
-    Array(12).fill(''),  // spacer
-    ['Task','Category','Type','Assigned To','Signed Off By','On Behalf',
-     'Date & Time (ET)','Sign-Off WD','Due WD','Timeliness','Reversal','Reversal Reason'],
-    ...detailRows,
-  ];
-
-  const ws1 = XLSX.utils.aoa_to_sheet(ws1data);
-
-  // Merge title rows
-  ws1['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 11 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 11 } },
-  ];
-
-  // Column widths
-  ws1['!cols'] = [34,16,11,28,28,11,24,13,10,13,11,24].map(w => ({ wch: w }));
-
-  // Row heights
-  ws1['!rows'] = [
-    { hpt: 28 }, { hpt: 16 }, { hpt: 6 }, { hpt: 20 },
-    ...detailRows.map(() => ({ hpt: 17 })),
-  ];
-
-  // Apply cell styles
-  const setCell = (r, c, style, value) => {
-    const addr = XLSX.utils.encode_cell({ r, c });
-    if (!ws1[addr]) ws1[addr] = { t: 's', v: value !== undefined ? value : '' };
-    ws1[addr].s = style;
-  };
-
   // Title row
-  setCell(0, 0, s(true, WHITE, 13, NAVY, 'left'));
+  ws1.mergeCells('A1:L1');
+  const titleCell = ws1.getCell('A1');
+  titleCell.value = `FOLIO — Sign-Off Log   ·   ${quarter}`;
+  titleCell.font = { name: 'Arial', bold: true, color: { argb: WHITE }, size: 13 };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY_F } };
+  titleCell.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+  ws1.getRow(1).height = 28;
 
   // Subtitle row
-  setCell(1, 0, s(false, '5C6BC0', 9, 'F0F2FF', 'left'));
+  ws1.mergeCells('A2:L2');
+  const subCell = ws1.getCell('A2');
+  subCell.value = `${detailRows.length} sign-offs   ·   ${prepCt} preparer   ·   ${revCt} reviewer   ·   ${obCt} on behalf`;
+  subCell.font = { name: 'Arial', color: { argb: 'FF5C6BC0' }, size: 9, italic: true };
+  subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F2FF' } };
+  subCell.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+  ws1.getRow(2).height = 16;
+  ws1.getRow(3).height = 5; // spacer
 
-  // Header row (row index 3)
-  for (let c = 0; c < 12; c++) {
-    setCell(3, c, s(true, WHITE, 9, NAVY_MID, 'center'));
-  }
+  // Header row
+  const headers1 = ['Task','Category','Type','Assigned To','Signed Off By','On Behalf',
+                    'Date & Time (ET)','Sign-Off WD','Due WD','Timeliness','Reversal','Reversal Reason'];
+  const hdrRow = ws1.addRow(headers1); // row 4
+  hdrRow.height = 20;
+  hdrRow.eachCell(cell => {
+    cell.font = { name: 'Arial', bold: true, color: { argb: WHITE }, size: 9 };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVYMID_F } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = { top:{style:'thin',color:{argb:'FFD0D5E8'}}, bottom:{style:'thin',color:{argb:'FFD0D5E8'}},
+                    left:{style:'thin',color:{argb:'FFD0D5E8'}}, right:{style:'thin',color:{argb:'FFD0D5E8'}} };
+  });
 
-  // Data rows (start at row index 4)
+  // Column widths
+  [34,16,11,28,28,11,24,13,10,13,11,24].forEach((w, i) => {
+    ws1.getColumn(i + 1).width = w;
+  });
+
+  // Data rows
   detailRows.forEach((row, ri) => {
     const isReviewer = row[2] === 'Reviewer';
     const isOnBehalf = row[5] === 'Yes';
     const rowBg = isOnBehalf ? OB_BG : isReviewer ? REV_BG : (ri % 2 === 0 ? PREP_BG : ALT_BG);
+    const dataRow = ws1.addRow(row);
+    dataRow.height = 17;
 
-    row.forEach((val, ci) => {
-      const addr = XLSX.utils.encode_cell({ r: ri + 4, c: ci });
-      if (!ws1[addr]) ws1[addr] = { t: 's', v: String(val ?? '') };
+    dataRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowBg } };
+      cell.border = { top:{style:'thin',color:{argb:'FFD0D5E8'}}, bottom:{style:'thin',color:{argb:'FFD0D5E8'}},
+                      left:{style:'thin',color:{argb:'FFD0D5E8'}}, right:{style:'thin',color:{argb:'FFD0D5E8'}} };
+      const isCenter = [3,6,7,8,9,10,11].includes(colNum);
+      cell.alignment = { horizontal: isCenter ? 'center' : 'left', vertical: 'middle' };
 
-      const isCenter = [2,5,6,7,8,9,10].includes(ci);
-      let bold = false, color = '111827';
-
-      if (ci === 2) { // Type
-        bold = true; color = isReviewer ? GREEN : '2E4DA0';
-      } else if (ci === 5) { // On Behalf
-        bold = isOnBehalf; color = isOnBehalf ? AMBER : GREY;
-      } else if (ci === 9) { // Timeliness
-        const v = String(val);
+      let bold = false, argb = 'FF111827';
+      if (colNum === 3) { bold = true; argb = isReviewer ? GREEN : 'FF2E4DA0'; }
+      else if (colNum === 6) { bold = isOnBehalf; argb = isOnBehalf ? AMBER : GREY; }
+      else if (colNum === 10) {
+        const v = String(row[9]);
         bold = v === 'On Time' || v === 'Late';
-        color = v === 'On Time' ? GREEN : v === 'Late' ? RED : GREY;
-      } else if (ci === 10) { // Reversal
-        bold = val === 'Yes'; color = val === 'Yes' ? RED : GREY;
-      }
+        argb = v === 'On Time' ? GREEN : v === 'Late' ? RED : GREY;
+      } else if (colNum === 11) { bold = row[10] === 'Yes'; argb = row[10] === 'Yes' ? RED : GREY; }
 
-      ws1[addr].s = s(bold, color, 9, rowBg, isCenter ? 'center' : 'left');
+      cell.font = { name: 'Arial', bold, color: { argb }, size: 9 };
     });
   });
 
+  ws1.freezeRows(4);
+
   // ── Sheet 2: Summary ──────────────────────────────────────────────────────
+  const ws2 = wb.addWorksheet('Summary', { views: [{ showGridLines: false }] });
+  ws2.mergeCells('A1:D1');
+  const sumTitle = ws2.getCell('A1');
+  sumTitle.value = `Sign-Off Summary  ·  ${quarter}`;
+  sumTitle.font = { name: 'Arial', bold: true, color: { argb: WHITE }, size: 12 };
+  sumTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY_F } };
+  sumTitle.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+  ws2.getRow(1).height = 24;
+
+  const sumHdr = ws2.addRow(['Task','Preparer ✓','Reviewer ✓','On Behalf']);
+  sumHdr.height = 19;
+  sumHdr.eachCell(cell => {
+    cell.font = { name: 'Arial', bold: true, color: { argb: WHITE }, size: 9 };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVYMID_F } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = { top:{style:'thin',color:{argb:'FFD0D5E8'}}, bottom:{style:'thin',color:{argb:'FFD0D5E8'}},
+                    left:{style:'thin',color:{argb:'FFD0D5E8'}}, right:{style:'thin',color:{argb:'FFD0D5E8'}} };
+  });
+
+  ws2.getColumn(1).width = 34; ws2.getColumn(2).width = 16;
+  ws2.getColumn(3).width = 16; ws2.getColumn(4).width = 13;
+
   const tasks = [...new Set(detailRows.map(r => r[0]))];
-  const sumRows = [
-    [`Sign-Off Summary  ·  ${quarter}`, '', '', ''],
-    ['Task', 'Preparer ✓', 'Reviewer ✓', 'On Behalf'],
-    ...tasks.map(task => {
-      const taskDetail = detailRows.filter(r => r[0] === task);
-      const prep = taskDetail.find(r => r[2] === 'Preparer');
-      const rev  = taskDetail.find(r => r[2] === 'Reviewer');
-      const prepOB = prep && prep[5] === 'Yes';
-      const revOB  = rev  && rev[5]  === 'Yes';
-      return [
-        task,
-        prep ? (prepOB ? '✓ On Behalf' : '✓') : '—',
-        rev  ? (revOB  ? '✓ On Behalf' : '✓') : '—',
-        (prepOB || revOB) ? 'Yes' : '',
-      ];
-    }),
-  ];
-
-  const ws2 = XLSX.utils.aoa_to_sheet(sumRows);
-  ws2['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
-  ws2['!cols']   = [34, 16, 16, 13].map(w => ({ wch: w }));
-  ws2['!rows']   = [{ hpt: 24 }, { hpt: 19 }, ...tasks.map(() => ({ hpt: 17 }))];
-
-  // Title
-  const ws2title = XLSX.utils.encode_cell({ r: 0, c: 0 });
-  if (ws2[ws2title]) ws2[ws2title].s = s(true, WHITE, 12, NAVY, 'left');
-
-  // Header
-  for (let c = 0; c < 4; c++) {
-    const addr = XLSX.utils.encode_cell({ r: 1, c });
-    if (ws2[addr]) ws2[addr].s = s(true, WHITE, 9, NAVY_MID, 'center');
-  }
-
-  // Data
   tasks.forEach((task, ri) => {
-    const taskDetail = detailRows.filter(r => r[0] === task);
-    const prep = taskDetail.find(r => r[2] === 'Preparer');
-    const rev  = taskDetail.find(r => r[2] === 'Reviewer');
+    const taskRows = detailRows.filter(r => r[0] === task);
+    const prep = taskRows.find(r => r[2] === 'Preparer');
+    const rev  = taskRows.find(r => r[2] === 'Reviewer');
     const prepOB = prep && prep[5] === 'Yes';
     const revOB  = rev  && rev[5]  === 'Yes';
     const anyOB  = prepOB || revOB;
-    const rowBg  = ri % 2 === 0 ? WHITE : ALT_BG;
+    const rowBg  = ri % 2 === 0 ? 'FFFFFFFF' : ALT_BG;
 
-    const taskAddr = XLSX.utils.encode_cell({ r: ri + 2, c: 0 });
-    if (ws2[taskAddr]) ws2[taskAddr].s = s(false, '111827', 9, rowBg, 'left');
+    const r = ws2.addRow([
+      task,
+      prep ? (prepOB ? '✓ On Behalf' : '✓') : '—',
+      rev  ? (revOB  ? '✓ On Behalf' : '✓') : '—',
+      anyOB ? 'Yes' : '',
+    ]);
+    r.height = 17;
 
-    const prepAddr = XLSX.utils.encode_cell({ r: ri + 2, c: 1 });
-    if (ws2[prepAddr]) ws2[prepAddr].s = s(!!prep, prep ? (prepOB ? AMBER : GREEN) : GREY, 9, rowBg, 'center');
+    const brd = { top:{style:'thin',color:{argb:'FFD0D5E8'}}, bottom:{style:'thin',color:{argb:'FFD0D5E8'}},
+                  left:{style:'thin',color:{argb:'FFD0D5E8'}}, right:{style:'thin',color:{argb:'FFD0D5E8'}} };
 
-    const revAddr = XLSX.utils.encode_cell({ r: ri + 2, c: 2 });
-    if (ws2[revAddr]) ws2[revAddr].s = s(!!rev, rev ? (revOB ? AMBER : GREEN) : GREY, 9, rowBg, 'center');
+    r.getCell(1).font = { name:'Arial', size:9, color:{argb:'FF111827'} };
+    r.getCell(1).fill = { type:'pattern', pattern:'solid', fgColor:{argb: rowBg} };
+    r.getCell(1).alignment = { horizontal:'left', vertical:'middle' };
+    r.getCell(1).border = brd;
 
-    const obAddr = XLSX.utils.encode_cell({ r: ri + 2, c: 3 });
-    if (ws2[obAddr]) ws2[obAddr].s = s(anyOB, anyOB ? AMBER : GREY, 9, anyOB ? OB_BG : rowBg, 'center');
+    r.getCell(2).font = { name:'Arial', bold:!!prep, size:9, color:{argb: prep ? (prepOB ? AMBER : GREEN) : GREY} };
+    r.getCell(2).fill = { type:'pattern', pattern:'solid', fgColor:{argb: rowBg} };
+    r.getCell(2).alignment = { horizontal:'center', vertical:'middle' };
+    r.getCell(2).border = brd;
+
+    r.getCell(3).font = { name:'Arial', bold:!!rev, size:9, color:{argb: rev ? (revOB ? AMBER : GREEN) : GREY} };
+    r.getCell(3).fill = { type:'pattern', pattern:'solid', fgColor:{argb: rowBg} };
+    r.getCell(3).alignment = { horizontal:'center', vertical:'middle' };
+    r.getCell(3).border = brd;
+
+    r.getCell(4).font = { name:'Arial', bold:anyOB, size:9, color:{argb: anyOB ? AMBER : GREY} };
+    r.getCell(4).fill = { type:'pattern', pattern:'solid', fgColor:{argb: anyOB ? OB_BG : rowBg} };
+    r.getCell(4).alignment = { horizontal:'center', vertical:'middle' };
+    r.getCell(4).border = brd;
   });
 
-  // ── Write file ─────────────────────────────────────────────────────────────
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws1, 'Sign-Off Log');
-  XLSX.utils.book_append_sheet(wb, ws2, 'Summary');
-  XLSX.writeFile(wb, `Folio-SignOffLog-${quarter}.xlsx`);
+  // ── Download ───────────────────────────────────────────────────────────────
+  wb.xlsx.writeBuffer().then(buffer => {
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `Folio-SignOffLog-${quarter}.xlsx`; a.click();
+    URL.revokeObjectURL(url);
+  }).catch(err => {
+    logError('ExcelJS export failed:', err);
+    showToast('Export failed — try again', 'error');
+  });
 }
 
 function exportMatrixExcel() {
