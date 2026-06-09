@@ -2171,8 +2171,8 @@ function openTaskPanel(assignmentId) {
     // Open comments
     if (openRCs.length) {
       html += openRCs.map(rc => renderPanelRCCard(rc)).join('');
-    } else if (!canPost) {
-      html += '<p style="font-size:11px;color:var(--slate);margin-bottom:8px">No review comments on this task.</p>';
+    } else {
+      html += '<p style="font-size:11px;color:var(--slate);margin-bottom:8px">No open comments on this task.</p>';
     }
 
     // Resolved comments (collapsed)
@@ -5134,7 +5134,8 @@ async function confirmResolveReviewComment(rcId, note) {
     rc.ResolvedBy = STATE.currentUser.Email;
     rc.ResolvedDate = now;
     rc.ResolutionNote = note;
-        renderReviewComments();
+    renderReviewComments();
+    if (STATE.taskDetailId) openTaskPanel(STATE.taskDetailId);
     showToast('✓ Comment resolved', 'success');
   } catch (err) {
     showToast('Failed to resolve', 'error');
