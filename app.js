@@ -3133,12 +3133,15 @@ function renderAdminView() {
     if (content) content.innerHTML = '<p style="color:var(--red)">Access denied.</p>';
     return;
   }
-  renderAdminPanel('overview');
+  renderAdminPanel(STATE._activeAdminTab || 'overview');
 }
 
 function renderAdminPanel(panelName) {
   const content = document.getElementById('admin-content');
   if (!content) return;
+
+  // Persist the active tab so poll refreshes restore it
+  STATE._activeAdminTab = panelName;
 
   // Update sidebar active state
   document.querySelectorAll('.sidebar-btn').forEach(btn => {
