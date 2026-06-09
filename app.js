@@ -3512,8 +3512,10 @@ function renderStagingGrid() {
       <div class="table-wrap">
         <table class="data-table" style="table-layout:fixed;width:100%">
           <colgroup>
-            <col style="width:18%"/><col style="width:10%"/><col style="width:6%"/>
-            <col style="width:6%"/><col style="width:10%"/><col style="width:21%"/><col style="width:21%"/><col style="width:8%"/>
+            <col style="width:16%"/><col style="width:9%"/><col style="width:5%"/>
+            <col style="width:5%"/><col style="width:9%"/><col style="width:16%"/><col style="width:16%"/>
+            <col style="width:5%"/><col style="width:5%"/><col style="width:5%"/>
+            <col style="width:5%"/><col style="width:4%"/>
           </colgroup>
           <thead><tr>
             <th>Task</th><th>Category</th>
