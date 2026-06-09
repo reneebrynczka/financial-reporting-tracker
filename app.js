@@ -2308,17 +2308,35 @@ function renderPanelAction(assignment, email) {
 
   if (!prepDone && canSignPreparer) {
     const onBehalf = !isPreparer;
+    const lastNudged = assignment.NudgeSent ? new Date(assignment.NudgeSent) : null;
+    const recentlyNudged = lastNudged && lastNudged > new Date(Date.now() - 60 * 60 * 1000);
+    const nudgeBtn = isReviewer && !STATE.isReadOnly && !isViewingHistory()
+      ? (recentlyNudged
+          ? `<button class="btn-icon btn-sm" disabled title="Nudge sent recently — wait an hour before sending another" style="margin-left:6px">👋 Nudged</button>`
+          : `<button class="btn-icon btn-sm" data-action="nudge-preparer" data-id="${assignment._id}" title="Send a reminder to the preparer" style="margin-left:6px">👋 Nudge</button>`)
+      : '';
     html = `
       <div class="confirm-box">
         <div class="confirm-text">Sign off preparer step?${onBehalf ? ` <span style="font-size:10px;color:var(--amber);font-weight:500">On behalf of ${renderBadge(assignment.Preparer)}</span>` : ''}</div>
         <div class="confirm-sub">Recorded as ${renderBadge(email)} · ${et}</div>
         <div class="confirm-btns">
           <button class="btn-primary btn-sm" data-action="${onBehalf ? 'signoff-behalf' : 'signoff'}" data-id="${assignment._id}" data-role="preparer">✓ ${onBehalf ? 'Sign Off on Behalf' : 'Sign Off as Preparer'}</button>
+          ${nudgeBtn}
         </div>
       </div>`;
   } else if (!prepDone && !canSignPreparer) {
     // ReadOnly user — preparer step pending but they cannot act
-    html = `<p style="font-size:11px;color:var(--slate)">Awaiting preparer sign-off by ${renderBadge(assignment.Preparer)}.</p>`;
+    const lastNudged = assignment.NudgeSent ? new Date(assignment.NudgeSent) : null;
+    const recentlyNudged = lastNudged && lastNudged > new Date(Date.now() - 60 * 60 * 1000);
+    const nudgeBtn = isReviewer && !isViewingHistory()
+      ? (recentlyNudged
+          ? `<button class="btn-icon btn-sm" disabled title="Nudge sent recently">👋 Nudged</button>`
+          : `<button class="btn-icon btn-sm" data-action="nudge-preparer" data-id="${assignment._id}" title="Send a reminder to the preparer">👋 Nudge</button>`)
+      : '';
+    html = `<div style="display:flex;align-items:center;gap:8px">
+      <p style="font-size:11px;color:var(--slate);margin:0">Awaiting preparer sign-off by ${renderBadge(assignment.Preparer)}.</p>
+      ${nudgeBtn}
+    </div>`;
   } else if (!isPrepOnly && !revDone) {
     if (canSignReviewer) {
       const onBehalf = !isReviewer;
