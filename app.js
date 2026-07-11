@@ -447,6 +447,7 @@ function getWDIndicatorText(quarter) {
   if (wd === 'post-close') return `Post-close · ${quarter}`;
   if (wd === 'between') {
     // Find the surrounding workdays for display
+    const today = todayET();
     const sorted2 = [...STATE.calendar].filter(c => c.Quarter === quarter)
       .sort((a,b) => Number(a.WorkdayNumber) - Number(b.WorkdayNumber));
     const prev = sorted2.filter(c => c.ActualDate < today).pop();
