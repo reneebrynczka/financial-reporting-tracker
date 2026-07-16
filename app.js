@@ -39,7 +39,7 @@ const CONFIG = {
   // NOTE: When bumping version, also update:
   //   1. The ?v= cache-bust parameter on app.js and style.css in index.html
   //   2. The footer version display in index.html
-  version:         '1.2.3',
+  version:         '1.2.4',
   pollIntervalMs:  60000,           // 60 seconds — balances freshness vs API call volume
   timezone:        'America/New_York',
   verboseLogging:  false,           // Set true temporarily to debug — logs all API calls to browser console
@@ -7491,21 +7491,6 @@ function exportMatrixExcel() {
     xmlns:x="urn:schemas-microsoft-com:office:excel"
     xmlns="http://www.w3.org/TR/REC-html40">
 <head><meta charset="UTF-8">
-<!--[if gte mso 9]>
-<xml>
- <x:ExcelWorkbook>
-  <x:ExcelWorksheets>
-   <x:ExcelWorksheet>
-    <x:Name>Matrix</x:Name>
-    <x:WorksheetOptions><x:Print><x:ValidPrinterInfo/></x:Print></x:WorksheetOptions>
-   </x:ExcelWorksheet>
-   <x:ExcelWorksheet>
-    <x:Name>Sign-Off Detail</x:Name>
-    <x:WorksheetOptions><x:Print><x:ValidPrinterInfo/></x:Print></x:WorksheetOptions>
-   </x:ExcelWorksheet>
-  </x:ExcelWorksheets>
- </x:ExcelWorkbook>
-<![endif]-->
 <style>
   body { font-family: Arial, sans-serif; margin: 12px; }
   table { border-collapse: collapse; }
@@ -7523,11 +7508,10 @@ function exportMatrixExcel() {
   <tr><td style="padding:4px;border:none">&nbsp;</td></tr>
   <tr>${['Checkpoint', 'Complete / Applicable', '% Complete'].map(h => hdr(h)).join('')}</tr>
   ${summaryRows}
-</table>
-<table style="width:100%;margin-bottom:0">
-  <tr><td colspan="${detailHeaderCells.length}" style="background:#0A1264;color:#ffffff;font-family:Arial,sans-serif;font-size:13pt;font-weight:700;padding:8px 14px;border:none">FOLIO &mdash; Sign-Off Detail &nbsp;&middot;&nbsp; ${escapeHtml(quarter)}</td></tr>
-  <tr><td colspan="${detailHeaderCells.length}" style="background:#F0F2FF;color:#5C6BC0;font-family:Arial,sans-serif;font-size:9pt;font-style:italic;padding:4px 14px;border:none">${detailRows.length} checkpoints signed off &nbsp;&middot;&nbsp; ${prepCt} preparer &nbsp;&middot;&nbsp; ${revCt} reviewer &nbsp;&middot;&nbsp; ${matrixCt} matrix-only &nbsp;&middot;&nbsp; ${lateCt} late</td></tr>
-  <tr><td colspan="${detailHeaderCells.length}" style="padding:6px;border:none">&nbsp;</td></tr>
+  <tr><td colspan="${headerCells.length}" style="padding:16px;border:none">&nbsp;</td></tr>
+  <tr><td colspan="${headerCells.length}" style="background:#0A1264;color:#ffffff;font-family:Arial,sans-serif;font-size:13pt;font-weight:700;padding:8px 14px;border:none">FOLIO &mdash; Sign-Off Detail &nbsp;&middot;&nbsp; ${escapeHtml(quarter)}</td></tr>
+  <tr><td colspan="${headerCells.length}" style="background:#F0F2FF;color:#5C6BC0;font-family:Arial,sans-serif;font-size:9pt;font-style:italic;padding:4px 14px;border:none">${detailRows.length} checkpoints signed off &nbsp;&middot;&nbsp; ${prepCt} preparer &nbsp;&middot;&nbsp; ${revCt} reviewer &nbsp;&middot;&nbsp; ${matrixCt} matrix-only &nbsp;&middot;&nbsp; ${lateCt} late</td></tr>
+  <tr><td colspan="${headerCells.length}" style="padding:6px;border:none">&nbsp;</td></tr>
   <tr>${detailHeaderCells.map((h, i) => hdr(h, i === 0 ? 'left' : undefined)).join('')}</tr>
   ${detailBodyRows}
 </table>
