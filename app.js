@@ -39,7 +39,7 @@ const CONFIG = {
   // NOTE: When bumping version, also update:
   //   1. The ?v= cache-bust parameter on app.js and style.css in index.html
   //   2. The footer version display in index.html
-  version:         '1.2.2',
+  version:         '1.2.3',
   pollIntervalMs:  60000,           // 60 seconds — balances freshness vs API call volume
   timezone:        'America/New_York',
   verboseLogging:  false,           // Set true temporarily to debug — logs all API calls to browser console
@@ -7343,7 +7343,16 @@ function exportMatrixExcel() {
     return `<td style="${s}">${escapeHtml(String(val))}</td>`;
   }
 
+  // Workday-number lookup for a sign-off timestamp — same approach as exportSignOffLog.
+  function getSignOffWorkday(isoDate) {
+    if (!isoDate) return '';
+    const dateStr = isoDate.substring(0, 10);
+    const match = STATE.calendar.find(c => c.Quarter === quarter && c.ActualDate === dateStr);
+    return match ? Number(match.WorkdayNumber) : '';
+  }
+
   // Resolve one row's data — mirrors renderMatrixView's per-item logic exactly.
+  // Also collects sign-off date/time/signer detail per checkpoint for the Sign-Off Detail sheet.
   function buildRow(itemName) {
     const assignments = STATE.assignments.filter(a => a.MatrixItem === itemName);
     const preparers = [...new Set(
@@ -7361,13 +7370,33 @@ function exportMatrixExcel() {
         const ms = STATE.matrixStatus.find(m => m.MatrixItem === itemName && m.Quarter === quarter);
         const fm = MATRIX_FIELD_MAP[cp];
         const status = ms?.[fm.status] || STATUS.NOT_STARTED;
-        return { status };
+        const detail = status === STATUS.COMPLETE ? {
+          checkpoint: cp, role: 'Matrix-Only',
+          signedBy: ms?.[fm.by] || '—',
+          date: formatDateET(ms?.[fm.date]),
+          dueWD: '—', signOffWD: '—', timeliness: '—',
+        } : null;
+        return { status, detail };
       }
       const preparerCp = REVIEWER_CHECKPOINT_MAP[cp] || cp;
       const linked = STATE.assignments.find(a => a.MatrixItem === itemName && a.MatrixCheckpoint === preparerCp);
-      if (!linked || linked.IsSkipped) return { status: 'N/A' };
-      const cpFields = getSignOffFields(getCheckpointRole(cp));
-      return { status: linked[cpFields.signOff] ? STATUS.COMPLETE : STATUS.NOT_STARTED };
+      if (!linked || linked.IsSkipped) return { status: 'N/A', detail: null };
+      const role = getCheckpointRole(cp);
+      const cpFields = getSignOffFields(role);
+      const isDone = !!linked[cpFields.signOff];
+      let detail = null;
+      if (isDone) {
+        const dueWD = Number(linked[cpFields.workday]);
+        const signOffWD = getSignOffWorkday(linked[cpFields.signOffDate]);
+        const timeliness = typeof signOffWD === 'number' && signOffWD ? (signOffWD <= dueWD ? 'On Time' : 'Late') : 'Unknown';
+        detail = {
+          checkpoint: cp, role: role === 'preparer' ? 'Preparer' : 'Reviewer',
+          signedBy: linked[cpFields.signOffBy] || linked[cpFields.assignee] || '—',
+          date: formatDateET(linked[cpFields.signOffDate]),
+          dueWD, signOffWD: signOffWD || '—', timeliness,
+        };
+      }
+      return { status: isDone ? STATUS.COMPLETE : STATUS.NOT_STARTED, detail };
     });
 
     return { itemName, preparers, reviewers, cells };
@@ -7387,6 +7416,7 @@ function exportMatrixExcel() {
   let bodyRows = '';
   let rowIdx = 0;
   const perColumnTotals = checkpoints.map(() => ({ complete: 0, applicable: 0 }));
+  const detailRows = []; // flattened for the Sign-Off Detail sheet: { section, item, ...detail }
 
   sectionEntries.forEach(([sectionName, items]) => {
     bodyRows += `<tr><td colspan="${headerCells.length}" style="background:#DCE3FA;color:#1A2B7A;font-weight:700;font-family:Arial,sans-serif;font-size:9.5pt;padding:5px 6px;border:1px solid #D0D5E8">${escapeHtml(sectionName)}</td></tr>`;
@@ -7399,6 +7429,7 @@ function exportMatrixExcel() {
           perColumnTotals[i].applicable++;
           if (c.status === STATUS.COMPLETE) perColumnTotals[i].complete++;
         }
+        if (c.detail) detailRows.push({ section: sectionName, item: row.itemName, ...c.detail });
         const st = statusStyle(c.status);
         return cell(st.label, bg, st.color, st.bold, 'center', st.italic);
       }).join('');
@@ -7422,10 +7453,59 @@ function exportMatrixExcel() {
     </tr>`;
   }).join('');
 
+  // ---- Sign-Off Detail sheet: date/time and signer for every completed checkpoint ----
+  const detailHeaderCells = ['Item', 'Section', 'Checkpoint', 'Role', 'Signed By', 'Date & Time (ET)', 'Due WD', 'Sign-Off WD', 'Timeliness'];
+  const detailCheckpointOrder = checkpoints.reduce((m, cp, i) => (m[cp] = i, m), {});
+  detailRows.sort((a, b) =>
+    a.item.localeCompare(b.item) || (detailCheckpointOrder[a.checkpoint] - detailCheckpointOrder[b.checkpoint])
+  );
+
+  const prepCt   = detailRows.filter(r => r.role === 'Preparer').length;
+  const revCt    = detailRows.filter(r => r.role === 'Reviewer').length;
+  const matrixCt = detailRows.filter(r => r.role === 'Matrix-Only').length;
+  const lateCt   = detailRows.filter(r => r.timeliness === 'Late').length;
+
+  let detailBodyRows = '';
+  if (!detailRows.length) {
+    detailBodyRows = `<tr>${cell('No checkpoints signed off yet for this quarter.', '#ffffff', '#6B7280', false, 'left', true)}${['', '', '', '', '', '', ''].map(() => cell('', '#ffffff', '#111827')).join('')}</tr>`;
+  } else {
+    detailBodyRows = detailRows.map((r, i) => {
+      const bg = i % 2 === 0 ? '#F7F8FC' : '#ffffff';
+      const roleColor = r.role === 'Reviewer' ? '#1A7A3C' : r.role === 'Matrix-Only' ? '#7B61FF' : '#2E4DA0';
+      const tlColor = r.timeliness === 'On Time' ? '#1A7A3C' : r.timeliness === 'Late' ? '#B91C1C' : '#6B7280';
+      return `<tr>
+        ${cell(r.item, bg, '#111827', true, 'left')}
+        ${cell(r.section, bg, '#111827', false, 'left')}
+        ${cell(r.checkpoint, bg, '#111827', false, 'left')}
+        ${cell(r.role, bg, roleColor, true, 'center')}
+        ${cell(r.signedBy, bg, '#111827', false, 'left')}
+        ${cell(r.date, bg, '#111827', false, 'left')}
+        ${cell(r.dueWD, bg, '#111827', false, 'center')}
+        ${cell(r.signOffWD, bg, '#111827', false, 'center')}
+        ${cell(r.timeliness, bg, tlColor, r.timeliness !== 'Unknown' && r.timeliness !== '—', 'center')}
+      </tr>`;
+    }).join('');
+  }
+
   const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
     xmlns:x="urn:schemas-microsoft-com:office:excel"
     xmlns="http://www.w3.org/TR/REC-html40">
 <head><meta charset="UTF-8">
+<!--[if gte mso 9]>
+<xml>
+ <x:ExcelWorkbook>
+  <x:ExcelWorksheets>
+   <x:ExcelWorksheet>
+    <x:Name>Matrix</x:Name>
+    <x:WorksheetOptions><x:Print><x:ValidPrinterInfo/></x:Print></x:WorksheetOptions>
+   </x:ExcelWorksheet>
+   <x:ExcelWorksheet>
+    <x:Name>Sign-Off Detail</x:Name>
+    <x:WorksheetOptions><x:Print><x:ValidPrinterInfo/></x:Print></x:WorksheetOptions>
+   </x:ExcelWorksheet>
+  </x:ExcelWorksheets>
+ </x:ExcelWorkbook>
+<![endif]-->
 <style>
   body { font-family: Arial, sans-serif; margin: 12px; }
   table { border-collapse: collapse; }
@@ -7443,6 +7523,13 @@ function exportMatrixExcel() {
   <tr><td style="padding:4px;border:none">&nbsp;</td></tr>
   <tr>${['Checkpoint', 'Complete / Applicable', '% Complete'].map(h => hdr(h)).join('')}</tr>
   ${summaryRows}
+</table>
+<table style="width:100%;margin-bottom:0">
+  <tr><td colspan="${detailHeaderCells.length}" style="background:#0A1264;color:#ffffff;font-family:Arial,sans-serif;font-size:13pt;font-weight:700;padding:8px 14px;border:none">FOLIO &mdash; Sign-Off Detail &nbsp;&middot;&nbsp; ${escapeHtml(quarter)}</td></tr>
+  <tr><td colspan="${detailHeaderCells.length}" style="background:#F0F2FF;color:#5C6BC0;font-family:Arial,sans-serif;font-size:9pt;font-style:italic;padding:4px 14px;border:none">${detailRows.length} checkpoints signed off &nbsp;&middot;&nbsp; ${prepCt} preparer &nbsp;&middot;&nbsp; ${revCt} reviewer &nbsp;&middot;&nbsp; ${matrixCt} matrix-only &nbsp;&middot;&nbsp; ${lateCt} late</td></tr>
+  <tr><td colspan="${detailHeaderCells.length}" style="padding:6px;border:none">&nbsp;</td></tr>
+  <tr>${detailHeaderCells.map((h, i) => hdr(h, i === 0 ? 'left' : undefined)).join('')}</tr>
+  ${detailBodyRows}
 </table>
 </body></html>`;
 
