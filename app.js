@@ -39,7 +39,7 @@ const CONFIG = {
   // NOTE: When bumping version, also update:
   //   1. The ?v= cache-bust parameter on app.js and style.css in index.html
   //   2. The footer version display in index.html
-  version:         '1.2.9',
+  version:         '1.3.1',
   pollIntervalMs:  60000,           // 60 seconds — balances freshness vs API call volume
   timezone:        'America/New_York',
   verboseLogging:  false,           // Set true temporarily to debug — logs all API calls to browser console
@@ -53,13 +53,12 @@ const CONFIG = {
     'XBRL',
     '1st Review XBRL',
     'SP Preparer',
-    'SP 1st Reviewer',
     'Loaded to Clara',
     'Final Review',
   ],
 
   // Matrix-only columns (not tied to tasks)
-  matrixOnlyColumns: ['SP Preparer', 'SP 1st Reviewer', 'Loaded to Clara', 'Final Review'],
+  matrixOnlyColumns: ['SP Preparer', 'Loaded to Clara', 'Final Review'],
 
   // User emoji options
   emojiOptions: ['🦊','⭐','💜','🌊','🦋','🔥','🎯','🚀','🎨','🌙','☀️','🐬','🦅','💎','🎵','🌺','🦁','🐋','🌻','🦄','🎸','🔮','🍀','🐝','🦉','🌴','🎲','⚡','🐧','🐶','🧁','🍓','🍦','🎈','🪅','✈️','🧸','🧢'],
@@ -2716,7 +2715,8 @@ function renderMatrixView() {
         const isMatrixOnly = CONFIG.matrixOnlyColumns.includes(cp);
         const isFinal = cp === CHECKPOINT.FINAL_REVIEW;
         const cls = isFinal ? 'final-col' : isMatrixOnly ? 'matrix-only-col' : '';
-        return `<th class="${cls}" style="min-width:52px" title="${escapeHtml(cp)}">${escapeHtml(cp)}</th>`;
+        const label = cp === 'SP Preparer' ? 'Sharepoint Upload' : cp;
+        return `<th class="${cls}" style="min-width:52px" title="${escapeHtml(label)}">${escapeHtml(label)}</th>`;
       }).join('')}
     </tr></thead>
     <tbody>`;
@@ -7423,7 +7423,7 @@ function exportMatrixExcel() {
     return { label: '—', color: '#9CA3AF', bold: false, italic: false }; // Not Started
   }
 
-  const headerCells = ['Item', 'Preparer', 'Reviewer', ...checkpoints];
+  const headerCells = ['Item', 'Preparer', 'Reviewer', ...checkpoints.map(cp => cp === 'SP Preparer' ? 'Sharepoint Upload' : cp)];
 
   let bodyRows = '';
   let rowIdx = 0;
