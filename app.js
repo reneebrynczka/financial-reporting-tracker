@@ -39,7 +39,7 @@ const CONFIG = {
   // NOTE: When bumping version, also update:
   //   1. The ?v= cache-bust parameter on app.js and style.css in index.html
   //   2. The footer version display in index.html
-  version:         '1.2.6',
+  version:         '1.2.9',
   pollIntervalMs:  60000,           // 60 seconds — balances freshness vs API call volume
   timezone:        'America/New_York',
   verboseLogging:  false,           // Set true temporarily to debug — logs all API calls to browser console
@@ -2721,6 +2721,13 @@ function renderMatrixView() {
     </tr></thead>
     <tbody>`;
 
+  // Items whose Final Review step is a manual process rather than a checkbox
+  // sign-off — always show the override text in that column instead of the usual status icon.
+  const FINAL_REVIEW_LABEL_OVERRIDES = {
+    'Derivatives': 'BL', 'Income Taxes': 'BL', 'Lease Note': 'BL',
+    'Revenue Note': 'Email',
+  };
+
   Object.entries(sections).forEach(([sectionName, items]) => {
     if (!items.length) return;
     html += `<tr class="section-header"><td colspan="${3 + checkpoints.length}">${escapeHtml(sectionName)}</td></tr>`;
@@ -2766,7 +2773,10 @@ function renderMatrixView() {
           const isFinalCell    = cp === CHECKPOINT.FINAL_REVIEW;
           const isMatrixOnlyCell = CONFIG.matrixOnlyColumns.includes(cp);
           const cellClass = isFinalCell ? 'final-td' : isMatrixOnlyCell ? 'matrix-only-td' : '';
-          if (status === STATUS.COMPLETE) {
+
+          if (isFinalReview && FINAL_REVIEW_LABEL_OVERRIDES[item.name]) {
+            html += `<td class="cell-na ${cellClass}" title="Manual process — not tracked via sign-off">${escapeHtml(FINAL_REVIEW_LABEL_OVERRIDES[item.name])}</td>`;
+          } else if (status === STATUS.COMPLETE) {
             const tooltip = `Signed off by ${ms?.[fm.by] || '—'} · ${formatDateET(ms?.[fm.date])}`;
             html += `<td class="cell-done ${cellClass}" title="${escapeHtml(tooltip)}">
               <svg width="12" height="12" viewBox="0 0 12 12"><polyline points="2,6 5,9 10,3" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -7327,6 +7337,13 @@ function exportMatrixExcel() {
   const totalItems = sectionEntries.reduce((sum, [, items]) => sum + items.length, 0);
   if (!totalItems) { showToast('No matrix items to export', 'info'); return; }
 
+  // Items whose Final Review step is a manual process rather than a checkbox
+  // sign-off — always show the override text in that column, same as the live Matrix view.
+  const FINAL_REVIEW_LABEL_OVERRIDES = {
+    'Derivatives': 'BL', 'Income Taxes': 'BL', 'Lease Note': 'BL',
+    'Revenue Note': 'Email',
+  };
+
   function cell(val, bg, color, bold, align, italic) {
     const s = [
       `background:${bg}`, `color:${color}`,
@@ -7359,6 +7376,9 @@ function exportMatrixExcel() {
 
     const cells = checkpoints.map(cp => {
       const isMatrixOnly = CONFIG.matrixOnlyColumns.includes(cp);
+      if (isMatrixOnly && cp === CHECKPOINT.FINAL_REVIEW && FINAL_REVIEW_LABEL_OVERRIDES[itemName]) {
+        return { status: FINAL_REVIEW_LABEL_OVERRIDES[itemName], detail: null };
+      }
       if (isMatrixOnly) {
         const ms = STATE.matrixStatus.find(m => m.MatrixItem === itemName && m.Quarter === quarter);
         const fm = MATRIX_FIELD_MAP[cp];
@@ -7399,6 +7419,7 @@ function exportMatrixExcel() {
     if (status === STATUS.PREPARED)    return { label: 'Prepared',color: '#B7791F', bold: false, italic: false };
     if (status === STATUS.IN_PROGRESS) return { label: 'In Progress', color: '#2E4DA0', bold: false, italic: false };
     if (status === 'N/A')              return { label: 'N/A',     color: '#9CA3AF', bold: false, italic: true  };
+    if (Object.values(FINAL_REVIEW_LABEL_OVERRIDES).includes(status)) return { label: status, color: '#9CA3AF', bold: false, italic: true };
     return { label: '—', color: '#9CA3AF', bold: false, italic: false }; // Not Started
   }
 
@@ -7416,7 +7437,7 @@ function exportMatrixExcel() {
       const bg = rowIdx % 2 === 0 ? '#F7F8FC' : '#ffffff';
       rowIdx++;
       const statusCells = row.cells.map((c, i) => {
-        if (c.status !== 'N/A') {
+        if (c.status !== 'N/A' && !Object.values(FINAL_REVIEW_LABEL_OVERRIDES).includes(c.status)) {
           perColumnTotals[i].applicable++;
           if (c.status === STATUS.COMPLETE) perColumnTotals[i].complete++;
         }
