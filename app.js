@@ -39,7 +39,7 @@ const CONFIG = {
   // NOTE: When bumping version, also update:
   //   1. The ?v= cache-bust parameter on app.js and style.css in index.html
   //   2. The footer version display in index.html
-  version:         '1.3.1',
+  version:         '1.3.3',
   pollIntervalMs:  60000,           // 60 seconds — balances freshness vs API call volume
   timezone:        'America/New_York',
   verboseLogging:  false,           // Set true temporarily to debug — logs all API calls to browser console
@@ -2804,6 +2804,11 @@ function renderMatrixView() {
           } else {
             const cpRole = getCheckpointRole(cp);
             const cpFields = getSignOffFields(cpRole);
+            const isPreparerOnlyReviewer = cpRole === 'reviewer' && linkedAssignment.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY;
+
+            if (isPreparerOnlyReviewer) {
+              html += `<td class="cell-na" title="Preparer only — no reviewer step required">N/A</td>`;
+            } else {
             const done = linkedAssignment[cpFields.signOff];
 
             if (done) {
@@ -2815,6 +2820,7 @@ function renderMatrixView() {
               const overdue = isTaskOverdue(linkedAssignment);
               const tooltip = `Assigned to ${linkedAssignment[cpFields.assignee] || '—'} · Due WD${linkedAssignment[cpFields.workday]}${overdue ? ' · Overdue' : ''}`;
               html += `<td class="cell-empty" title="${escapeHtml(tooltip)}" data-action="open-task" data-id="${linkedAssignment._id}"></td>`;
+            }
             }
           }
         }
@@ -7384,7 +7390,7 @@ function exportMatrixExcel() {
         const fm = MATRIX_FIELD_MAP[cp];
         const status = ms?.[fm.status] || STATUS.NOT_STARTED;
         const detail = status === STATUS.COMPLETE ? {
-          checkpoint: cp, role: 'Matrix-Only',
+          checkpoint: cp === 'SP Preparer' ? 'Sharepoint Upload' : cp, role: 'Matrix-Only',
           signedBy: ms?.[fm.by] || '—',
           onBehalf: 'No',
           date: formatDateET(ms?.[fm.date]),
@@ -7395,6 +7401,9 @@ function exportMatrixExcel() {
       const linked = STATE.assignments.find(a => a.MatrixItem === itemName && a.MatrixCheckpoint === preparerCp);
       if (!linked || linked.IsSkipped) return { status: 'N/A', detail: null };
       const role = getCheckpointRole(cp);
+      if (role === 'reviewer' && linked.SignOffMode === SIGN_OFF_MODE.PREPARER_ONLY) {
+        return { status: 'N/A', detail: null };
+      }
       const cpFields = getSignOffFields(role);
       const isDone = !!linked[cpFields.signOff];
       let detail = null;
@@ -7459,7 +7468,7 @@ function exportMatrixExcel() {
     const pct = applicable ? Math.round((complete / applicable) * 100) : 0;
     const pctColor = pct === 100 ? '#1A7A3C' : pct >= 50 ? '#B7791F' : '#B91C1C';
     return `<tr>
-      ${cell(cp, '#ffffff', '#111827', false, 'left')}
+      ${cell(cp === 'SP Preparer' ? 'Sharepoint Upload' : cp, '#ffffff', '#111827', false, 'left')}
       ${cell(applicable ? `${complete} / ${applicable}` : 'N/A', '#ffffff', '#111827', false, 'center')}
       ${cell(applicable ? `${pct}%` : '—', '#ffffff', pctColor, true, 'center')}
     </tr>`;
