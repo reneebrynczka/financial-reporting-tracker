@@ -2876,8 +2876,8 @@ function renderDashboard() {
   if (sub) sub.textContent = `${quarter || '—'} · ${STATE.isAdmin ? 'Admin view' : 'Read-only'}`;
 
   // Metrics
-  const total    = STATE.assignments.length;
-  const complete = STATE.assignments.filter(a => a.Status === STATUS.COMPLETE).length;
+  const total    = STATE.assignments.filter(a => !a.IsSkipped).length;
+  const complete = STATE.assignments.filter(a => !a.IsSkipped && a.Status === STATUS.COMPLETE).length;
   const overdue  = STATE.assignments.filter(a => !a.IsSkipped && isTaskOverdue(a)).length;
   const urgentRC = STATE.reviewComments.filter(rc => rc.Priority === PRIORITY.URGENT && rc.Status === RC_STATUS.OPEN).length;
   const pct = total ? Math.round((complete / total) * 100) : 0;
