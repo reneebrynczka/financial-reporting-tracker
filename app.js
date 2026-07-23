@@ -2912,7 +2912,7 @@ function renderDashboard() {
   const personBars = document.getElementById('person-bars');
   if (personBars) {
     personBars.innerHTML = STATE.users.map(user => {
-      const myTasks = STATE.assignments.filter(a => a.Preparer === user.Email || a.Reviewer === user.Email);
+      const myTasks = STATE.assignments.filter(a => !a.IsSkipped && (a.Preparer === user.Email || a.Reviewer === user.Email));
       if (!myTasks.length) return '';
       const done = myTasks.filter(a => a.Status === STATUS.COMPLETE).length;
       const pctUser = Math.round((done / myTasks.length) * 100);
