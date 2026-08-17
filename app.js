@@ -7436,7 +7436,6 @@ function exportMatrixExcel() {
 
   let bodyRows = '';
   let rowIdx = 0;
-  const perColumnTotals = checkpoints.map(() => ({ complete: 0, applicable: 0 }));
   const detailRows = []; // flattened for the Sign-Off Detail sheet: { section, item, ...detail }
 
   sectionEntries.forEach(([sectionName, items]) => {
@@ -7446,10 +7445,6 @@ function exportMatrixExcel() {
       const bg = rowIdx % 2 === 0 ? '#F7F8FC' : '#ffffff';
       rowIdx++;
       const statusCells = row.cells.map((c, i) => {
-        if (c.status !== 'N/A' && !Object.values(FINAL_REVIEW_LABEL_OVERRIDES).includes(c.status)) {
-          perColumnTotals[i].applicable++;
-          if (c.status === STATUS.COMPLETE) perColumnTotals[i].complete++;
-        }
         if (c.detail) detailRows.push({ section: sectionName, item: row.itemName, ...c.detail });
         const st = statusStyle(c.status);
         return cell(st.label, bg, st.color, st.bold, 'center', st.italic);
@@ -7462,17 +7457,6 @@ function exportMatrixExcel() {
       </tr>`;
     });
   });
-
-  const summaryRows = checkpoints.map((cp, i) => {
-    const { complete, applicable } = perColumnTotals[i];
-    const pct = applicable ? Math.round((complete / applicable) * 100) : 0;
-    const pctColor = pct === 100 ? '#1A7A3C' : pct >= 50 ? '#B7791F' : '#B91C1C';
-    return `<tr>
-      ${cell(cp === 'SP Preparer' ? 'Sharepoint Upload' : cp, '#ffffff', '#111827', false, 'left')}
-      ${cell(applicable ? `${complete} / ${applicable}` : 'N/A', '#ffffff', '#111827', false, 'center')}
-      ${cell(applicable ? `${pct}%` : '—', '#ffffff', pctColor, true, 'center')}
-    </tr>`;
-  }).join('');
 
   // ---- Sign-Off Detail sheet: date/time and signer for every completed checkpoint ----
   const detailHeaderCells = ['Item', 'Section', 'Checkpoint', 'Role', 'Signed By', 'On Behalf', 'Date & Time (ET)'];
@@ -7523,11 +7507,6 @@ function exportMatrixExcel() {
   <tr><td colspan="${headerCells.length}" style="padding:6px;border:none">&nbsp;</td></tr>
   <tr>${headerCells.map((h, i) => hdr(h, i === 0 ? 'left' : undefined)).join('')}</tr>
   ${bodyRows}
-  <tr><td colspan="${headerCells.length}" style="padding:10px;border:none">&nbsp;</td></tr>
-  <tr><td colspan="3" style="background:#0A1264;color:#ffffff;font-family:Arial,sans-serif;font-size:11pt;font-weight:700;padding:6px 14px;border:none">Checkpoint Completion Summary</td></tr>
-  <tr><td style="padding:4px;border:none">&nbsp;</td></tr>
-  <tr>${['Checkpoint', 'Complete / Applicable', '% Complete'].map(h => hdr(h)).join('')}</tr>
-  ${summaryRows}
   <tr><td colspan="${headerCells.length}" style="padding:16px;border:none">&nbsp;</td></tr>
   <tr><td colspan="${headerCells.length}" style="background:#0A1264;color:#ffffff;font-family:Arial,sans-serif;font-size:13pt;font-weight:700;padding:8px 14px;border:none">FOLIO &mdash; Sign-Off Detail &nbsp;&middot;&nbsp; ${escapeHtml(quarter)}</td></tr>
   <tr><td colspan="${headerCells.length}" style="background:#F0F2FF;color:#5C6BC0;font-family:Arial,sans-serif;font-size:9pt;font-style:italic;padding:4px 14px;border:none">${detailRows.length} checkpoints signed off &nbsp;&middot;&nbsp; ${prepCt} preparer &nbsp;&middot;&nbsp; ${revCt} reviewer &nbsp;&middot;&nbsp; ${matrixCt} matrix-only &nbsp;&middot;&nbsp; ${obCt} on behalf</td></tr>
