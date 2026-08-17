@@ -6651,36 +6651,59 @@ async function confirmSOXExport() {
 
     // ── Build Excel workbook (SheetJS) ──────────────────────
     // Single .xlsx file with one named tab per section — proper auditor deliverable.
+    // NOTE: SheetJS's free/community build does not write cell fill colors or bold
+    // fonts into genuine .xlsx files (Pro-only feature, confirmed by testing the
+    // actual output XML). Styling below is limited to what a real .xlsx supports
+    // without that license: merged banner rows and autofilter on data headers.
     const XLSX = window.XLSX;
     if (!XLSX) throw new Error('SheetJS not loaded — check network connection');
 
     const wb = XLSX.utils.book_new();
 
-    function addSheet(name, rows, headerColor) {
-      const ws = XLSX.utils.aoa_to_sheet(rows);
+    // title: optional banner text merged across all columns above the data,
+    // so each tab opens with a clear section label similar in spirit to the
+    // navy header bar used in the Matrix/Sign-Off Log exports (color itself
+    // isn't available here — see note above).
+    function addSheet(name, rows, title) {
+      const bannerRows = title ? [[title], []] : [];
+      const allRows = [...bannerRows, ...rows];
+      const ws = XLSX.utils.aoa_to_sheet(allRows);
+      const maxCols = Math.max(...rows.map(r => r.length));
 
       // Column widths — set all to reasonable auto-width approximation
-      const maxCols = Math.max(...rows.map(r => r.length));
       ws['!cols'] = Array.from({ length: maxCols }, (_, i) => ({
         wch: Math.min(50, Math.max(10,
           ...rows.map(r => String(r[i] ?? '').length)
         ))
       }));
 
-      // Freeze header row
-      ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+      if (title) {
+        // Merge the banner row across every column so it reads as one title bar
+        ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: maxCols - 1 } }];
+      }
+
+      // Autofilter on the header row (first row of actual data, after any banner)
+      const headerRowIdx = bannerRows.length; // 0-indexed
+      const lastRowIdx = allRows.length - 1;
+      if (lastRowIdx >= headerRowIdx) {
+        const range = XLSX.utils.encode_range({
+          s: { r: headerRowIdx, c: 0 },
+          e: { r: lastRowIdx, c: maxCols - 1 },
+        });
+        ws['!autofilter'] = { ref: range };
+      }
 
       XLSX.utils.book_append_sheet(wb, ws, name);
     }
 
     addSheet('Summary',          summaryRows);
-    addSheet('Sign-Offs',        signOffRows);
-    addSheet('Unsigned Tasks',   unsignedRows);
-    addSheet('Reversals',        reversalRows);
-    addSheet('Final Review',     finalReviewRows);
-    addSheet('Review Comments',  rcRows);
-    addSheet('Reassignments',    reassignRows);
-    addSheet('Admin Actions',    adminRows);
+    addSheet('Sign-Offs',        signOffRows,    `FOLIO — SIGN-OFFS — ${quarter}`);
+    addSheet('Unsigned Tasks',   unsignedRows,   `FOLIO — UNSIGNED TASKS — ${quarter}`);
+    addSheet('Reversals',        reversalRows,   `FOLIO — REVERSALS — ${quarter}`);
+    addSheet('Final Review',     finalReviewRows,`FOLIO — FINAL REVIEW — ${quarter}`);
+    addSheet('Review Comments',  rcRows,         `FOLIO — REVIEW COMMENTS — ${quarter}`);
+    addSheet('Reassignments',    reassignRows,   `FOLIO — REASSIGNMENTS — ${quarter}`);
+    addSheet('Admin Actions',    adminRows,      `FOLIO — ADMIN ACTIONS — ${quarter}`);
 
     // Write and download
     const wbBuf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
